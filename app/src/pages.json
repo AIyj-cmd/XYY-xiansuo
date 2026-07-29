@@ -1,0 +1,142 @@
+{
+  "pages": [
+    {
+      "path": "pages/login/index",
+      "style": {
+        "navigationBarTitleText": "",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/leads/list",
+      "style": {
+        "navigationBarTitleText": "线索",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/leads/detail",
+      "style": {
+        "navigationBarTitleText": "线索详情",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/leads/form",
+      "style": {
+        "navigationBarTitleText": "新增线索",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/dashboard/index",
+      "style": {
+        "navigationBarTitleText": "工作台",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/mine/index",
+      "style": {
+        "navigationBarTitleText": "我的",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/admin/index",
+      "style": {
+        "navigationBarTitleText": "管理",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/admin/users",
+      "style": {
+        "navigationBarTitleText": "用户管理",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/admin/trash",
+      "style": {
+        "navigationBarTitleText": "回收站",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/admin/import",
+      "style": {
+        "navigationBarTitleText": "数据导入",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black"
+      }
+    },
+    {
+      "path": "pages/memo/index",
+      "style": {
+        "navigationBarTitleText": "备忘录",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/pool/index",
+      "style": {
+        "navigationBarTitleText": "线索池",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/notify/index",
+      "style": {
+        "navigationBarTitleText": "消息通知",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black"
+      }
+    }
+  ],
+  "tabBar": {
+    "custom": true,
+    "color": "#909399",
+    "selectedColor": "#2b6cb0",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/leads/list",
+        "text": "线索",
+        "iconPath": "static/tabbar/leads.png",
+        "selectedIconPath": "static/tabbar/leads-active.png"
+      },
+      {
+        "pagePath": "pages/dashboard/index",
+        "text": "工作台",
+        "iconPath": "static/tabbar/dashboard.png",
+        "selectedIconPath": "static/tabbar/dashboard-active.png"
+      },
+      {
+        "pagePath": "pages/pool/index",
+        "text": "线索池",
+        "iconPath": "static/tabbar/pool.png",
+        "selectedIconPath": "static/tabbar/pool-active.png"
+      },
+      {
+        "pagePath": "pages/mine/index",
+        "text": "我的",
+        "iconPath": "static/tabbar/mine.png",
+        "selectedIconPath": "static/tabbar/mine-active.png"
+      }
+    ]
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "线索跟进系统",
+    "navigationBarBackgroundColor": "#ffffff",
+    "backgroundColor": "#f5f7fa"
+  }
+}

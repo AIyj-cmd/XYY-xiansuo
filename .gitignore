@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+app/dist/
+server/dist/
+
+# Runtime data and user uploads
+server/data/
+server/uploads/
+server/backups/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Logs and temporary files
+*.log
+*.pid
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local editor and agent settings
+.vscode/
+.idea/
+.claude/
