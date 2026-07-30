@@ -1,0 +1,16 @@
+[agents]
+# Multi-agent tools are enabled by default. Keep this explicit so the project
+# workflow does not depend on a user-level default.
+enabled = true
+
+# Maximum number of spawned-agent threads that may be open concurrently.
+# The primary thread is not counted. Write-heavy stages remain sequential per
+# AGENTS.md; concurrency is reserved for independent read-heavy checks.
+max_concurrent_threads_per_session = 4
+
+# Fallbacks used only when a spawn or custom agent file does not choose a model.
+default_subagent_model = "gpt-5.6-terra"
+default_subagent_reasoning_effort = "medium"
+
+# Preserve a model-visible record when a running agent is interrupted.
+interrupt_message = true
