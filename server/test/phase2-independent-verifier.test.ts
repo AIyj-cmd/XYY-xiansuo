@@ -13,6 +13,7 @@ process.env.JWT_SECRET = 'phase-two-independent-verifier-secret-at-least-32-byte
 process.env.DB_PATH = path.join(testDirectory, 'app.db');
 process.env.NODE_ENV = 'test';
 process.env.POOL_IDLE_DAYS = '7';
+process.env.LEAD_POOL_CLAIM_ENABLED = 'true';
 
 const { closeDb, configureConnection, getDb, initDb, MIGRATIONS, runMigrations } = await import('../src/db.js');
 const { signToken } = await import('../src/utils/jwt.js');
@@ -219,19 +220,19 @@ test('跟进创建、编辑、删除及导入使用同一派生规则；删除�
   });
 });
 
-test('003 可重复执行且不改变既有 checksum、完整性或禁止对象边界', () => {
-  assert.deepEqual(MIGRATIONS.map((migration) => migration.version), ['001', '002', '003']);
+test('004 可重复执行且不改变既有 001/002/003 checksum、完整性或禁止对象边界', () => {
+  assert.deepEqual(MIGRATIONS.map((migration) => migration.version), ['001', '002', '003', '004']);
   assert.equal(MIGRATIONS[0].checksum, 'c10d4871046168fe4d264341112454eba9983c979ba5ec16098f54ae0f0e57a0');
   assert.equal(MIGRATIONS[1].checksum, 'db94974c385bf625457d12c33ee42c95b0c2e6c951d262dd0b9784fe8112b0d9');
   const database = new DatabaseSync(':memory:', { enableForeignKeyConstraints: true });
   configureConnection(database);
   runMigrations(database);
   runMigrations(database);
-  assert.deepEqual((database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>).map((row) => row.version), ['001', '002', '003']);
+  assert.deepEqual((database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>).map((row) => row.version), ['001', '002', '003', '004']);
   assert.deepEqual((database.prepare('PRAGMA integrity_check').all() as object[]).map((row) => ({ ...row })), [{ integrity_check: 'ok' }]);
   assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
-  for (const forbidden of ['notification_rules', 'notification_logs', 'wechat_bindings', 'visit_plans', 'ai_analysis_logs', 'ai_permissions']) {
+  for (const forbidden of ['wechat_bindings', 'visit_plans', 'ai_analysis_logs', 'ai_permissions']) {
     assert.ok(!tables.includes(forbidden), `unexpected stage-two table: ${forbidden}`);
   }
   const leadColumns = (database.prepare('PRAGMA table_info(leads)').all() as Array<{ name: string }>).map((row) => row.name);

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getDb } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { nowDatetime, todayDate } from '../utils/datetime.js';
-import { resolvePoolIdleDays } from '../config.js';
+import { resolveNotificationConfig, resolvePoolIdleDays } from '../config.js';
 import { randomUUID } from 'node:crypto';
 import { assertActiveOwner, OwnerTransferError, transferLeadOwner } from '../services/lead-owner.js';
 import { recomputeFollowUpDerived } from '../services/follow-up-derived.js';
@@ -610,6 +610,9 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
 
   // 线索公海：超过 N 天没有跟进记录的线索（排除已成交/已流失）
   app.get('/api/pool', { preHandler: authenticate }, async (request, reply) => {
+    if (!resolveNotificationConfig().leadPoolClaimEnabled) {
+      return reply.code(403).send({ code: 1, msg: '公海待认领功能已关闭，线索池“全部线索”仍可正常使用', data: { error_code: 'LEAD_POOL_CLAIM_DISABLED' } });
+    }
     const parsed = poolQuerySchema.safeParse(request.query);
     if (!parsed.success) {
       return reply.code(400).send({ code: 1, msg: parsed.error.issues[0].message, data: null });
@@ -641,6 +644,9 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
 
   // 认领公海线索（转移给自己）
   app.post('/api/pool/:id/claim', { preHandler: authenticate }, async (request, reply) => {
+    if (!resolveNotificationConfig().leadPoolClaimEnabled) {
+      return reply.code(403).send({ code: 1, msg: '公海待认领功能已关闭，暂不支持认领线索', data: { error_code: 'LEAD_POOL_CLAIM_DISABLED' } });
+    }
     const { id } = request.params as { id: string };
     const db = getDb();
     try {

@@ -9,6 +9,7 @@ const testDirectory = mkdtempSync(path.join(tmpdir(), 'xiansuo-pool-'));
 process.env.JWT_SECRET = 'test-secret-that-is-at-least-32-bytes-long';
 process.env.DB_PATH = path.join(testDirectory, 'app.db');
 process.env.POOL_IDLE_DAYS = '7';
+process.env.LEAD_POOL_CLAIM_ENABLED = 'true';
 
 const { closeDb, getDb, initDb } = await import('../src/db.js');
 const { signToken } = await import('../src/utils/jwt.js');

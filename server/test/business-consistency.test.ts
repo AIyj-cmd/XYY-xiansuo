@@ -10,6 +10,7 @@ process.env.JWT_SECRET = 'business-consistency-test-secret-at-least-32-bytes';
 process.env.DB_PATH = path.join(testDirectory, 'app.db');
 process.env.NODE_ENV = 'test';
 process.env.POOL_IDLE_DAYS = '7';
+process.env.LEAD_POOL_CLAIM_ENABLED = 'true';
 
 const { closeDb, getDb, initDb, MIGRATIONS, runMigrations, configureConnection } = await import('../src/db.js');
 const { signToken } = await import('../src/utils/jwt.js');

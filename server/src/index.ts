@@ -16,6 +16,8 @@ import { uploadRoutes, UPLOADS_DIR } from './routes/upload.js';
 import { tagRoutes } from './routes/tags.js';
 import { memoRoutes } from './routes/memo.js';
 import { notificationRoutes } from './routes/notifications.js';
+import { notificationAdminRoutes } from './routes/notification-admin.js';
+import { resolveNotificationConfig } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,6 +25,8 @@ const PORT = parseInt(process.env.PORT || '3000');
 const HOST = process.env.HOST || '0.0.0.0';
 
 export async function buildApp(): Promise<FastifyInstance> {
+  // 在任何数据库或 HTTP 副作用之前验证全部阶段三开关。
+  resolveNotificationConfig();
   // 初始化数据库
   initDb();
   console.log(`数据库路径: ${getDatabasePath()}`);
@@ -106,6 +110,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(tagRoutes);
   await app.register(memoRoutes);
   await app.register(notificationRoutes);
+  await app.register(notificationAdminRoutes);
   await app.register(staticFiles, { root: UPLOADS_DIR, prefix: '/uploads/', decorateReply: false });
   await app.register(uploadRoutes);
 

@@ -38,3 +38,29 @@ export function resolvePoolIdleDays(value = process.env.POOL_IDLE_DAYS): number 
   const parsed = Number.parseInt(value || '7', 10);
   return Number.isInteger(parsed) && parsed >= 1 && parsed <= 365 ? parsed : 7;
 }
+
+/** 只接受精确的 true/false，避免环境变量拼写错误悄悄改变业务行为。 */
+export function resolveStrictBoolean(name: string, value = process.env[name], defaultValue = false): boolean {
+  if (value === undefined || value === '') return defaultValue;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`${name} 只能为 true 或 false，拒绝启动`);
+}
+
+export type NotificationConfig = {
+  leadPoolClaimEnabled: boolean;
+  captureEnabled: boolean;
+  workerEnabled: boolean;
+  mockEnabled: boolean;
+  schedulerEnabled: boolean;
+};
+
+export function resolveNotificationConfig(env: NodeJS.ProcessEnv = process.env): NotificationConfig {
+  return {
+    leadPoolClaimEnabled: resolveStrictBoolean('LEAD_POOL_CLAIM_ENABLED', env.LEAD_POOL_CLAIM_ENABLED),
+    captureEnabled: resolveStrictBoolean('NOTIFICATION_CAPTURE_ENABLED', env.NOTIFICATION_CAPTURE_ENABLED),
+    workerEnabled: resolveStrictBoolean('NOTIFICATION_WORKER_ENABLED', env.NOTIFICATION_WORKER_ENABLED),
+    mockEnabled: resolveStrictBoolean('NOTIFICATION_MOCK_ENABLED', env.NOTIFICATION_MOCK_ENABLED),
+    schedulerEnabled: resolveStrictBoolean('NOTIFICATION_SCHEDULER_ENABLED', env.NOTIFICATION_SCHEDULER_ENABLED),
+  };
+}

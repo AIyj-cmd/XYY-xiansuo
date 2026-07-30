@@ -55,6 +55,7 @@ function scalarPragma(database: DatabaseSync, pragma: string): number {
 export function configureConnection(database: DatabaseSync): void {
   database.exec('PRAGMA journal_mode = WAL;');
   database.exec('PRAGMA foreign_keys = ON;');
+  database.exec('PRAGMA busy_timeout = 5000;');
   scalarPragma(database, 'foreign_keys');
 }
 
@@ -275,6 +276,99 @@ export const MIGRATIONS: readonly Migration[] = [
     description: 'add owner transfer audit metadata and follow-up derivation source',
     checksum: 'e774d92055d84bf62431de4af508d2ec0d70d2a05a384204f482bc3038f51704',
     up: addBusinessConsistencyMetadata,
+  },
+  {
+    version: '004',
+    description: 'create notification rules and reliable notification outbox',
+    checksum: '61ab37aed4b7cc897e87bd01016ae79c38d472b967f816f1985522e8baf47f75',
+    up(database) {
+      database.exec(`
+CREATE TABLE IF NOT EXISTS notification_rules (
+  event_type TEXT PRIMARY KEY CHECK (event_type IN ('owner_changed','scheduled_follow_overdue','visit_reminder','status_changed','daily_report','weekly_report','inactive_lead')),
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
+  recipient_strategy TEXT NOT NULL CHECK (recipient_strategy IN ('new_owner','reserved')),
+  channel_order_json TEXT NOT NULL CHECK (length(channel_order_json) <= 16384 AND json_valid(channel_order_json) AND json_type(channel_order_json) = 'array'),
+  config_schema_version INTEGER NOT NULL CHECK (config_schema_version >= 1),
+  config_json TEXT NOT NULL CHECK (length(config_json) <= 16384 AND json_valid(config_json) AND json_type(config_json) = 'object'),
+  version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  CHECK ((event_type = 'owner_changed' AND recipient_strategy = 'new_owner') OR (event_type != 'owner_changed' AND recipient_strategy = 'reserved'))
+);
+CREATE TABLE IF NOT EXISTS notification_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_type TEXT NOT NULL CHECK (event_type IN ('owner_changed','scheduled_follow_overdue','visit_reminder','status_changed','daily_report','weekly_report','inactive_lead')),
+  event_source TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  subject_type TEXT NOT NULL,
+  subject_id INTEGER NOT NULL,
+  lead_id INTEGER REFERENCES leads(id) ON DELETE RESTRICT,
+  actor_user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,
+  old_owner_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,
+  new_owner_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,
+  recipient_user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,
+  occurred_at TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  delivery_idempotency_key TEXT UNIQUE,
+  rule_version INTEGER NOT NULL,
+  rule_snapshot_json TEXT NOT NULL CHECK (length(rule_snapshot_json) <= 16384 AND json_valid(rule_snapshot_json) AND json_type(rule_snapshot_json) = 'object'),
+  channel_order_snapshot_json TEXT NOT NULL CHECK (length(channel_order_snapshot_json) <= 16384 AND json_valid(channel_order_snapshot_json) AND json_type(channel_order_snapshot_json) = 'array'),
+  channel TEXT CHECK (channel IS NULL OR channel = 'mock'),
+  message_snapshot_json TEXT NOT NULL CHECK (length(message_snapshot_json) <= 16384 AND json_valid(message_snapshot_json) AND json_type(message_snapshot_json) = 'object'),
+  status TEXT NOT NULL CHECK (status IN ('pending','sending','retry_wait','sent','suppressed','cancelled','failed')),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  automatic_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (automatic_attempt_count >= 0),
+  manual_retry_count INTEGER NOT NULL DEFAULT 0 CHECK (manual_retry_count >= 0),
+  max_attempts INTEGER NOT NULL CHECK (max_attempts BETWEEN 1 AND 10),
+  available_at TEXT NOT NULL,
+  lease_token TEXT,
+  lease_owner TEXT,
+  lease_until TEXT,
+  lease_recovery_count INTEGER NOT NULL DEFAULT 0 CHECK (lease_recovery_count >= 0),
+  retry_allowed INTEGER NOT NULL DEFAULT 1 CHECK (retry_allowed IN (0,1)),
+  provider_message_id TEXT,
+  failure_class TEXT,
+  last_error_code TEXT,
+  last_error_message TEXT,
+  suppression_reason TEXT,
+  cancellation_reason TEXT,
+  management_audit_json TEXT NOT NULL DEFAULT '[]' CHECK (length(management_audit_json) <= 16384 AND json_valid(management_audit_json) AND json_type(management_audit_json) = 'array'),
+  expires_at TEXT NOT NULL,
+  retain_until TEXT,
+  last_attempt_at TEXT,
+  sent_at TEXT,
+  failed_at TEXT,
+  suppressed_at TEXT,
+  cancelled_at TEXT,
+  row_version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  CHECK ((status != 'sending') OR (lease_token IS NOT NULL AND lease_owner IS NOT NULL AND lease_until IS NOT NULL)),
+  CHECK ((status != 'sent') OR (sent_at IS NOT NULL AND provider_message_id IS NOT NULL)),
+  CHECK ((status != 'suppressed') OR suppression_reason IS NOT NULL),
+  CHECK ((status != 'cancelled') OR cancellation_reason IS NOT NULL),
+  CHECK ((event_type != 'owner_changed') OR (event_source IN ('single_edit','batch_transfer') AND lead_id IS NOT NULL AND actor_user_id IS NOT NULL AND new_owner_id IS NOT NULL AND recipient_user_id = new_owner_id AND (old_owner_id IS NULL OR old_owner_id != new_owner_id) AND actor_user_id != new_owner_id))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_owner_changed_unique ON notification_logs(event_type, operation_id, lead_id, new_owner_id, recipient_user_id) WHERE event_type = 'owner_changed';
+CREATE INDEX IF NOT EXISTS idx_notification_ready ON notification_logs(status, available_at);
+CREATE INDEX IF NOT EXISTS idx_notification_lease ON notification_logs(status, lease_until);
+CREATE INDEX IF NOT EXISTS idx_notification_management ON notification_logs(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_recipient ON notification_logs(recipient_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_event ON notification_logs(event_type, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_lead ON notification_logs(lead_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_retention ON notification_logs(retain_until) WHERE status IN ('sent','suppressed','cancelled','failed');
+INSERT OR IGNORE INTO notification_rules (event_type, enabled, recipient_strategy, channel_order_json, config_schema_version, config_json)
+VALUES
+ ('owner_changed',0,'new_owner','["mock"]',1,'{"schema_version":1,"quiet_hours":{"enabled":false,"start":"22:00","end":"08:00","timezone":"Asia/Shanghai"},"max_attempts":5,"ttl_minutes":1440}'),
+ ('scheduled_follow_overdue',0,'reserved','[]',1,'{}'),
+ ('visit_reminder',0,'reserved','[]',1,'{}'),
+ ('status_changed',0,'reserved','[]',1,'{}'),
+ ('daily_report',0,'reserved','[]',1,'{}'),
+ ('weekly_report',0,'reserved','[]',1,'{}'),
+ ('inactive_lead',0,'reserved','[]',1,'{}');
+`);
+    },
   },
 ];
 

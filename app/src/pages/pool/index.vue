@@ -6,6 +6,12 @@ import { useUserStore } from '../../store/user';
 import CustomTabBar from '../../components/CustomTabBar.vue';
 
 const store = useUserStore();
+// 构建期开关只控制 UI；服务端 LEAD_POOL_CLAIM_ENABLED 才是安全边界。
+const poolClaimRaw = import.meta.env.VITE_LEAD_POOL_CLAIM_ENABLED;
+if (poolClaimRaw !== undefined && poolClaimRaw !== '' && poolClaimRaw !== 'true' && poolClaimRaw !== 'false') {
+  throw new Error('VITE_LEAD_POOL_CLAIM_ENABLED 只能为 true 或 false');
+}
+const poolClaimEnabled = poolClaimRaw === 'true';
 
 interface Lead {
   id: number;
@@ -194,6 +200,7 @@ function resetFilter() {
 }
 
 function switchMode(mode: 'all' | 'public') {
+  if (mode === 'public' && !poolClaimEnabled) return;
   if (viewMode.value === mode) return;
   viewMode.value = mode;
   showFilter.value = false;
@@ -223,7 +230,7 @@ async function loadList(reset = false) {
   if (loading.value && !reset) return;
   loading.value = true;
   try {
-    if (viewMode.value === 'public') {
+    if (viewMode.value === 'public' && poolClaimEnabled) {
       const res = await get<{
         minimum_days: number;
         threshold_days: number;
@@ -299,7 +306,7 @@ onShow(async () => {
   <view class="pool-page">
     <view class="mode-switch">
       <view class="mode-item" :class="{ active: viewMode === 'all' }" @click="switchMode('all')">全部线索</view>
-      <view class="mode-item" :class="{ active: viewMode === 'public' }" @click="switchMode('public')">公海待认领</view>
+      <view v-if="poolClaimEnabled" class="mode-item" :class="{ active: viewMode === 'public' }" @click="switchMode('public')">公海待认领</view>
     </view>
 
     <!-- 搜索栏 -->
@@ -358,7 +365,7 @@ onShow(async () => {
       </view>
     </view>
 
-    <view v-else class="pool-days-bar">
+    <view v-else-if="poolClaimEnabled" class="pool-days-bar">
       <text class="pool-days-label">连续未跟进：</text>
       <view
         v-for="days in poolDayOptions"
@@ -423,7 +430,7 @@ onShow(async () => {
             <view v-else class="mine-badge"><text>{{ isMine(item) ? '我的' : '可编辑' }}</text></view>
           </view>
 
-          <view v-if="viewMode === 'public'" class="pool-claim-row">
+          <view v-if="poolClaimEnabled && viewMode === 'public'" class="pool-claim-row">
             <text class="idle-days">已连续 {{ item.idle_days || poolDays }} 天未跟进</text>
             <view
               v-if="!isMine(item)"

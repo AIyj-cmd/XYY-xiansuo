@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { captureOwnerChanged } from './notification.js';
 
 export const OWNER_TRANSFER_SOURCES = ['single_edit', 'batch_transfer', 'pool_claim'] as const;
 export type OwnerTransferSource = typeof OWNER_TRANSFER_SOURCES[number];
@@ -53,5 +54,12 @@ export function transferLeadOwner(
     command.source,
     command.operationId,
   );
+  if (command.source === 'single_edit' || command.source === 'batch_transfer') {
+    captureOwnerChanged(database, {
+      schemaVersion: 1, eventType: 'owner_changed', operationId: command.operationId,
+      source: command.source, occurredAt: command.updatedAt, leadId: command.leadId,
+      actorUserId: command.actorUserId, oldOwnerId: lead.owner_id, newOwnerId: command.newOwnerId,
+    });
+  }
   return { changed: true, oldOwnerId: lead.owner_id };
 }
