@@ -304,7 +304,7 @@ onShow(async () => {
 
 <template>
   <view class="pool-page">
-    <view class="mode-switch">
+    <view v-if="poolClaimEnabled" class="mode-switch">
       <view class="mode-item" :class="{ active: viewMode === 'all' }" @click="switchMode('all')">全部线索</view>
       <view v-if="poolClaimEnabled" class="mode-item" :class="{ active: viewMode === 'public' }" @click="switchMode('public')">公海待认领</view>
     </view>
