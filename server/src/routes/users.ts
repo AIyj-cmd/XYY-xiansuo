@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getDb } from '../db.js';
 import { hashPassword } from '../utils/password.js';
 import { requireAdmin, authenticate } from '../middleware/auth.js';
+import type { SQLInputValue } from 'node:sqlite';
 
 const createUserSchema = z.object({
   username: z.string().min(2, '用户名至少2位').max(50),
@@ -62,15 +63,34 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     const data = result.data;
     const db = getDb();
 
-    const user = db.prepare('SELECT id FROM users WHERE id = ?').get(id);
+    const user = db.prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(id) as {
+      id: number;
+      role: string;
+      is_active: number;
+    } | undefined;
     if (!user) return reply.send({ code: 1, msg: '用户不存在', data: null });
+
+    const targetId = Number(id);
+    if (targetId === request.user.id && data.is_active === 0) {
+      return reply.code(400).send({ code: 1, msg: '不能停用当前登录账号', data: null });
+    }
+    const removesActiveAdmin = user.role === 'admin' && user.is_active === 1
+      && (data.role === 'member' || data.is_active === 0);
+    if (removesActiveAdmin) {
+      const activeAdmins = db.prepare(
+        "SELECT COUNT(*) AS cnt FROM users WHERE role = 'admin' AND is_active = 1"
+      ).get() as { cnt: number };
+      if (activeAdmins.cnt <= 1) {
+        return reply.code(400).send({ code: 1, msg: '系统必须至少保留一个启用中的管理员', data: null });
+      }
+    }
 
     if (data.password !== undefined) {
       data.password = await hashPassword(data.password);
     }
 
     const fields: string[] = [];
-    const values: unknown[] = [];
+    const values: SQLInputValue[] = [];
 
     if (data.is_active !== undefined) { fields.push('is_active = ?'); values.push(data.is_active); }
     if (data.role !== undefined) { fields.push('role = ?'); values.push(data.role); }

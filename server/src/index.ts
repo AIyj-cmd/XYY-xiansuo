@@ -1,11 +1,11 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import staticFiles from '@fastify/static';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initDb, getDb } from './db.js';
-import { hashPassword } from './utils/password.js';
+import { initDb, getDb, getDatabasePath } from './db.js';
+import { initializeAdmin } from './bootstrap.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
 import { userRoutes } from './routes/users.js';
@@ -22,25 +22,22 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3000');
 const HOST = process.env.HOST || '0.0.0.0';
 
-async function bootstrap(): Promise<void> {
+export async function buildApp(): Promise<FastifyInstance> {
   // 初始化数据库
   initDb();
+  console.log(`数据库路径: ${getDatabasePath()}`);
 
-  // 首次启动自动创建 admin 账号
-  const db = getDb();
-  const userCount = (db.prepare('SELECT COUNT(*) AS cnt FROM users').get() as any).cnt;
-  if (userCount === 0) {
-    const hash = await hashPassword('xyy123456');
-    db.prepare("INSERT INTO users (username, name, password_hash, role) VALUES (?,?,?,?)").run('admin', '管理员', hash, 'admin');
-    console.log('======================================================');
-    console.log('首次启动：已自动创建管理员账号');
-    console.log('用户名: admin  初始密码: xyy123456');
-    console.log('请登录后立即修改密码！');
-    console.log('======================================================');
-  }
+  // 只有迁移与完整性检查都成功后才允许初始化管理员和注册 HTTP 服务。
+  await initializeAdmin(getDb());
 
   const app = Fastify({
     logger: false,
+  });
+
+  // 必须在注册任何封装插件或路由前设置，确保所有子上下文继承统一错误包络。
+  app.setErrorHandler((error, _request, reply) => {
+    console.error('服务器错误:', error);
+    reply.code(500).send({ code: 1, msg: '服务器内部错误', data: null });
   });
 
   // 请求日志
@@ -112,17 +109,19 @@ async function bootstrap(): Promise<void> {
   await app.register(staticFiles, { root: UPLOADS_DIR, prefix: '/uploads/', decorateReply: false });
   await app.register(uploadRoutes);
 
-  // 全局错误处理
-  app.setErrorHandler((error, _request, reply) => {
-    console.error('服务器错误:', error);
-    reply.code(500).send({ code: 1, msg: '服务器内部错误', data: null });
-  });
+  return app;
+}
 
+export async function bootstrap(): Promise<void> {
+  const app = await buildApp();
   await app.listen({ port: PORT, host: HOST });
   console.log(`服务已启动: http://localhost:${PORT}`);
 }
 
-bootstrap().catch(err => {
-  console.error('启动失败:', err);
-  process.exit(1);
-});
+const entrypoint = process.argv[1] && path.resolve(process.argv[1]);
+if (entrypoint && fileURLToPath(import.meta.url) === entrypoint) {
+  bootstrap().catch(err => {
+    console.error('启动失败:', err);
+    process.exit(1);
+  });
+}

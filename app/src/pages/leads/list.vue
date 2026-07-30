@@ -105,7 +105,7 @@ const SORT_LIST = [
   { label: '最近跟进', value: 'last_follow' },
   { label: '下次跟进', value: 'next_follow' },
 ];
-const FOLLOW_TYPES = ['电话', '微信', '拜访', '邮件', '其他'];
+const FOLLOW_TYPES = ['电话', '微信', '拜访', '其他'];
 
 const STATUS_COLORS: Record<string, string> = {
   '新线索': '#1a56db',
