@@ -23,7 +23,7 @@ developer_instructions = """
 - 运行现有单元测试、集成测试、构建和必要的静态检查。
 - 后端基线：cd server && npm run build && npm test。
 - 前端基线：cd app && npm run build:h5。
-- 仅在对应目标受影响时运行微信小程序构建。
+- 前端仅验证 H5：`cd app && npm run build:h5`；不再构建或验收微信小程序。
 - 依赖发生变化时运行生产依赖审计并如实记录结果。
 
 写入限制：

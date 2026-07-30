@@ -1,6 +1,8 @@
 # 项目文档索引
 
-当前状态：**阶段一“安全与数据库基线”与阶段二“业务一致性基线”均已代码验收通过，尚未生产部署；生产发布、真实环境核验和备份恢复演练门禁仍有效。** 阶段二 Git 基线冻结报告将存放在 `04-验收交付/PHASE_2_BASELINE_FREEZE_REPORT.md`。通知、普通微信、企业微信、DeepSeek/AI、拜访、日报和周报等后续能力尚未实现，须按已批准设计另行确认和实施。
+当前状态：**阶段一“安全与数据库基线”、阶段二“业务一致性基线”和阶段三“通知基础设施”均已完成本地代码验收，尚未生产部署；生产发布、真实环境核验和备份恢复演练门禁仍有效。** 真实通知渠道、普通微信、企业微信、DeepSeek/AI、拜访、日报和周报等后续能力尚未实现，须按已批准设计另行确认和实施。
+
+前端发布策略现为 **H5-only**：之后不再构建、发布或验收微信小程序。该策略只移除小程序目标，不影响普通微信/企业微信通知规划、业务微信字段或公众号来源。
 
 ## 事实优先级
 
@@ -22,14 +24,17 @@ docs/
 │   ├── TECH_DESIGN.md
 │   ├── DATABASE_CHANGE_PLAN.md
 │   ├── API_CHANGE_PLAN.md
-│   └── DEVELOPMENT_PLAN.md
+│   ├── DEVELOPMENT_PLAN.md
+│   └── H5_ONLY_FRONTEND_DECISION.md
 ├── 02-开发实现/
 │   ├── BASELINE_IMPLEMENTATION_REPORT.md
 │   ├── PHASE_2_BUSINESS_CONSISTENCY_IMPLEMENTATION.md
+│   ├── H5_ONLY_FRONTEND_CLEANUP.md
 │   └── CHANGELOG.md
 ├── 03-测试验证/
 │   ├── TEST_REPORT.md
-│   └── PHASE_2_TEST_REPORT.md
+│   ├── PHASE_2_TEST_REPORT.md
+│   └── H5_ONLY_FRONTEND_TEST_REPORT.md
 ├── 04-验收交付/
 │   ├── ACCEPTANCE_REPORT.md
 │   ├── DEPLOYMENT_NOTES.md
@@ -37,7 +42,8 @@ docs/
 │   ├── PHASE_2_ACCEPTANCE_REPORT.md
 │   ├── PHASE_2_DEPLOYMENT_NOTES.md
 │   ├── PHASE_2_ROLLBACK_PLAN.md
-│   └── PHASE_2_BASELINE_FREEZE_REPORT.md（冻结阶段生成）
+│   ├── PHASE_2_BASELINE_FREEZE_REPORT.md
+│   └── H5_ONLY_FRONTEND_ACCEPTANCE_REPORT.md
 └── 99-其他/
     └── goal-part1.md
 ```
@@ -55,18 +61,22 @@ docs/
 | 审计与设计 | [DATABASE_CHANGE_PLAN.md](01-审计与设计/DATABASE_CHANGE_PLAN.md) | 迁移、数据模型、兼容和回滚设计。 |
 | 审计与设计 | [API_CHANGE_PLAN.md](01-审计与设计/API_CHANGE_PLAN.md) | API 契约、权限与调用方兼容设计。 |
 | 审计与设计 | [DEVELOPMENT_PLAN.md](01-审计与设计/DEVELOPMENT_PLAN.md) | 后续实施阶段、依赖关系和退出条件。 |
+| 审计与设计 | [H5_ONLY_FRONTEND_DECISION.md](01-审计与设计/H5_ONLY_FRONTEND_DECISION.md) | 前端只交付 H5 的当前决策、删除边界和微信语义分类。 |
 | 开发实现 | [BASELINE_IMPLEMENTATION_REPORT.md](02-开发实现/BASELINE_IMPLEMENTATION_REPORT.md) | 阶段一安全与数据库基线的实施范围、迁移 `001`/`002` 和验证证据。 |
 | 开发实现 | [PHASE_2_BUSINESS_CONSISTENCY_IMPLEMENTATION.md](02-开发实现/PHASE_2_BUSINESS_CONSISTENCY_IMPLEMENTATION.md) | 阶段二负责人授权、转移审计、跟进派生时间与迁移 `003` 的实施记录。 |
+| 开发实现 | [H5_ONLY_FRONTEND_CLEANUP.md](02-开发实现/H5_ONLY_FRONTEND_CLEANUP.md) | 小程序构建目标和专属依赖树的清理实施记录。 |
 | 开发实现 | [CHANGELOG.md](02-开发实现/CHANGELOG.md) | 阶段一、阶段二已实现变更与明确未包含范围。 |
 | 测试验证 | [TEST_REPORT.md](03-测试验证/TEST_REPORT.md) | 独立测试、历史发现的修复复测与 28/28 结果。 |
 | 测试验证 | [PHASE_2_TEST_REPORT.md](03-测试验证/PHASE_2_TEST_REPORT.md) | 阶段二独立测试、阻断发现与后续复测记录。 |
+| 测试验证 | [H5_ONLY_FRONTEND_TEST_REPORT.md](03-测试验证/H5_ONLY_FRONTEND_TEST_REPORT.md) | H5-only 构建、依赖、浏览器烟测和业务边界的独立验证。 |
 | 验收交付 | [ACCEPTANCE_REPORT.md](04-验收交付/ACCEPTANCE_REPORT.md) | 阶段一验收结论、残余风险和上线建议。 |
 | 验收交付 | [DEPLOYMENT_NOTES.md](04-验收交付/DEPLOYMENT_NOTES.md) | 生产上线门禁、部署步骤、验证与监控要求。 |
 | 验收交付 | [ROLLBACK_PLAN.md](04-验收交付/ROLLBACK_PLAN.md) | 迁移、应用和配置的回滚准备、触发条件及验证步骤。 |
 | 验收交付 | [PHASE_2_ACCEPTANCE_REPORT.md](04-验收交付/PHASE_2_ACCEPTANCE_REPORT.md) | 阶段二验收结论、最小验收修复与残余风险。 |
 | 验收交付 | [PHASE_2_DEPLOYMENT_NOTES.md](04-验收交付/PHASE_2_DEPLOYMENT_NOTES.md) | 阶段二上线前副本迁移、验证及监控要求。 |
 | 验收交付 | [PHASE_2_ROLLBACK_PLAN.md](04-验收交付/PHASE_2_ROLLBACK_PLAN.md) | 阶段二迁移、应用与数据异常的回滚准备。 |
-| 验收交付 | `PHASE_2_BASELINE_FREEZE_REPORT.md`（冻结阶段生成） | 记录冻结分支、提交 SHA、剩余差异和后续开发起点。 |
+| 验收交付 | [PHASE_2_BASELINE_FREEZE_REPORT.md](04-验收交付/PHASE_2_BASELINE_FREEZE_REPORT.md) | 记录冻结分支、提交 SHA、剩余差异和后续开发起点。 |
+| 验收交付 | [H5_ONLY_FRONTEND_ACCEPTANCE_REPORT.md](04-验收交付/H5_ONLY_FRONTEND_ACCEPTANCE_REPORT.md) | H5-only 最终验收、关键词分类、依赖风险和发布建议。 |
 | 其他 | [goal-part1.md](99-其他/goal-part1.md) | 阶段一原始目标与过程记录。 |
 
 根目录的 [AGENTS.md](../AGENTS.md) 是整个仓库的代理与工程工作流约束，保留在根目录以便自动发现。

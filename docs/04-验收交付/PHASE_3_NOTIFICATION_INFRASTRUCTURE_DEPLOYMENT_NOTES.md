@@ -1,5 +1,7 @@
 # 阶段三通知基础设施部署说明
 
+> H5-only 决策：后续仅构建和部署 H5，不再构建、发布或验收微信小程序。以下历史小程序措辞应按此策略理解；普通微信/企业微信通知规划不受影响。
+
 ## 1. 上线前门禁
 
 1. 使用本阶段已验收本地提交构建，不混入其他分支或工作区文件。
@@ -28,7 +30,7 @@ VITE_LEAD_POOL_CLAIM_ENABLED=false
 2. 以全部通知开关关闭部署 API，确认迁移 `004` 成功。
 3. 用 admin 和 member 分别验证两个公海接口均为 403、`LEAD_POOL_CLAIM_DISABLED`；未认证仍为 401。
 4. 验证 `GET /api/leads`、详情、搜索、筛选、收藏、单条和批量负责人转移。
-5. 部署以 `VITE_LEAD_POOL_CLAIM_ENABLED=false` 构建的 H5/小程序，验证线索池只显示“全部线索”。
+5. 部署以 `VITE_LEAD_POOL_CLAIM_ENABLED=false` 构建的 H5，验证线索池只显示“全部线索”。
 6. 将实现提交 `0f0c4a261fe66d54d6557dea88f2ce0422a73800` 的后端制品和关闭配置记为“公海关闭最低安全回滚基线”。
 7. 保持生产捕获、Worker、Mock、Scheduler 和规则关闭。
 8. 仅在非生产试运行环境开启 `NOTIFICATION_CAPTURE_ENABLED=true`，规则仍关闭，验证合格变更写入 `suppressed/rule_disabled`。

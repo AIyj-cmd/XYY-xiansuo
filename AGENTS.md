@@ -130,12 +130,5 @@ cd app
 npm run build:h5
 ```
 
-仅当微信小程序目标受影响时：
-
-```bash
-cd app
-npm run build:mp-weixin
-```
-
 依赖发生变化时，运行适用的生产依赖审计。无法运行的验证必须说明原因，
 不能写成通过。

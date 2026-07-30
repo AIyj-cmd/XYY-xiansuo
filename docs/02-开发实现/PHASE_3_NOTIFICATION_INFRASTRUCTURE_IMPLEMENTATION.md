@@ -1,5 +1,7 @@
 # 阶段三通知基础设施开发实现
 
+> H5-only 后续决策说明：本文中的微信小程序构建结论是决策前历史事实；之后不再构建、发布或验收小程序。
+
 实施基线：`9a8fe40c900c927ac5b722613666d85e93f08af0`（`feature/phase3-notification-infrastructure`）。
 
 ## 已实现内容
