@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { cleanupAiRetention, claimAiLog, createOrGetAiLog, saveAiReady } from '../src/ai/audit-store.js';
+import { addProviderLatency, cleanupAiRetention, claimAiLog, createOrGetAiLog, saveAiReady } from '../src/ai/audit-store.js';
 import { buildLeadContext } from '../src/ai/context-builder.js';
 import { generateScheduled } from '../src/ai/service.js';
 import { DeepSeekProvider } from '../src/ai/providers/deepseek-provider.js';
@@ -168,11 +168,12 @@ test('验收回归：outbox关联原子完成且创建前负责人变化会取�
     const now = '2026-01-02 08:30:00';
     const log = createOrGetAiLog(db, { job: 'scheduled_follow_overdue', recipientUserId: 1, role: 'member', scope: 'self', businessDate: '2026-01-02', now, retentionDays: 90 });
     const claimed = claimAiLog(db, log.id, 'test', now)!;
+    assert.equal(addProviderLatency(db, claimed.id, 321, now), true);
     const snapshot = { schema_version: 1, title: '提醒', summary: '请处理', items: [{ item_ref: 'L1', reason: '已到期', suggested_focus: '确认进展' }], closing: '以实际为准', subject_lead_ids: [1], business_date: '2026-01-02', fallback_used: true, detail_path: '/pages/notify/index' };
     assert.equal(saveAiReady(db, claimed, snapshot, { inputChars: 10, outputChars: 20, fallbackUsed: true, attempts: 0 }, now, 7), true);
     finalizeAiNotification(db, log, { eventType: 'scheduled_follow_overdue', operationId: `ai:${log.idempotency_key}`, recipientUserId: 1, businessDate: '2026-01-02', scope: 'self', subjectLeadIds: [1], messageSnapshot: snapshot, occurredAt: now }, now);
-    const completed = db.prepare('SELECT status,result_snapshot_json,notification_log_id FROM ai_request_logs WHERE id=?').get(log.id) as any;
-    assert.equal(completed.status, 'completed'); assert.equal(completed.result_snapshot_json, null); assert.ok(completed.notification_log_id);
+    const completed = db.prepare('SELECT status,result_snapshot_json,notification_log_id,latency_ms FROM ai_request_logs WHERE id=?').get(log.id) as any;
+    assert.equal(completed.status, 'completed'); assert.equal(completed.result_snapshot_json, null); assert.ok(completed.notification_log_id); assert.equal(completed.latency_ms, 321);
 
     const stale = createOrGetAiLog(db, { job: 'scheduled_follow_overdue', recipientUserId: 1, role: 'member', scope: 'self', businessDate: '2026-01-03', now, retentionDays: 90 });
     const staleClaim = claimAiLog(db, stale.id, 'test', now)!;

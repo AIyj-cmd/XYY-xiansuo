@@ -472,6 +472,23 @@ CREATE INDEX IF NOT EXISTS idx_ai_request_retention ON ai_request_logs(retain_un
       if (result.changes !== 2) throw new Error('阶段四通知规则初始化不完整，拒绝部分提交');
     },
   },
+  {
+    version: '006',
+    description: 'add provider latency audit to ai request logs',
+    checksum: 'b6b27bc98f6620ffa4bbfd829d6f248e0c726277e8f4d94d2be10bff6603026a',
+    up(database) {
+      const columns = database.prepare("PRAGMA table_info('ai_request_logs')").all() as Array<{ name: string }>;
+      if (columns.some((column) => column.name === 'latency_ms')) {
+        const table = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_request_logs'").get() as { sql: string } | undefined;
+        if (!table?.sql.includes('latency_ms INTEGER') || !table.sql.includes("typeof(latency_ms) = 'integer'")) {
+          throw new Error('迁移006恢复状态不完整，拒绝将未知结构标记为已迁移');
+        }
+        return;
+      }
+      database.exec(`ALTER TABLE ai_request_logs ADD COLUMN latency_ms INTEGER
+        CHECK (latency_ms IS NULL OR (typeof(latency_ms) = 'integer' AND latency_ms >= 0));`);
+    },
+  },
 ];
 
 function checkDatabase(database: DatabaseSync): void {

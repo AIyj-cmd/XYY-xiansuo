@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AiConfig } from '../../config.js';
 import type { AiProvider } from '../../ai/providers/provider.js';
 import { buildLeadContext } from '../../ai/context-builder.js';
-import { cancelAiLog, claimAiLog, createOrGetAiLog, failAiLog, reserveProviderAttempt, saveAiReady, skipAiLog } from '../../ai/audit-store.js';
+import { addProviderLatency, cancelAiLog, claimAiLog, createOrGetAiLog, failAiLog, reserveProviderAttempt, saveAiReady, skipAiLog } from '../../ai/audit-store.js';
 import { generateDaily } from '../../ai/service.js';
 import { dailyHighlights, dailyMetrics, getActiveRecipient, validateDigestContext, type AiRecipient } from '../../ai/permission-query.js';
 import { dailyFallback } from '../../ai/fallback.js';
@@ -28,7 +28,7 @@ export async function runDailyReport(db: DatabaseSync, config: AiConfig, provide
   db.prepare(`UPDATE ai_request_logs SET context_hash=?,candidate_count=?,input_chars=?,updated_at=? WHERE id=?`).run(built.hash, leads.length, built.chars, now, log.id);
   const claimed = claimAiLog(db, log.id, 'ai-scheduler', now); if (!claimed) return;
   const ruleEnabled = Boolean((db.prepare("SELECT enabled FROM notification_rules WHERE event_type='daily_report'").get() as { enabled: number } | undefined)?.enabled);
-  let generated: any; try { generated = ruleEnabled ? await generateDaily(config, provider, claimed.request_id, { business_date: businessDate, metrics, context: built.context }, metrics, () => reserveProviderAttempt(db, claimed.id, recipient.id, businessDate, config.dailyGlobalLimit, config.dailyUserLimit, now)) : { value: dailyFallback(metrics), fallback: true, attempts: 0, errorCode: 'AI_FALLBACK_USED' }; } catch (error: any) { if (error?.code === 'DEEPSEEK_DISABLED') skipAiLog(db, claimed.id, 'DEEPSEEK_DISABLED', now); else failAiLog(db, claimed.id, error?.code || 'AI_INTERNAL_ERROR', now); return; }
+  let generated: any; try { generated = ruleEnabled ? await generateDaily(config, provider, claimed.request_id, { business_date: businessDate, metrics, context: built.context }, metrics, () => reserveProviderAttempt(db, claimed.id, recipient.id, businessDate, config.dailyGlobalLimit, config.dailyUserLimit, now), (latencyMs) => { addProviderLatency(db, claimed.id, latencyMs, now); }) : { value: dailyFallback(metrics), fallback: true, attempts: 0, errorCode: 'AI_FALLBACK_USED' }; } catch (error: any) { if (error?.code === 'DEEPSEEK_DISABLED') skipAiLog(db, claimed.id, 'DEEPSEEK_DISABLED', now); else failAiLog(db, claimed.id, error?.code || 'AI_INTERNAL_ERROR', now); return; }
   const snapshot = { schema_version: 1 as const, ...generated.value, metrics, subject_lead_ids: built.items.map((item) => item.lead_id), business_date: businessDate, scope, fallback_used: generated.fallback, detail_path: '/pages/notify/index' as const };
   if (!saveAiReady(db, claimed, snapshot, { provider: generated.provider, model: generated.model, inputChars: built.chars, outputChars: JSON.stringify(snapshot).length, fallbackUsed: generated.fallback, attempts: generated.attempts, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, errorCode: generated.errorCode }, now, config.resultRetentionDays)) return;
   finalizeAiNotification(db, log, { eventType: 'daily_report', operationId: `ai:${log.idempotency_key}`, recipientUserId: recipient.id, businessDate, scope, subjectLeadIds: snapshot.subject_lead_ids, messageSnapshot: snapshot, occurredAt: now }, now);

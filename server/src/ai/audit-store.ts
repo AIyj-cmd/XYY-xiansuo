@@ -43,6 +43,13 @@ export function reserveProviderAttempt(db: DatabaseSync, logId: number, recipien
     db.exec('COMMIT;'); return changed;
   } catch (error) { db.exec('ROLLBACK;'); throw error; }
 }
+/** Persist every completed outbound Provider attempt without replacing prior attempts. */
+export function addProviderLatency(db: DatabaseSync, logId: number, latencyMs: number, now: string): boolean {
+  if (!Number.isSafeInteger(latencyMs) || latencyMs < 0) throw new Error('provider latency must be a non-negative integer');
+  return db.prepare(`UPDATE ai_request_logs
+    SET latency_ms=CASE WHEN latency_ms IS NULL THEN ? ELSE latency_ms+? END, updated_at=?
+    WHERE id=? AND status='generating'`).run(latencyMs, latencyMs, now, logId).changes === 1;
+}
 export function cleanupAiRetention(db: DatabaseSync, now: string, limit = 100): number {
   db.exec('BEGIN IMMEDIATE;');
   try {

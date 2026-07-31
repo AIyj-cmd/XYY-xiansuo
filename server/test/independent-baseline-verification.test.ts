@@ -109,7 +109,9 @@ test('管理员初始化在生产空库缺密码时阻断启动，开发随机�
   process.env.NODE_ENV = 'test';
   const database = new DatabaseSync(':memory:');
   configureConnection(database);
-  runMigrations(database);
+  // Exercise the frozen 005 recovery contract before applying 006; a current
+  // database with an erased migration ledger must not reinterpret 006 as 005.
+  runMigrations(database, MIGRATIONS.slice(0, 5));
   const logs: string[] = [];
   assert.equal(await initializeAdmin(database, { log: (message: string) => logs.push(message) }), true);
   const passwordLine = logs.find((message) => message.startsWith('用户名: '));
@@ -131,14 +133,17 @@ test('管理员初始化在生产空库缺密码时阻断启动，开发随机�
 test('迁移兼容当前无记录库、遗留约束、外键、索引和事务回滚', { concurrency: false }, () => {
   const database = new DatabaseSync(path.join(testDirectory, 'migration-proof.db'));
   configureConnection(database);
-  runMigrations(database);
+  // 005 is frozen. Verify its ledger-loss recovery against its own schema,
+  // then apply the forward-only 006 audit extension normally.
+  runMigrations(database, MIGRATIONS.slice(0, 5));
   database.prepare("INSERT INTO users (username, name, password_hash, role) VALUES ('keep-user', '保留用户', 'hash', 'admin')").run();
   database.prepare("INSERT INTO leads (contact_name, source, status, owner_id, lead_date, created_by) VALUES ('保留客户', '官网', '跟进中', 1, '2026-01-01', 1)").run();
   database.exec('DROP TABLE schema_migrations;');
+  runMigrations(database, MIGRATIONS.slice(0, 5));
   runMigrations(database);
   assert.equal((database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }).count, 1);
   assert.equal((database.prepare('SELECT COUNT(*) AS count FROM leads').get() as { count: number }).count, 1);
-  assert.deepEqual((database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>).map((row) => row.version), ['001', '002', '003', '004', '005']);
+  assert.deepEqual((database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>).map((row) => row.version), ['001', '002', '003', '004', '005', '006']);
   const tables = new Set((database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name));
   assert.ok(tables.has('memos'));
   assert.ok(tables.has('favorites'));
