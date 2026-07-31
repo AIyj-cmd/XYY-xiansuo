@@ -143,6 +143,8 @@ export function captureOwnerChanged(database: DatabaseSync, event: OwnerChangedE
 }
 
 export type ClaimedTask = Record<string, any>;
+/** Shared with the pilot precheck so its point-in-time decision matches Worker claim/recovery behavior. */
+export const CLAIMABLE_NOTIFICATION_WHERE = `((status IN ('pending','retry_wait') AND available_at <= ?) OR (status='sending' AND lease_until <= ? AND expires_at > ?)) AND expires_at > ?`;
 export function maintainNotificationQueue(database: DatabaseSync, now: string, limit = 100): number {
   database.exec('BEGIN IMMEDIATE;');
   try {
@@ -158,9 +160,7 @@ export function claimNotificationTasks(database: DatabaseSync, workerId: string,
   maintainNotificationQueue(database, now);
   database.exec('BEGIN IMMEDIATE;');
   try {
-    const candidates = database.prepare(`SELECT id FROM notification_logs WHERE
-      ((status IN ('pending','retry_wait') AND available_at <= ?) OR (status='sending' AND lease_until <= ? AND expires_at > ?))
-      AND expires_at > ? ORDER BY available_at, id LIMIT ?`).all(now, now, now, now, limit) as Array<{ id: number }>;
+    const candidates = database.prepare(`SELECT id FROM notification_logs WHERE ${CLAIMABLE_NOTIFICATION_WHERE} ORDER BY available_at, id LIMIT ?`).all(now, now, now, now, limit) as Array<{ id: number }>;
     const claimed: ClaimedTask[] = [];
     for (const row of candidates) {
       const token = randomUUID(); const leaseUntil = isoPlusMinutes(now, 1);

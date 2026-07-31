@@ -6,9 +6,9 @@ export type AiLog = Record<string, any>;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 export function aiIdempotencyKey(job: AiFeature, userId: number, businessDate: string, scope: 'self' | 'team'): string { return hash(`v1|job_type=${job}|recipient_user_id=${userId}|business_date=${businessDate}|scope=${scope}`); }
 const dateAfter = (now: string, days: number) => new Date(new Date(`${now.replace(' ', 'T')}+08:00`).getTime() + days * 86_400_000).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace('T', ' ');
-export function createOrGetAiLog(db: DatabaseSync, input: { job: AiFeature; recipientUserId: number; role: 'admin' | 'member'; scope: 'self' | 'team'; businessDate: string; now: string; retentionDays: number }): AiLog {
+export function createOrGetAiLog(db: DatabaseSync, input: { job: AiFeature; recipientUserId: number; role: 'admin' | 'member'; scope: 'self' | 'team'; businessDate: string; now: string; retentionDays: number; promptVersion?: string }): AiLog {
   const key = aiIdempotencyKey(input.job, input.recipientUserId, input.businessDate, input.scope);
-  db.prepare(`INSERT OR IGNORE INTO ai_request_logs(request_id,idempotency_key,job_type,recipient_user_id,recipient_role_snapshot,scope,business_date,prompt_version,status,available_at,retain_until) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), key, input.job, input.recipientUserId, input.role, input.scope, input.businessDate, 'phase4-v1', 'pending', input.now, dateAfter(input.now, input.retentionDays));
+  db.prepare(`INSERT OR IGNORE INTO ai_request_logs(request_id,idempotency_key,job_type,recipient_user_id,recipient_role_snapshot,scope,business_date,prompt_version,status,available_at,retain_until) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(), key, input.job, input.recipientUserId, input.role, input.scope, input.businessDate, input.promptVersion ?? 'phase4-v1', 'pending', input.now, dateAfter(input.now, input.retentionDays));
   return db.prepare('SELECT * FROM ai_request_logs WHERE idempotency_key=?').get(key) as AiLog;
 }
 export function claimAiLog(db: DatabaseSync, logId: number, owner: string, now: string): AiLog | undefined {

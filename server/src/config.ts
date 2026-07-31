@@ -67,12 +67,13 @@ export function resolveNotificationConfig(env: NodeJS.ProcessEnv = process.env):
 
 export type AiConfig = {
   deepseekEnabled: boolean; apiKey?: string; baseUrl?: string; model?: string;
-  requestTimeoutMs: number; maxContextChars: number; maxFollowUpRecords: number; maxConcurrency: number;
+  requestTimeoutMs: number; maxOutputTokens: number; maxContextChars: number; maxFollowUpRecords: number; maxConcurrency: number;
   dailyGlobalLimit: number; dailyUserLimit: number; auditRetentionDays: number; resultRetentionDays: number;
   fallbackEnabled: boolean; timezone: 'Asia/Shanghai'; scheduledFollowEnabled: boolean;
   scheduledFollowTime: string; dailyReportEnabled: boolean; dailyReportTime: string;
   weeklyReportEnabled: boolean; scanRecipientLimit: number; scanDeadlineMs: number; pilotUserIds: number[];
 };
+export type AiDryRunConfig = { maxContextChars: number; maxFollowUpRecords: number };
 
 function strictInteger(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number): number {
   const raw = env[name]; if (raw === undefined) return fallback;
@@ -103,12 +104,21 @@ function strictPilotUsers(value: string | undefined): number[] {
   return [...ids].sort((a, b) => a - b);
 }
 
+/** Dry-run never parses Provider credentials or Provider-only output limits. */
+export function resolveAiDryRunConfig(env: NodeJS.ProcessEnv = process.env): AiDryRunConfig {
+  return {
+    maxContextChars: strictInteger(env, 'AI_MAX_CONTEXT_CHARS', 12_000, 1, 12_000),
+    maxFollowUpRecords: strictInteger(env, 'AI_MAX_FOLLOW_UP_RECORDS', 3, 1, 3),
+  };
+}
+
 /** AI 配置仅由独立 Scheduler 解析；API 与通知 Worker 不会读取 DeepSeek 密钥。 */
 export function resolveAiConfig(env: NodeJS.ProcessEnv = process.env): AiConfig {
   const deepseekEnabled = strictAiBoolean(env, 'DEEPSEEK_ENABLED', false);
   const config: AiConfig = {
     deepseekEnabled,
     requestTimeoutMs: strictInteger(env, 'AI_REQUEST_TIMEOUT_MS', 20_000, 1000, 120_000),
+    maxOutputTokens: strictInteger(env, 'AI_MAX_OUTPUT_TOKENS', 2048, 256, 4096),
     maxContextChars: strictInteger(env, 'AI_MAX_CONTEXT_CHARS', 12_000, 1, 12_000),
     maxFollowUpRecords: strictInteger(env, 'AI_MAX_FOLLOW_UP_RECORDS', 3, 1, 3),
     maxConcurrency: strictInteger(env, 'AI_MAX_CONCURRENCY', 2, 1, 2),

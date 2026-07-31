@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB_PATH = path.join(__dirname, '..', 'data', 'app.db');
@@ -57,6 +57,20 @@ export function configureConnection(database: DatabaseSync): void {
   database.exec('PRAGMA foreign_keys = ON;');
   database.exec('PRAGMA busy_timeout = 5000;');
   scalarPragma(database, 'foreign_keys');
+}
+
+/**
+ * Opens an existing SQLite database with SQLite's read-only flag.  This is
+ * deliberately separate from configureConnection(): diagnostic CLIs must not
+ * run migrations, set WAL mode, create a parent directory, or alter metadata.
+ */
+export function openReadOnlyDatabase(databasePath = getDatabasePath()): DatabaseSync {
+  const walPath = `${databasePath}-wal`;
+  // immutable=1 stops SQLite from creating -wal/-shm sidecars.  A non-empty
+  // WAL means the main file is not a stable replica, so refusing it is safer
+  // than silently inspecting a stale image.
+  if (existsSync(walPath) && statSync(walPath).size > 0) throw new Error('只读联调检查要求稳定数据库副本；检测到未合并 WAL，拒绝运行');
+  return new DatabaseSync(`${pathToFileURL(databasePath).href}?mode=ro&immutable=1`, { readOnly: true, enableForeignKeyConstraints: true });
 }
 
 export function getDb(): DatabaseSync {

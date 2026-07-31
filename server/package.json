@@ -15,6 +15,7 @@
     "start:ai-scheduler": "tsx src/ai-scheduler.ts",
     "start:ai-scheduler:prod": "node dist/ai-scheduler.js",
     "ai:dry-run": "tsx src/cli/ai-dry-run.ts",
+    "pilot:queue-check": "tsx src/cli/pilot-queue-check.ts",
     "build": "tsc",
     "test": "tsx --test test/*.test.ts",
     "seed": "tsx ../scripts/seed.ts"

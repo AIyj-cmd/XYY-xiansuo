@@ -9,9 +9,10 @@ import { scheduledFallback } from '../../ai/fallback.js';
 import { resolveNotificationConfig } from '../../config.js';
 import { scheduledSnapshotSchema } from '../../notifications/snapshot.js';
 import { finalizeAiNotification } from '../finalize-notification.js';
+import { promptVersion } from '../../ai/prompt.js';
 export async function runScheduledFollow(db: DatabaseSync, config: AiConfig, provider: AiProvider | undefined, recipientInput: AiRecipient, businessDate: string, now: string): Promise<void> {
   const recipient = getActiveRecipient(db, recipientInput.id); if (!recipient) return;
-  const scope = 'self' as const; const log = createOrGetAiLog(db, { job: 'scheduled_follow_overdue', recipientUserId: recipient.id, role: recipient.role, scope, businessDate, now, retentionDays: config.auditRetentionDays });
+  const scope = 'self' as const; const log = createOrGetAiLog(db, { job: 'scheduled_follow_overdue', recipientUserId: recipient.id, role: recipient.role, scope, businessDate, now, retentionDays: config.auditRetentionDays, promptVersion: promptVersion('scheduled_follow_overdue') });
   if (log.status === 'completed' || log.status === 'skipped' || log.status === 'cancelled') return;
   if (log.status === 'ready' && log.result_snapshot_json) {
     const snapshot = scheduledSnapshotSchema.parse(JSON.parse(log.result_snapshot_json));

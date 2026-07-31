@@ -9,9 +9,10 @@ import { dailyFallback } from '../../ai/fallback.js';
 import { resolveNotificationConfig } from '../../config.js';
 import { dailySnapshotSchema } from '../../notifications/snapshot.js';
 import { finalizeAiNotification } from '../finalize-notification.js';
+import { promptVersion } from '../../ai/prompt.js';
 export async function runDailyReport(db: DatabaseSync, config: AiConfig, provider: AiProvider | undefined, recipientInput: AiRecipient, businessDate: string, now: string): Promise<void> {
   const recipient = getActiveRecipient(db, recipientInput.id); if (!recipient) return; const scope = recipient.role === 'admin' ? 'team' : 'self';
-  const log = createOrGetAiLog(db, { job: 'daily_report', recipientUserId: recipient.id, role: recipient.role, scope, businessDate, now, retentionDays: config.auditRetentionDays }); if (log.status === 'completed' || log.status === 'skipped' || log.status === 'cancelled') return;
+  const log = createOrGetAiLog(db, { job: 'daily_report', recipientUserId: recipient.id, role: recipient.role, scope, businessDate, now, retentionDays: config.auditRetentionDays, promptVersion: promptVersion('daily_report') }); if (log.status === 'completed' || log.status === 'skipped' || log.status === 'cancelled') return;
   if (log.status === 'ready' && log.result_snapshot_json) {
     const snapshot = dailySnapshotSchema.parse(JSON.parse(log.result_snapshot_json));
     finalizeAiNotification(db, log, { eventType: 'daily_report', operationId: `ai:${log.idempotency_key}`, recipientUserId: recipient.id, businessDate, scope, subjectLeadIds: snapshot.subject_lead_ids, messageSnapshot: snapshot, occurredAt: now }, now);

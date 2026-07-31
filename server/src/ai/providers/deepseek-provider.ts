@@ -30,18 +30,24 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
 }
 
 export class DeepSeekProvider implements AiProvider {
-  constructor(private readonly config: { apiKey: string; baseUrl: string; model: string }, private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(private readonly config: { apiKey: string; baseUrl: string; model: string; maxOutputTokens?: number }, private readonly fetchImpl: typeof fetch = fetch) {}
   async generateStructured<T>(options: any): Promise<AiProviderResult<T>> {
     const started = Date.now(); const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
     const abort = () => controller.abort(); options.signal.addEventListener('abort', abort, { once: true });
     if (options.signal.aborted) controller.abort();
     try {
       if (controller.signal.aborted) throw Object.assign(new Error('cancelled'), { code: 'AI_REQUEST_CANCELLED' });
-      const response = await this.fetchImpl(`${this.config.baseUrl}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${this.config.apiKey}` }, signal: controller.signal, body: JSON.stringify({ model: this.config.model, stream: false, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: options.systemPrompt }, { role: 'user', content: buildPromptContext(options.context) }] }) });
+      const response = await this.fetchImpl(`${this.config.baseUrl}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${this.config.apiKey}` }, signal: controller.signal, body: JSON.stringify({ model: this.config.model, stream: false, response_format: { type: 'json_object' }, thinking: { type: 'disabled' }, max_tokens: this.config.maxOutputTokens ?? 2048, messages: [{ role: 'system', content: options.systemPrompt }, { role: 'user', content: buildPromptContext(options.context) }] }) });
       if (!response.ok) { const code = response.status === 429 ? 'AI_PROVIDER_RATE_LIMITED' : response.status >= 500 ? 'AI_PROVIDER_UNAVAILABLE' : response.status === 401 || response.status === 402 || response.status === 403 ? 'AI_PROVIDER_AUTH_FAILED' : 'AI_RESPONSE_INVALID'; throw Object.assign(new Error(code), { code, retryable: response.status === 429 || response.status === 500 || response.status === 503 }); }
       const raw = await readBoundedBody(response, 32_768);
       let parsed: any; try { parsed = JSON.parse(raw); } catch { throw Object.assign(new Error('response not json'), { code: 'AI_RESPONSE_INVALID' }); }
-      const content = parsed?.choices?.[0]?.message?.content; if (typeof content !== 'string' || !content.trim()) throw Object.assign(new Error('empty content'), { code: 'AI_RESPONSE_INVALID' });
+      const choice = parsed?.choices?.[0];
+      if (!choice || !choice.message) throw Object.assign(new Error('invalid response'), { code: 'AI_RESPONSE_INVALID' });
+      if (['length', 'content_filter', 'insufficient_system_resource'].includes(choice.finish_reason)) throw Object.assign(new Error('unfinished output'), { code: 'AI_OUTPUT_REJECTED' });
+      if (choice.message.tool_calls || choice.message.function_call) throw Object.assign(new Error('tool call rejected'), { code: 'AI_OUTPUT_REJECTED' });
+      const content = choice.message.content;
+      if (typeof content !== 'string' || !content.trim()) throw Object.assign(new Error('empty content'), { code: 'AI_RESPONSE_INVALID' });
+      if (/^\s*```/.test(content)) throw Object.assign(new Error('markdown output'), { code: 'AI_OUTPUT_REJECTED' });
       let data: T; try { data = options.outputSchema.parse(JSON.parse(content)); assertSafeAiOutput(data); } catch { throw Object.assign(new Error('invalid output'), { code: 'AI_OUTPUT_REJECTED' }); }
       const inputTokens = Number.isSafeInteger(parsed?.usage?.prompt_tokens) && parsed.usage.prompt_tokens >= 0 ? parsed.usage.prompt_tokens : undefined;
       const outputTokens = Number.isSafeInteger(parsed?.usage?.completion_tokens) && parsed.usage.completion_tokens >= 0 ? parsed.usage.completion_tokens : undefined;

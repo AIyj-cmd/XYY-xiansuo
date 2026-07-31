@@ -12,7 +12,7 @@ export async function runAiSchedulerOnce(db: DatabaseSync, config: AiConfig, now
   cleanupAiRetention(db, now);
   const date = options.businessDate || shanghaiBusinessDate();
   const recipients = listPilotRecipients(db, config.pilotUserIds, config.scanRecipientLimit);
-  const resolved = provider || (config.deepseekEnabled ? new DeepSeekProvider({ apiKey: config.apiKey!, baseUrl: config.baseUrl!, model: config.model! }) : undefined);
+  const resolved = provider || (config.deepseekEnabled ? new DeepSeekProvider({ apiKey: config.apiKey!, baseUrl: config.baseUrl!, model: config.model!, maxOutputTokens: config.maxOutputTokens }) : undefined);
   const deadline = Date.now() + config.scanDeadlineMs;
   const scheduledFollow = options.scheduledFollow ?? config.scheduledFollowEnabled;
   const dailyReport = options.dailyReport ?? config.dailyReportEnabled;

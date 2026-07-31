@@ -68,6 +68,21 @@ export function dailyHighlights(db: DatabaseSync, recipient: AiRecipient, busine
     asOf, asOf, end, end, nextEnd,
   ) as AiLead[];
 }
+/** Count uses the same eligibility predicates as dailyHighlights, before its ten-item display cap. */
+export function dailyHighlightTotal(db: DatabaseSync, recipient: AiRecipient, businessDate: string, asOf = `${businessDate} 18:00:00`): number {
+  const scope = scopeClause(recipient);
+  const tomorrow = new Date(new Date(`${businessDate}T00:00:00+08:00`).getTime() + 86_400_000).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  const dayAfter = new Date(new Date(`${businessDate}T00:00:00+08:00`).getTime() + 2 * 86_400_000).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  const end = `${tomorrow} 00:00:00`; const nextEnd = `${dayAfter} 00:00:00`;
+  return (db.prepare(`SELECT COUNT(*) AS count FROM leads l
+    WHERE ${scope.sql} AND l.status NOT IN ('已成交','已流失','停止跟进')
+      AND ((l.next_follow_at IS NOT NULL AND datetime(l.next_follow_at)<datetime(?))
+        OR (l.next_follow_at IS NOT NULL AND datetime(l.next_follow_at)>=datetime(?) AND datetime(l.next_follow_at)<datetime(?))
+        OR l.intent_level='高'
+        OR (l.next_follow_at IS NOT NULL AND datetime(l.next_follow_at)>=datetime(?) AND datetime(l.next_follow_at)<datetime(?)))`).get(
+    ...scope.values, asOf, asOf, end, end, nextEnd,
+  ) as { count: number }).count;
+}
 export function validateDigestContext(db: DatabaseSync, eventType: string, recipientId: number, leadIds: number[]): boolean {
   const recipient = getActiveRecipient(db, recipientId); if (!recipient) return false;
   if (eventType === 'daily_report' && recipient.role === 'admin') return true;
