@@ -1,5 +1,13 @@
 # 变更日志
 
+## Unreleased — 阶段五A：iLink 隔离 PoC Gateway（2026-07-31）
+
+- 新增独立 `poc/ilink-gateway` TypeScript 工程：回环监听、严格最小投递契约、HMAC/nonce 防重放、固定单测试接收人、独立 SQLite 幂等 state、Fake Adapter 和默认关闭的 iLink Adapter。
+- 后续独立测试修复：配置只投影已知 `ILINK_*` 键；live Adapter 精确对齐官方 `ilink/bot/sendmessage`、`base_info` 和版本头；会话仅限 state 内 0600 的严格本地 PoC 抽象；健康状态持久化，重复/超时状态分类一致。
+- 最终验收修复：畸形 `session.json` 统一收敛为安全错误码 `ILINK_SESSION_INVALID`，避免解析器异常文本进入渠道错误码或健康状态。
+- Gateway 不导入业务数据库、通知 Worker、DeepSeek 或 H5；没有迁移007、真实登录、二维码、扫码、消息发送或外部网络调用。
+- iLink Adapter 仅按官方 `sendmessage` 公开字段预留受控边界；公开资料尚未证明主动定时通知、最终回执和重启会话契约，仍须后续专用账号实况 PoC 验证。
+
 ## Unreleased — 阶段四点五：Provider 延迟审计修复（2026-07-31）
 
 - 新增迁移 `006`（`b6b27bc98f6620ffa4bbfd829d6f248e0c726277e8f4d94d2be10bff6603026a`）：为 `ai_request_logs` 追加 nullable、非负整数约束的 `latency_ms`；迁移 `001` 至 `005` 未修改。
