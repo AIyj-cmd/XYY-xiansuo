@@ -1,0 +1,72 @@
+import { z } from 'zod'
+
+export const deliveryRequestSchema = z.object({
+  deliveryId: z.string().uuid(),
+  idempotencyKey: z.string().min(16).max(200),
+  recipientExternalId: z.string().min(1).max(256),
+  message: z.object({
+    title: z.string().min(1).max(40),
+    body: z.string().max(500).optional(),
+    detailUrl: z.string().url().max(500).optional()
+  }).strict()
+}).strict()
+
+export type ChannelDeliveryRequest = z.infer<typeof deliveryRequestSchema>
+
+export const deliveryStatusSchema = z.enum([
+  'sent', 'deduplicated', 'retryable_failure', 'permanent_failure', 'result_unknown'
+])
+export type DeliveryStatus = z.infer<typeof deliveryStatusSchema>
+
+export type ChannelDeliveryResult = {
+  providerMessageId?: string
+  status: DeliveryStatus
+  errorCode?: string
+  latencyMs?: number
+}
+
+export type GatewayHealthStatus = 'healthy' | 'degraded' | 'offline' | 'login_required' | 'restricted' | 'unsupported'
+
+export type AdapterHealth = { status: GatewayHealthStatus; code?: string }
+
+export interface ChannelAdapter {
+  readonly name: 'fake' | 'ilink'
+  send(request: Pick<ChannelDeliveryRequest, 'recipientExternalId' | 'message' | 'idempotencyKey'>, signal: AbortSignal): Promise<ChannelDeliveryResult>
+  health(): Promise<AdapterHealth>
+}
+
+export type ErrorDisposition = {
+  retryable: boolean
+  mayDuplicate: boolean
+  level: 'warn' | 'error'
+  requiresHuman: boolean
+}
+
+export const ERROR_DISPOSITIONS: Record<string, ErrorDisposition> = {
+  ILINK_CHANNEL_DISABLED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_LIVE_DISABLED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
+  ILINK_GATEWAY_OFFLINE: { retryable: true, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_SESSION_MISSING: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
+  ILINK_SESSION_INVALID: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
+  ILINK_SESSION_PERMISSION_INVALID: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
+  ILINK_SESSION_PATH_INVALID: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
+  ILINK_SESSION_EXPIRED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
+  ILINK_LOGIN_REQUIRED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
+  ILINK_ACCOUNT_RESTRICTED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
+  ILINK_RECIPIENT_NOT_CONFIGURED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
+  ILINK_RECIPIENT_MISMATCH: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_SYNTHETIC_MESSAGE_REQUIRED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_MESSAGE_POLICY_REJECTED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_DETAIL_URL_FORBIDDEN: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_IDEMPOTENCY_CONFLICT: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
+  ILINK_MESSAGE_TOO_LONG: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_SEND_TIMEOUT: { retryable: true, mayDuplicate: true, level: 'warn', requiresHuman: false },
+  ILINK_SEND_RESULT_UNKNOWN: { retryable: false, mayDuplicate: true, level: 'error', requiresHuman: true },
+  ILINK_RATE_LIMITED: { retryable: true, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_VERSION_UNSUPPORTED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
+  ILINK_PROVIDER_REJECTED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
+  ILINK_DUPLICATE_SUPPRESSED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_SIGNATURE_INVALID: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_REPLAY_REJECTED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_INTERNAL_ERROR: { retryable: true, mayDuplicate: false, level: 'error', requiresHuman: true }
+}
