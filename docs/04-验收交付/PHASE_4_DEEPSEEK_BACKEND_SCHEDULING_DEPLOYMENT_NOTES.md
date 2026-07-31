@@ -5,7 +5,7 @@
 本交付没有执行生产部署、真实 DeepSeek 联调或真实渠道发送。当前没有真实
 API Key；H5 没有 AI 入口；真实微信和企业微信不属于阶段四。
 
-生产部署前必须完成数据库副本迁移 `005` 和受控 Provider 联调。首次部署时
+生产部署前必须完成数据库副本迁移至 `006` 和受控 Provider 联调。首次部署时
 所有开关保持：
 
 ```text
@@ -61,18 +61,18 @@ SQLite 连接。Scheduler 连接启用 WAL、foreign keys 和
 清单中核对 API/Worker 不含 `DEEPSEEK_API_KEY`。不要把真实 Key 写入仓库的
 `.env.example`、`deploy/.env.example` 或 PM2 配置。
 
-## 4. 迁移 `005` 门禁
+## 4. 迁移 `005` 与 `006` 门禁
 
 1. 记录当前应用提交、数据库路径和 `001` 至 `004` checksum；
 2. 使用批准的 SQLite 在线备份或停机一致性备份，包含 WAL 中已提交数据；
 3. 只在数据库副本运行新制品迁移；
-4. 核对迁移日志 `005=applied`、`PRAGMA integrity_check=ok`、
+4. 核对迁移日志 `005=applied`、`006=applied`、`PRAGMA integrity_check=ok`、
    `PRAGMA foreign_key_check` 为空；
 5. 核对 `ai_request_logs` 约束/索引和两条规则仍 `enabled=0`；
 6. 人工修改过任一占位规则时，`005` 必须失败；先人工评审，不得覆盖；
 7. 副本演练、备份恢复演练和变更窗口均批准后，才可迁移生产库。
 
-迁移失败时事务整体回滚。不得修改 `001` 至 `004` 或手工伪造
+`006` 为 `ai_request_logs.latency_ms` 的前向兼容追加：管理员 AI 日志会返回该字段，语义为全部实际 Provider 尝试的累计毫秒；未调用 Provider 和所有历史 `005` 记录均保持 `NULL`。不得用任务总耗时估算，不得手工回填。迁移失败时事务整体回滚。不得修改 `001` 至 `005` 或手工伪造
 `schema_migrations` 记录。
 
 ## 5. 安全灰度顺序
@@ -106,7 +106,7 @@ SQLite 连接。Scheduler 连接启用 WAL、foreign keys 和
 9. 稳定后再灰度 `daily_report`；
 10. `AI_WEEKLY_REPORT_ENABLED` 必须保持 `false`。
 
-真实 Key 注入前必须完成阶段四点五补丁验收。`AI_MAX_OUTPUT_TOKENS` 只由 Scheduler 读取，默认 `2048`，必须为 `256` 至 `4096` 的整数；不得把它或任何 DeepSeek 配置注入 API、Worker 或 H5。
+真实 Key 注入前必须完成阶段四点五补丁验收。验收后仍必须在新的隔离副本重新执行一次受控单用户 Provider 联调，确认新的 AI 审计记录有准确的 `latency_ms`；历史联调记录不得估算或回填。`AI_MAX_OUTPUT_TOKENS` 只由 Scheduler 读取，默认 `2048`，必须为 `256` 至 `4096` 的整数；不得把它或任何 DeepSeek 配置注入 API、Worker 或 H5。
 
 空 `AI_PILOT_USER_IDS` 永远是零用户，不是全量。任务关闭期间不补算。
 

@@ -1,5 +1,12 @@
 # 变更日志
 
+## Unreleased — 阶段四点五：Provider 延迟审计修复（2026-07-31）
+
+- 新增迁移 `006`（`b6b27bc98f6620ffa4bbfd829d6f248e0c726277e8f4d94d2be10bff6603026a`）：为 `ai_request_logs` 追加 nullable、非负整数约束的 `latency_ms`；迁移 `001` 至 `005` 未修改。
+- Provider 成功与实际调用后的安全错误统一携带单调时钟的非负 `latencyMs`；协调服务逐尝试累计，重试、fallback、失败、结果清理和租约恢复均保留审计值。
+- admin-only AI 请求日志安全投影新增 `latency_ms`，不增加筛选或任何 Prompt、上下文、结果正文、上游原文及密钥暴露。
+- 历史 `005` 记录保持 `NULL`，不允许估算或回填；补丁验收后必须在新隔离副本重新执行受控单用户 Provider 联调。
+
 ## Unreleased — 阶段四点五：DeepSeek Pilot Readiness（2026-07-31）
 
 - 为 `scheduled_follow_overdue` 与 `daily_report` 分别建立版本化 JSON Prompt 契约和虚构安全示例；DeepSeek 请求显式使用 JSON Output、关闭思考、关闭流式输出并限制输出 token，不发送工具字段。
