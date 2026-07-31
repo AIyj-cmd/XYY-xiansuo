@@ -1,5 +1,13 @@
 # 变更日志
 
+## Unreleased — 阶段四点五：DeepSeek Pilot Readiness（2026-07-31）
+
+- 为 `scheduled_follow_overdue` 与 `daily_report` 分别建立版本化 JSON Prompt 契约和虚构安全示例；DeepSeek 请求显式使用 JSON Output、关闭思考、关闭流式输出并限制输出 token，不发送工具字段。
+- 新增严格 `AI_MAX_OUTPUT_TOKENS`、Provider 响应门禁、真正只读且拒绝未合并 WAL 的 dry-run，以及无 PII 的实际候选排序证据。
+- 新增只读 `pilot:queue-check`，复用通知 Worker 的可领取条件，对整个当前可领取队列执行 pilot operation、快照和实时权限检查。
+- 验收移除队列预检 CLI 的外部时间覆盖，防止使用历史时间绕过当前 Worker 领取范围；补充 dry-run 表数量不变证明，并隔离 dry-run 与 Provider-only 配置解析。
+- 本补丁没有修改迁移、H5 或业务任务范围，没有真实 Key、真实 DeepSeek、真实外网、通知 Worker 或生产数据库操作。
+
 ## Unreleased — 阶段四：DeepSeek 后端调度（2026-07-31）
 
 - 新增迁移 `005`：`ai_request_logs` 状态机、租约、幂等、结果/元数据保留索引；只在两条 `004` 原始占位规则完全匹配时初始化其受控 Mock 配置，否则迁移整体失败。

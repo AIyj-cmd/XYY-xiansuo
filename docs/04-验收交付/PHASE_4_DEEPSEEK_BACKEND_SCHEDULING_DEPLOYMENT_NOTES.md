@@ -78,7 +78,7 @@ SQLite 连接。Scheduler 连接启用 WAL、foreign keys 和
 ## 5. 安全灰度顺序
 
 1. 部署 API、Worker 和 Scheduler 制品，保持全部阶段四开关关闭；
-2. 使用临时数据库或生产只读副本执行 CLI dry-run：
+2. 使用已停止其他写入来源、WAL 已合并的一致性隔离副本执行 CLI dry-run：
 
    ```bash
    cd server
@@ -86,15 +86,27 @@ SQLite 连接。Scheduler 连接启用 WAL、foreign keys 和
      --job scheduled_follow_overdue --user-id 1 --business-date 2026-08-01
    ```
 
-3. 核对 dry-run 只输出计数、排序引用、裁剪统计、hash 和脱敏说明；
+3. dry-run 使用 SQLite `mode=ro&immutable=1`，若发现非空 WAL 会拒绝运行；核对主库、`-wal`、`-shm` 的 hash、大小和 mtime 均未变化，并核对输出的内部 lead ID 排序证据、计数、裁剪统计、hash 和脱敏说明；
 4. 按联调当日 DeepSeek 官方文档重新核验 endpoint、请求字段、JSON 输出、
    响应结构、错误码和模型名；
 5. 隔离环境注入受控 Key，`AI_PILOT_USER_IDS` 只放一名启用用户；
-6. 先开启到期任务，保持真实 Provider 或通知 Worker其中一侧关闭，检查
-   AI 日志和 outbox；
-7. 仅使用 Mock Worker 验证完整链路；
-8. 稳定后再灰度 `daily_report`；
-9. `AI_WEEKLY_REPORT_ENABLED` 必须保持 `false`。
+6. 第二轮只开启到期任务和真实 Provider，保持通知 Worker 关闭，检查
+   AI 日志和 outbox；首轮真实 Provider 验证建议保持 fallback 关闭，避免
+   模板掩盖 Provider 失败；
+7. 第三轮启动 Mock Worker 前、且紧邻启动前再次执行只读队列预检：
+
+   ```bash
+   cd server
+   DB_PATH=/absolute/path/to/copy.db npm run pilot:queue-check -- \
+     --recipient-user-id 1 --event-type scheduled_follow_overdue --business-date 2026-08-01
+   ```
+
+   只有 `conclusion=SAFE` 且退出码为 0 才能启动 Worker。预检只是时点证明；预检后如任一业务进程继续写入 outbox，结论立即失效，必须重新执行。预检不会取消、修改或清理任何任务，任何非 pilot 的当前可领取/可恢复任务均为 `UNSAFE`。
+8. 第三轮开启 fallback 和通知 Worker，仅使用 Mock 渠道验证完整链路；
+9. 稳定后再灰度 `daily_report`；
+10. `AI_WEEKLY_REPORT_ENABLED` 必须保持 `false`。
+
+真实 Key 注入前必须完成阶段四点五补丁验收。`AI_MAX_OUTPUT_TOKENS` 只由 Scheduler 读取，默认 `2048`，必须为 `256` 至 `4096` 的整数；不得把它或任何 DeepSeek 配置注入 API、Worker 或 H5。
 
 空 `AI_PILOT_USER_IDS` 永远是零用户，不是全量。任务关闭期间不补算。
 
