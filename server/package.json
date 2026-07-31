@@ -12,6 +12,9 @@
     "start:prod": "node dist/index.js",
     "start:notification-worker": "tsx src/notification-worker.ts",
     "start:notification-worker:prod": "node dist/notification-worker.js",
+    "start:ai-scheduler": "tsx src/ai-scheduler.ts",
+    "start:ai-scheduler:prod": "node dist/ai-scheduler.js",
+    "ai:dry-run": "tsx src/cli/ai-dry-run.ts",
     "build": "tsc",
     "test": "tsx --test test/*.test.ts",
     "seed": "tsx ../scripts/seed.ts"

@@ -370,6 +370,94 @@ VALUES
 `);
     },
   },
+  {
+    version: '005',
+    description: 'add AI scheduler audit log and initialize approved notification rules',
+    checksum: '8636bf2723aa6991e2f8aa66b14b1232a16ea644d15954284e74acdbfa1a6346',
+    up(database) {
+      const config = JSON.stringify({ schema_version: 1, recipient_mode: 'job_recipient', quiet_hours: { enabled: false, start: '22:00', end: '08:00', timezone: 'Asia/Shanghai' }, max_attempts: 5, ttl_minutes: 1440 });
+      // schema_migrations-loss recovery is accepted only when both the complete
+      // phase-four table contract and the guarded rule initialization are present.
+      const existingAiTable = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_request_logs'").get() as { sql: string } | undefined;
+      if (existingAiTable) {
+        const expectedColumns = ['id','request_id','idempotency_key','job_type','recipient_user_id','recipient_role_snapshot','scope','business_date','prompt_version','provider','model','status','candidate_count','context_hash','input_chars','output_chars','input_tokens','output_tokens','attempt_count','max_attempts','fallback_used','result_snapshot_json','result_hash','error_code','error_summary','available_at','lease_token','lease_owner','lease_until','notification_operation_id','notification_log_id','started_at','completed_at','result_retain_until','retain_until','created_at','updated_at'];
+        const actualColumns = (database.prepare("PRAGMA table_info('ai_request_logs')").all() as Array<{ name: string }>).map((column) => column.name);
+        const expectedIndexes = new Set(['idx_ai_request_ready','idx_ai_request_lease','idx_ai_request_recipient_date','idx_ai_request_job_date','idx_ai_request_retention']);
+        const actualIndexes = new Set((database.prepare("PRAGMA index_list('ai_request_logs')").all() as Array<{ name: string }>).map((index) => index.name));
+        const rules = (database.prepare(`SELECT COUNT(*) AS count FROM notification_rules
+          WHERE event_type IN ('scheduled_follow_overdue','daily_report') AND enabled=0 AND recipient_strategy='reserved'
+            AND channel_order_json='["mock"]' AND config_schema_version=1 AND config_json=? AND version=1 AND updated_by IS NULL`).get(config) as { count: number }).count;
+        const requiredSql = ["status IN ('pending','generating','ready','completed','skipped','failed','cancelled')", "json_type(result_snapshot_json)='object'", "status != 'generating'", "status != 'ready'", "status != 'completed'"];
+        if (actualColumns.join(',') !== expectedColumns.join(',') || [...expectedIndexes].some((name) => !actualIndexes.has(name))
+            || rules !== 2 || requiredSql.some((fragment) => !existingAiTable.sql.includes(fragment))) {
+          throw new Error('迁移005恢复状态不完整，拒绝将未知结构标记为已迁移');
+        }
+        return;
+      }
+      // 004 deliberately created reserved placeholders.  Refuse to overwrite an
+      // administrator's later choice, even when only one of the two rows changed.
+      const placeholders = database.prepare(`SELECT COUNT(*) AS count FROM notification_rules
+        WHERE event_type IN ('scheduled_follow_overdue','daily_report')
+          AND enabled=0 AND recipient_strategy='reserved' AND channel_order_json='[]'
+          AND config_schema_version=1 AND config_json='{}' AND version=1 AND updated_by IS NULL`).get() as { count: number };
+      if (placeholders.count !== 2) throw new Error('阶段四通知规则不再是迁移004原始占位值，拒绝覆盖人工配置');
+      database.exec(`
+CREATE TABLE ai_request_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL UNIQUE CHECK (length(request_id) BETWEEN 1 AND 128),
+  idempotency_key TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+  job_type TEXT NOT NULL CHECK (job_type IN ('scheduled_follow_overdue','daily_report','weekly_report')),
+  recipient_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  recipient_role_snapshot TEXT NOT NULL CHECK (recipient_role_snapshot IN ('admin','member')),
+  scope TEXT NOT NULL CHECK (scope IN ('self','team')),
+  business_date TEXT NOT NULL CHECK (length(business_date)=10 AND business_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  prompt_version TEXT NOT NULL CHECK (length(prompt_version) BETWEEN 1 AND 100),
+  provider TEXT CHECK (provider IS NULL OR length(provider) BETWEEN 1 AND 100),
+  model TEXT CHECK (model IS NULL OR length(model) BETWEEN 1 AND 200),
+  status TEXT NOT NULL CHECK (status IN ('pending','generating','ready','completed','skipped','failed','cancelled')),
+  candidate_count INTEGER NOT NULL DEFAULT 0 CHECK (candidate_count >= 0),
+  context_hash TEXT CHECK (context_hash IS NULL OR length(context_hash)=64),
+  input_chars INTEGER NOT NULL DEFAULT 0 CHECK (input_chars >= 0),
+  output_chars INTEGER NOT NULL DEFAULT 0 CHECK (output_chars >= 0),
+  input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
+  output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  max_attempts INTEGER NOT NULL DEFAULT 2 CHECK (max_attempts BETWEEN 1 AND 2),
+  fallback_used INTEGER NOT NULL DEFAULT 0 CHECK (fallback_used IN (0,1)),
+  result_snapshot_json TEXT CHECK (result_snapshot_json IS NULL OR (length(result_snapshot_json) <= 16384 AND json_valid(result_snapshot_json) AND json_type(result_snapshot_json)='object')),
+  result_hash TEXT CHECK (result_hash IS NULL OR length(result_hash)=64),
+  error_code TEXT CHECK (error_code IS NULL OR length(error_code) BETWEEN 1 AND 100),
+  error_summary TEXT CHECK (error_summary IS NULL OR length(error_summary) <= 200),
+  available_at TEXT NOT NULL CHECK (length(available_at)=19),
+  lease_token TEXT CHECK (lease_token IS NULL OR length(lease_token) BETWEEN 1 AND 128),
+  lease_owner TEXT CHECK (lease_owner IS NULL OR length(lease_owner) BETWEEN 1 AND 100),
+  lease_until TEXT CHECK (lease_until IS NULL OR length(lease_until)=19),
+  notification_operation_id TEXT UNIQUE CHECK (notification_operation_id IS NULL OR length(notification_operation_id) BETWEEN 1 AND 128),
+  notification_log_id INTEGER REFERENCES notification_logs(id) ON DELETE SET NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  result_retain_until TEXT,
+  retain_until TEXT NOT NULL CHECK (length(retain_until)=19),
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  CHECK ((status != 'generating') OR (lease_token IS NOT NULL AND lease_owner IS NOT NULL AND lease_until IS NOT NULL)),
+  CHECK ((status != 'ready') OR (result_snapshot_json IS NOT NULL AND result_hash IS NOT NULL AND result_retain_until IS NOT NULL)),
+  CHECK ((status != 'completed') OR (notification_operation_id IS NOT NULL AND notification_log_id IS NOT NULL AND result_snapshot_json IS NULL AND result_hash IS NULL)),
+  CHECK ((scope != 'team') OR recipient_role_snapshot='admin')
+);
+CREATE INDEX IF NOT EXISTS idx_ai_request_ready ON ai_request_logs(status, available_at);
+CREATE INDEX IF NOT EXISTS idx_ai_request_lease ON ai_request_logs(status, lease_until);
+CREATE INDEX IF NOT EXISTS idx_ai_request_recipient_date ON ai_request_logs(recipient_user_id, business_date);
+CREATE INDEX IF NOT EXISTS idx_ai_request_job_date ON ai_request_logs(job_type, business_date);
+CREATE INDEX IF NOT EXISTS idx_ai_request_retention ON ai_request_logs(retain_until);
+`);
+      const result = database.prepare(`UPDATE notification_rules SET channel_order_json='["mock"]', config_json=?, updated_at=datetime('now','localtime')
+        WHERE event_type IN ('scheduled_follow_overdue','daily_report')
+          AND enabled=0 AND recipient_strategy='reserved' AND channel_order_json='[]'
+          AND config_schema_version=1 AND config_json='{}' AND version=1 AND updated_by IS NULL`).run(config);
+      if (result.changes !== 2) throw new Error('阶段四通知规则初始化不完整，拒绝部分提交');
+    },
+  },
 ];
 
 function checkDatabase(database: DatabaseSync): void {

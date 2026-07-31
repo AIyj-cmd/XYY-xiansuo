@@ -17,6 +17,7 @@ import { tagRoutes } from './routes/tags.js';
 import { memoRoutes } from './routes/memo.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { notificationAdminRoutes } from './routes/notification-admin.js';
+import { aiAdminRoutes } from './routes/ai-admin.js';
 import { resolveNotificationConfig } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -111,6 +112,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(memoRoutes);
   await app.register(notificationRoutes);
   await app.register(notificationAdminRoutes);
+  await app.register(aiAdminRoutes);
   await app.register(staticFiles, { root: UPLOADS_DIR, prefix: '/uploads/', decorateReply: false });
   await app.register(uploadRoutes);
 

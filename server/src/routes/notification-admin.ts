@@ -2,9 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { getDb } from '../db.js';
 import { requireAdmin } from '../middleware/auth.js';
-import { ownerRuleAvailableAt, parseOwnerRule } from '../services/notification.js';
+import { ownerRuleAvailableAt, parseAiRule, parseOwnerRule } from '../services/notification.js';
 import { resolveNotificationConfig } from '../config.js';
 import { nowDatetime } from '../utils/datetime.js';
+import { parseNotificationSnapshot } from '../notifications/snapshot.js';
+import { validateDigestContext } from '../ai/permission-query.js';
 
 const eventSchema = z.enum(['owner_changed','scheduled_follow_overdue','visit_reminder','status_changed','daily_report','weekly_report','inactive_lead']);
 const ruleUpdateSchema = z.object({ enabled: z.boolean(), recipient_strategy: z.string(), channel_order: z.array(z.string()).max(1), config: z.unknown(), expected_version: z.number().int().positive() }).strict();
@@ -28,11 +30,12 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
   app.put('/api/admin/notification-rules/:eventType', { preHandler: requireAdmin }, async (request, reply) => {
     const event = eventSchema.safeParse((request.params as any).eventType); const parsed = ruleUpdateSchema.safeParse(request.body);
     if (!event.success || !parsed.success) return bad(reply, parsed.success ? '事件类型不合法' : parsed.error.issues[0].message);
-    const body = parsed.data; if (event.data !== 'owner_changed' && body.enabled) return bad(reply, '该事件尚未实现，不能启用', 'EVENT_NOT_IMPLEMENTED');
-    if (event.data !== 'owner_changed' || body.recipient_strategy !== 'new_owner' || body.channel_order.some((v) => v !== 'mock')) return bad(reply, '仅允许 owner_changed 使用 new_owner 与 mock 渠道', 'CHANNEL_NOT_ALLOWED');
+    const body = parsed.data; const aiEvent = event.data === 'scheduled_follow_overdue' || event.data === 'daily_report';
+    if (event.data !== 'owner_changed' && !aiEvent) return bad(reply, '该事件尚未实现，不能启用', 'EVENT_NOT_IMPLEMENTED');
+    if ((event.data === 'owner_changed' && (body.recipient_strategy !== 'new_owner' || body.channel_order.some((v) => v !== 'mock'))) || (aiEvent && (body.recipient_strategy !== 'reserved' || body.channel_order.length !== 1 || body.channel_order[0] !== 'mock'))) return bad(reply, '该事件仅允许受控接收人和 Mock 渠道', 'CHANNEL_NOT_ALLOWED');
     if (body.enabled && !resolveNotificationConfig().mockEnabled) return bad(reply, 'Mock 通道未启用，不能启用规则', 'CHANNEL_NOT_ALLOWED');
     const candidate = { event_type: event.data, enabled: body.enabled ? 1 : 0, recipient_strategy: body.recipient_strategy, channel_order_json: JSON.stringify(body.channel_order), config_schema_version: 1, config_json: JSON.stringify(body.config), version: body.expected_version };
-    try { parseOwnerRule(candidate); } catch { return bad(reply, '规则配置不合法'); }
+    try { if (event.data === 'owner_changed') parseOwnerRule(candidate); else parseAiRule(candidate, event.data as 'scheduled_follow_overdue' | 'daily_report'); } catch { return bad(reply, '规则配置不合法'); }
     const db = getDb(); const now = nowDatetime(); db.exec('BEGIN IMMEDIATE;');
     try {
       const result = db.prepare(`UPDATE notification_rules SET enabled=?, recipient_strategy=?, channel_order_json=?, config_schema_version=1, config_json=?, version=version+1, updated_by=?, updated_at=? WHERE event_type=? AND version=?`).run(body.enabled ? 1 : 0, body.recipient_strategy, JSON.stringify(body.channel_order), JSON.stringify(body.config), request.user.id, now, event.data, body.expected_version);
@@ -75,12 +78,25 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
   app.post('/api/admin/notification-logs/:id/retry', { preHandler: requireAdmin }, async (request, reply) => {
     const body = retrySchema.safeParse(request.body); if (!body.success) return bad(reply, body.error.issues[0].message); const id = idSchema.safeParse((request.params as any).id); if (!id.success) return bad(reply, '通知任务 ID 不合法', 'QUERY_INVALID'); const db = getDb(); const now = nowDatetime();
     const row = db.prepare('SELECT * FROM notification_logs WHERE id=?').get(id.data) as any; if (!row) return bad(reply, '通知任务不存在', 'NOTIFICATION_NOT_FOUND', 404);
-    const active = db.prepare('SELECT is_active FROM users WHERE id=?').get(row.recipient_user_id) as any;
-    const lead = db.prepare('SELECT owner_id,is_deleted FROM leads WHERE id=?').get(row.lead_id) as any;
+    const active = db.prepare('SELECT role,is_active FROM users WHERE id=?').get(row.recipient_user_id) as any;
     const rule = db.prepare('SELECT event_type,enabled,recipient_strategy,channel_order_json,config_schema_version,config_json,version FROM notification_rules WHERE event_type=?').get(row.event_type) as any;
-    let ruleUsable = false;
-    try { parseOwnerRule(rule); ruleUsable = Boolean(rule?.enabled) && JSON.parse(rule.channel_order_json).includes('mock'); } catch { ruleUsable = false; }
-    if (row.status !== 'failed' || !row.retry_allowed || row.expires_at <= now || row.provider_message_id || !active?.is_active || lead?.is_deleted || lead?.owner_id !== row.recipient_user_id || !ruleUsable || !resolveNotificationConfig().mockEnabled) return bad(reply, '该任务当前不符合人工重试条件', 'RETRY_NOT_ALLOWED', 409);
+    const aiEvent = row.event_type === 'scheduled_follow_overdue' || row.event_type === 'daily_report';
+    let ruleUsable = false; let contextUsable = false;
+    try {
+      if (aiEvent) {
+        parseAiRule(rule, row.event_type);
+        const snapshot = parseNotificationSnapshot(row.event_type, row.message_snapshot_json) as any;
+        contextUsable = active?.is_active === 1
+          && (row.event_type !== 'daily_report' || snapshot.scope !== 'team' || active.role === 'admin')
+          && validateDigestContext(db, row.event_type, row.recipient_user_id, snapshot.subject_lead_ids);
+      } else {
+        parseOwnerRule(rule);
+        const lead = db.prepare('SELECT owner_id,is_deleted FROM leads WHERE id=?').get(row.lead_id) as any;
+        contextUsable = active?.is_active === 1 && !lead?.is_deleted && lead?.owner_id === row.recipient_user_id;
+      }
+      ruleUsable = Boolean(rule?.enabled) && JSON.parse(rule.channel_order_json).includes('mock');
+    } catch { ruleUsable = false; contextUsable = false; }
+    if (row.status !== 'failed' || !row.retry_allowed || row.expires_at <= now || row.provider_message_id || !contextUsable || !ruleUsable || !resolveNotificationConfig().mockEnabled) return bad(reply, '该任务当前不符合人工重试条件', 'RETRY_NOT_ALLOWED', 409);
     const result = db.prepare(`UPDATE notification_logs SET status='pending', available_at=?, manual_retry_count=manual_retry_count+1, failed_at=NULL, retain_until=NULL, failure_class=NULL, last_error_code=NULL, last_error_message=NULL, management_audit_json=json_insert(management_audit_json, '$[#]', json_object('action','manual_retry','by',?,'reason',?,'at',?)), row_version=row_version+1, updated_at=? WHERE id=? AND row_version=?`).run(now, request.user.id, body.data.reason, now, now, id.data, body.data.expected_version);
     if (!result.changes) return bad(reply, '任务版本已变化，请刷新后重试', 'RULE_VERSION_CONFLICT', 409); console.log(JSON.stringify({ event: 'notification.admin.retry', id: id.data })); return reply.send({ code: 0, msg: '已加入重试队列', data: null });
   });

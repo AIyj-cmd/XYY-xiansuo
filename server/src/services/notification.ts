@@ -23,6 +23,12 @@ const ownerRuleSchema = z.object({
   for (const key of Object.keys(value)) if (prohibitedKey.test(key)) context.addIssue({ code: 'custom', message: '规则配置不能包含敏感渠道字段' });
 });
 export type OwnerRuleConfig = z.infer<typeof ownerRuleSchema>;
+const aiRuleSchema = z.object({
+  schema_version: z.literal(1), recipient_mode: z.literal('job_recipient'),
+  quiet_hours: z.object({ enabled: z.boolean(), start: timeSchema, end: timeSchema, timezone: z.literal('Asia/Shanghai') }).strict(),
+  max_attempts: z.number().int().min(1).max(5), ttl_minutes: z.number().int().min(1).max(1440),
+}).strict();
+export type AiRuleConfig = z.infer<typeof aiRuleSchema>;
 
 export type NotificationRule = {
   event_type: string; enabled: number; recipient_strategy: string; channel_order_json: string;
@@ -35,6 +41,14 @@ export function parseOwnerRule(rule: NotificationRule): OwnerRuleConfig {
   const config = ownerRuleSchema.safeParse(JSON.parse(rule.config_json));
   if (!channels.success || !config.success) throw new Error('RULE_CONFIG_INVALID');
   return config.data;
+}
+export function parseAiRule(rule: NotificationRule | undefined, eventType: 'scheduled_follow_overdue' | 'daily_report'): AiRuleConfig {
+  if (!rule || rule.event_type !== eventType || rule.recipient_strategy !== 'reserved') throw new Error('RULE_CONFIG_INVALID');
+  try {
+    const channels = z.array(z.literal('mock')).min(1).max(1).parse(JSON.parse(rule.channel_order_json));
+    if (!channels.includes('mock')) throw new Error('invalid channel');
+    return aiRuleSchema.parse(JSON.parse(rule.config_json));
+  } catch { throw new Error('RULE_CONFIG_INVALID'); }
 }
 
 function hash(value: string): string { return createHash('sha256').update(value).digest('hex'); }
@@ -170,6 +184,22 @@ export function finishNotificationTask(database: DatabaseSync, task: ClaimedTask
 }
 
 export function validateClaimedNotificationTask(database: DatabaseSync, task: ClaimedTask, now: string): 'valid' | 'cancelled' | 'lease_lost' {
+  if (task.event_type === 'scheduled_follow_overdue' || task.event_type === 'daily_report') {
+    let snapshot: { subject_lead_ids?: unknown; scope?: unknown };
+    try { snapshot = JSON.parse(task.message_snapshot_json); } catch { snapshot = {}; }
+    const ids = Array.isArray(snapshot.subject_lead_ids) && snapshot.subject_lead_ids.every((id) => Number.isInteger(id) && id > 0) ? snapshot.subject_lead_ids as number[] : null;
+    const recipient = database.prepare('SELECT role,is_active FROM users WHERE id=?').get(task.recipient_user_id) as { role: string; is_active: number } | undefined;
+    let reason: string | null = !recipient?.is_active ? 'context_stale' : null;
+    if (!reason && task.event_type === 'daily_report' && snapshot.scope === 'team' && recipient?.role !== 'admin') reason = 'context_stale';
+    if (!reason && task.event_type === 'scheduled_follow_overdue' && (!ids || !ids.length)) reason = 'context_stale';
+    if (!reason && ids?.length) {
+      const marks = ids.map(() => '?').join(','); const count = (database.prepare(`SELECT COUNT(*) AS count FROM leads WHERE id IN (${marks}) AND is_deleted=0 AND owner_id=?`).get(...ids, task.recipient_user_id) as { count: number }).count;
+      if (count !== ids.length && !(task.event_type === 'daily_report' && snapshot.scope === 'team' && recipient?.role === 'admin')) reason = 'context_stale';
+    }
+    if (!reason) return 'valid';
+    const cancelled = database.prepare(`UPDATE notification_logs SET status='cancelled', cancellation_reason='context_stale', cancelled_at=?, retain_until=?, lease_token=NULL,lease_owner=NULL,lease_until=NULL,updated_at=?,row_version=row_version+1 WHERE id=? AND status='sending' AND lease_token=?`).run(now, isoPlusMinutes(now, 180 * 24 * 60), now, task.id, task.lease_token);
+    return cancelled.changes === 1 ? 'cancelled' : 'lease_lost';
+  }
   const state = database.prepare(`SELECT l.owner_id,l.is_deleted,u.is_active
     FROM leads l LEFT JOIN users u ON u.id=? WHERE l.id=?`).get(task.recipient_user_id, task.lead_id) as {
       owner_id: number | null; is_deleted: number; is_active: number | null;

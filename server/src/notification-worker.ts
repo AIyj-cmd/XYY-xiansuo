@@ -5,6 +5,7 @@ import { resolveNotificationConfig } from './config.js';
 import { cleanupNotificationRetention, claimNotificationTasks, finishNotificationTask, validateClaimedNotificationTask } from './services/notification.js';
 import { MockNotificationChannel } from './services/mock-notification-channel.js';
 import { nowDatetime } from './utils/datetime.js';
+import { parseNotificationSnapshot, toChannelMessage } from './notifications/snapshot.js';
 
 let stopping = false;
 const WORKER_CONCURRENCY = 2;
@@ -16,19 +17,11 @@ async function processTask(db: ReturnType<typeof getDb>, channel: MockNotificati
   }
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 10_000);
   try {
-    let snapshot: { title?: unknown; detail_path?: unknown };
-    try {
-      snapshot = JSON.parse(task.message_snapshot_json) as { title?: unknown; detail_path?: unknown };
-    } catch {
-      throw Object.assign(new Error('消息快照不合法'), { code: 'invalid_message_schema', permanent: true });
-    }
-    if (typeof snapshot.title !== 'string' || typeof snapshot.detail_path !== 'string' || !snapshot.detail_path.startsWith('/pages/')) {
-      throw Object.assign(new Error('消息快照不合法'), { code: 'invalid_message_schema', permanent: true });
-    }
+    const snapshot = parseNotificationSnapshot(task.event_type, task.message_snapshot_json);
     if (!Number.isInteger(task.recipient_user_id) || typeof task.delivery_idempotency_key !== 'string') {
       throw Object.assign(new Error('任务数据不完整'), { code: 'unrecoverable_task_data', permanent: true });
     }
-    const receipt = await channel.send({ userId: task.recipient_user_id }, { title: snapshot.title, detailPath: snapshot.detail_path }, task.delivery_idempotency_key, controller.signal);
+    const receipt = await channel.send({ userId: task.recipient_user_id }, toChannelMessage(task.event_type, snapshot), task.delivery_idempotency_key, controller.signal);
     const updated = finishNotificationTask(db, task, { kind: 'sent', receipt: receipt.providerMessageId }, nowDatetime());
     console.log(JSON.stringify({ event: updated ? 'notification.worker.sent' : 'notification.worker.lease_lost', id: task.id }));
   } catch (error) {

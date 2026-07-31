@@ -3,7 +3,7 @@ import { resolveNotificationConfig } from '../config.js';
 
 export type MockMode = 'success' | 'timeout' | 'rate_limit' | 'temporary_5xx' | 'permanent_config_error' | 'duplicate' | 'delay';
 export type NotificationRecipient = { userId: number };
-export type NotificationMessage = { title: string; detailPath: string };
+export type NotificationMessage = { title: string; body?: string; detailPath: string };
 export class MockNotificationChannel {
   readonly name = 'mock' as const;
   constructor(private readonly mode: MockMode = (process.env.NOTIFICATION_MOCK_MODE as MockMode | undefined) || 'success') {}
