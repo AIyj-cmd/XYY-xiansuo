@@ -1,5 +1,21 @@
 # 变更日志
 
+## Unreleased — 阶段四：DeepSeek 后端调度（2026-07-31）
+
+- 新增迁移 `005`：`ai_request_logs` 状态机、租约、幂等、结果/元数据保留索引；只在两条 `004` 原始占位规则完全匹配时初始化其受控 Mock 配置，否则迁移整体失败。
+- 新增独立 AI Scheduler、严格 AI 配置、上海业务日调度、逐用户 allowlist、只读权限查询、上下文裁剪、脱敏、严格 JSON 输出校验、Fake Provider 与 Node `fetch` DeepSeek 适配器。
+- 实现 `scheduled_follow_overdue` 与 `daily_report` 的确定性候选、模板降级、结果暂存、通知 outbox 衔接、快照解析和发送前实时权限复核；`weekly_report` 仍未实现。
+- 新增 admin-only `GET /api/admin/ai/request-logs` 和只读 CLI dry-run；无普通用户 AI API、无 H5 AI 入口、无真实消息渠道。
+- 所有 AI、具体任务和通知捕获开关默认关闭；当前无真实 DeepSeek 联调或 API Key，测试使用内存 SQLite 与 Fake/本地结构验证。
+
+### 验收修复
+
+- 收紧迁移 `005` 的受控恢复和字符/状态约束，避免同名伪表绕过规则占位保护，并使过期 `ready` 临时结果安全转为终态后清理。
+- 调度入口只执行当前上海时点命中的任务；到期提醒固定本人 scope，日报只纳入冻结的四类重点线索并修正“今日到期未跟进”口径。
+- Provider 在读取响应流时限制大小，严格分类重试、超时和取消；非重试失败不再错误累计为两次，并保存安全 fallback 错误码。
+- outbox 与 AI 完成关联使用同一短事务，创建通知前复核角色、owner 和冻结线索集合；聚合通知人工重试使用事件专用实时校验。
+- 新增阶段四验收回归，覆盖配置、迁移、权限、Provider、恢复、调度、注入和通知重试；未新增生产依赖。
+
 ## Unreleased — H5-only 前端决策（2026-07-30）
 
 - 前端发布、验收和构建目标收敛为 H5；移除微信小程序平台依赖及开发/构建脚本。
