@@ -1,5 +1,12 @@
 # 变更日志
 
+## Unreleased — 阶段五A：iLink 实况 PoC 就绪补丁（2026-08-01）
+
+- Gateway 改由官方 OpenClaw CLI 管理登录与会话状态；每个子进程显式覆盖 `OPENCLAW_STATE_DIR` 与 `OPENCLAW_CONFIG_PATH` 到仓库外隔离会话目录，移除自定义 `session.json`/token/context token 读取，新增版本、插件 metadata 与 capability 的失败关闭前置检查。
+- 新增确认参数保护的官方登录包装、脱敏官方会话状态、显式幂等的固定合成消息 CLI；raw/mock HTTP 仅 `ret=0` 成功，CLI 仅接受严格 `ok/channel/messageId` 官方运行时确认，其他形态失败关闭或待人工确认。
+- 配置统一为仓库外绝对 state/session 目录和独立超时名称；收紧 state SQLite/WAL/SHM 权限。未安装 OpenClaw、未登录、未生成二维码、未发送消息，也没有外网或业务链路访问。
+- 验收仅修复阶段三独立测试中已过期的人工重试时间夹具，改为运行时 Asia/Shanghai 当前时间；TTL 规则、生产源码和断言语义未变。最终 Gateway 28/28、后端 121/121、H5 构建及 Gateway 生产依赖审计全部通过。
+
 ## Unreleased — 阶段五A：iLink 隔离 PoC Gateway（2026-07-31）
 
 - 新增独立 `poc/ilink-gateway` TypeScript 工程：回环监听、严格最小投递契约、HMAC/nonce 防重放、固定单测试接收人、独立 SQLite 幂等 state、Fake Adapter 和默认关闭的 iLink Adapter。
