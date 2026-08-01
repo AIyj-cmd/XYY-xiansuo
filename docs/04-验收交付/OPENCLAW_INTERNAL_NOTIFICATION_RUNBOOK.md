@@ -4,16 +4,16 @@
 
 默认所有开关关闭。Gateway 只监听 `127.0.0.1`，不配置 `DB_PATH` 或 DeepSeek Key。业务 API、AI Scheduler 和 H5 不读取 OpenClaw 会话或 Gateway Secret。不得使用日常主账号、客户账号、Hook、RPA、逆向协议、自动换号、批量发送或入站业务指令。
 
-配置 `OPENCLAW_CHANNEL_ENABLED`、一个 `OPENCLAW_PILOT_USER_ID`、回环 `OPENCLAW_GATEWAY_URL` 和仓库外精确 0600 `OPENCLAW_GATEWAY_SECRET_FILE`。Gateway 使用同一 Secret 文件、固定 `ILINK_POC_RECIPIENT_EXTERNAL_ID`、规范 `OPENCLAW_STATE_DIR`（仓库外 0700 官方会话状态目录）和 `OPENCLAW_CONFIG_PATH`。旧 `ILINK_POC_SESSION_DIR` 仅为兼容别名，不得与规范项同时设置。会话失效只能由人工使用专用账号重新登录。
+配置 `OPENCLAW_CHANNEL_ENABLED`、回环 `OPENCLAW_GATEWAY_URL` 和仓库外精确 0600 `OPENCLAW_GATEWAY_SECRET_FILE`。推荐 Gateway 使用仓库外精确 0600 的 `OPENCLAW_RECIPIENT_MAP_FILE`：其 JSON 根必须为对象，最多 50 项，键必须是规范正整数系统用户 ID，值严格为 `{"target": "<接收人>@im.wechat", "enabled": true|false}`，例如 `{"12":{"target":"<接收人>@im.wechat","enabled":true}}`。文件只在 Gateway 启动时读取，不热更新；映射优先于旧单接收人配置。Gateway 使用同一 Secret 文件、规范 `OPENCLAW_STATE_DIR`（仓库外 0700 官方会话状态目录）和 `OPENCLAW_CONFIG_PATH`。旧 `ILINK_POC_SESSION_DIR` 仅为兼容别名，不得与规范项同时设置。会话失效只能由人工使用专用账号重新登录。
 
-仅管理员可显式启用单一 `openclaw` 规则。不得扩大 pilot、启用 AI 日报、增加接收人或发送批量通知。日志只能记录状态和安全错误码，不能记录消息全文或会话凭证。
+仅管理员可显式启用单一 `openclaw` 规则。Gateway 可通过经批准的静态映射管理最多 50 名内部接收人；修改映射后必须重新启动 Gateway，禁止自动绑定、客户接收人、AI 日报和批量发送。日志只能记录状态和安全错误码，不能记录消息全文、会话凭证、用户或接收人标识。
 
 ## 启动前门禁
 
 1. 使用全新的隔离非生产数据库副本并迁移到 `007`；不得连接生产库或 `server/data`。
 2. 确认 `001` 至 `006` checksum 未变、`007` 成功、完整性为 `ok`、外键检查为空、全部规则关闭。
 3. Secret 文件为仓库外普通文件且权限精确 `0600`；状态/会话目录为仓库外真实目录且权限 `0700`。不得输出文件内容。
-4. `OPENCLAW_PILOT_USER_ID` 与 Gateway 的同名配置完全一致，只配置一个启用测试用户；固定外部接收人只能来自 Gateway 私有配置。
+4. 映射文件内仅启用经批准的内部系统用户；未绑定用户以 `OPENCLAW_RECIPIENT_NOT_BOUND`、`enabled=false` 用户以 `OPENCLAW_RECIPIENT_DISABLED` 在 Gateway 调用 Adapter 前被拒绝。旧 `OPENCLAW_PILOT_USER_ID` 与 `ILINK_POC_RECIPIENT_EXTERNAL_ID` 仍兼容但已废弃，并保留 `OPENCLAW_RECIPIENT_NOT_ALLOWED`，且 Gateway 的弃用警告不得输出用户或接收人标识。
 5. OpenClaw 官方前置检查和会话状态明确就绪；如需重新扫码，必须由专用账号人工完成。
 6. API、AI Scheduler、DeepSeek、Mock、其他 Worker 和其他队列写入来源均停止；Gateway/Worker 必须为单实例。
 7. 记录隔离数据库、Gateway 状态库和 `server/data` 的安全哈希；不得输出客户数据、接收人标识或 Secret。

@@ -22,6 +22,7 @@ import { SYNTHETIC_MESSAGE } from '../src/message-policy.js'
 
 function directory(): string { const value = mkdtempSync(join(tmpdir(), 'xiansuo-ilink-')); chmodSync(value, 0o700); return value }
 function secretFile(dir: string): string { const file = join(dir, 'gateway.secret'); writeFileSync(file, 'a'.repeat(48), { mode: 0o600 }); chmodSync(file, 0o600); return file }
+function recipientMapFile(dir: string, mapping: unknown): string { const file = join(dir, 'recipients.json'); writeFileSync(file, JSON.stringify(mapping), { mode: 0o600 }); chmodSync(file, 0o600); return file }
 function openclawConfigPath(dir: string): string { const parent = join(dir, 'openclaw-config'); mkdirSync(parent, { recursive: true, mode: 0o700 }); chmodSync(parent, 0o700); return join(parent, 'openclaw.json') }
 function config(dir: string, extra: Record<string, string> = {}): GatewayConfig {
   return loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1', ...extra })
@@ -244,7 +245,7 @@ test('configuration accepts only frozen names, absolute paths and a non-conflict
     assert.throws(() => config(dir, { ILINK_UNKNOWN: 'x' }))
     assert.throws(() => config(dir, { ILINK_GATEWAY_STATE_DIR: '/tmp/one', ILINK_POC_STATE_DIR: '/tmp/two' }))
     const alias = loadConfig({ ILINK_GATEWAY_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' })
-    assert.equal(alias.stateDir, dir); assert.equal(alias.deprecatedWarnings.length, 1)
+    assert.equal(alias.stateDir, dir); assert.ok(alias.deprecatedWarnings.some((warning) => warning.includes('ILINK_GATEWAY_STATE_DIR')))
     const stateAlias = loadConfig({ ILINK_POC_STATE_DIR: dir, ILINK_POC_SESSION_DIR: join(dir, 'legacy-session'), OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' })
     assert.equal(stateAlias.openclawStateDir, join(dir, 'legacy-session')); assert.ok(stateAlias.deprecatedWarnings.some((warning) => warning.includes('ILINK_POC_SESSION_DIR')))
     assert.throws(() => config(dir, { ILINK_POC_SESSION_DIR: join(dir, 'legacy-session') }), /不得同时设置/)
@@ -290,6 +291,57 @@ test('Gateway Secret must be an exact 0600 regular file', () => {
     }
     chmodSync(file, 0o600); const linked = join(dir, 'linked.secret'); symlinkSync(file, linked)
     assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: linked, OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'recipient' }), /普通文件/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('recipient map is a static private startup configuration and takes precedence over the legacy single recipient', async () => {
+  const dir = directory(); try {
+    const mapFile = recipientMapFile(dir, {
+      '1': { target: 'first-user@im.wechat', enabled: true },
+      '2': { target: 'second-user@im.wechat', enabled: true },
+      '3': { target: 'disabled-user@im.wechat', enabled: false }
+    })
+    const cfg = config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: mapFile })
+    assert.equal(cfg.recipientMap?.size, 3); assert.ok(cfg.deprecatedWarnings.some((warning) => warning.includes('OPENCLAW_RECIPIENT_MAP_FILE')))
+    const state = new StateStore(dir); const deliveries: string[] = []
+    const adapter = { name: 'fake' as const, health: async () => ({ status: 'healthy' as const }), send: async (input: { recipientExternalId: string }) => { deliveries.push(input.recipientExternalId); return { status: 'sent' as const, providerMessageId: 'map-receipt' } } }
+    const service = new GatewayService(cfg, adapter, new IdempotencyStore(state))
+    const first = await service.deliver({ ...request(), recipientUserId: 1 })
+    const second = await service.deliver({ ...request(), recipientUserId: 2 })
+    assert.deepEqual(first, { status: 'sent', providerMessageId: 'map-receipt' })
+    assert.deepEqual(second, { status: 'sent', providerMessageId: 'map-receipt' })
+    assert.deepEqual(deliveries, ['first-user@im.wechat', 'second-user@im.wechat'])
+    assert.deepEqual(await service.deliver({ ...request(), recipientUserId: 3 }), { status: 'permanent_failure', errorCode: 'OPENCLAW_RECIPIENT_DISABLED' })
+    assert.deepEqual(await service.deliver({ ...request(), recipientUserId: 4 }), { status: 'permanent_failure', errorCode: 'OPENCLAW_RECIPIENT_NOT_BOUND' })
+    assert.deepEqual(deliveries, ['first-user@im.wechat', 'second-user@im.wechat'])
+    writeFileSync(mapFile, JSON.stringify({ '1': { target: 'changed-user@im.wechat', enabled: false } }), { mode: 0o600 }); chmodSync(mapFile, 0o600)
+    assert.deepEqual(await service.deliver({ ...request(), recipientUserId: 1 }), { status: 'sent', providerMessageId: 'map-receipt' })
+    assert.deepEqual(deliveries, ['first-user@im.wechat', 'second-user@im.wechat', 'first-user@im.wechat'])
+    state.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('recipient map file is repository-external, exact 0600 and strictly bounded', () => {
+  const dir = directory(); try {
+    const valid = recipientMapFile(dir, { '1': { target: 'valid@im.wechat', enabled: true } })
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: secretFile(dir) }), /未配置 OPENCLAW_RECIPIENT_MAP_FILE/)
+    const mappedOnly = loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_RECIPIENT_MAP_FILE: valid })
+    assert.equal(mappedOnly.recipientMap?.get(1)?.target, 'valid@im.wechat')
+    chmodSync(valid, 0o644); assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: valid }), /精确 0600/); chmodSync(valid, 0o600)
+    const linked = join(dir, 'linked-recipients.json'); symlinkSync(valid, linked); assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: linked }), /仓库外且不得经过符号链接/)
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: 'relative.json' }), /必须为绝对路径/)
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: join(process.cwd(), 'test', 'fixtures', 'repository-map.json') }), /位于仓库外/)
+    const oversized = recipientMapFile(dir, Object.fromEntries(Array.from({ length: 51 }, (_value, index) => [String(index + 1), { target: `user-${index + 1}@im.wechat`, enabled: true }])))
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: oversized }), /最多 50/)
+    const invalid = recipientMapFile(dir, { '1': { target: 'not-a-wechat-target', enabled: 'true' } })
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: invalid }), /格式无效/)
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: recipientMapFile(dir, []) }), /根必须是对象/)
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: recipientMapFile(dir, { '1': { userId: 1, target: 'first@im.wechat', enabled: true } }) }), /格式无效/)
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: recipientMapFile(dir, { '01': { target: 'first@im.wechat', enabled: true } }) }), /规范正整数/)
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: recipientMapFile(dir, { '+1': { target: 'first@im.wechat', enabled: true } }) }), /规范正整数/)
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: recipientMapFile(dir, { '1.0': { target: 'first@im.wechat', enabled: true } }) }), /规范正整数/)
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: recipientMapFile(dir, { '0': { target: 'first@im.wechat', enabled: true } }) }), /规范正整数/)
+    assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: recipientMapFile(dir, { '-1': { target: 'first@im.wechat', enabled: true } }) }), /规范正整数/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

@@ -232,3 +232,42 @@
 - 严重级别：**P1=0、P2=0、P3=0**。第 12 节 P2 为历史复现，已由本节关闭。
 - **允许进入最终验收阶段（代码验收放行）**，但不等同于真实微信 Pilot 已执行或放行。真实单条 Pilot 仍须由验收阶段在独立账号、隔离数据库和人工停止条件下单独授权、执行并记录。
 - 测试阶段仅更新本报告；没有提交、推送、真实发送或修改业务实现。工作区其他 OpenClaw 实现、测试与文档改动均是测试开始前已有或实现方后续新增，未被本测试阶段清理或覆盖。
+
+## 14. OpenClaw 轻量级多人接收人映射：测试计划（2026-08-01）
+
+本节先记录本次独立验证计划，随后执行离线验证。范围为 Gateway 的接收人映射配置与投递前拒绝路径；不启动真实 OpenClaw、Gateway 或 Worker，不访问外网、微信、DeepSeek 或业务数据库。
+
+- 配置与安全：验证 JSON 对象根、规范正整数用户键、空映射、最多 50 项、绝对且仓库外的 0600 常规文件，以及链接、相对路径、权限、格式和数量的拒绝。
+- 路由与拒绝：以内存 Fake Adapter 验证不同系统用户映射到各自 target、未绑定与 disabled 均在 Adapter 调用前拒绝、map 优先覆盖旧单用户值、无 map 时兼容旧单用户值。
+- 生命周期与泄露：验证映射仅在启动时加载，health/日志/deprecated warning 不输出完整 target。
+- 回归：执行 Gateway 构建、现有 Gateway 测试与 `git diff --check`；复核成功 messageId、`result_unknown`、幂等和 HMAC 路径。检查本次差异未涉及 server、迁移、H5 或依赖清单。
+
+## 15. OpenClaw 轻量级多人接收人映射：独立验证结果（2026-08-01）
+
+### 环境与开始前基线
+
+- 工作区开始时已有实现差异：根与 deploy 环境示例、Gateway PM2 示例、OpenClaw 实现/Runbook/Changelog 文档，以及 `poc/ilink-gateway` 的 `.env.example`、`src/config.ts`、`src/gateway-service.ts`、`src/server.ts`、`test/gateway.test.ts`。本测试阶段没有恢复、覆盖或清理任何这些差异。
+- `git diff --name-only` 未包含 `server/`、迁移文件、`app/`、锁文件或依赖清单；因此本次仅执行受影响 Gateway 验证，未运行无关的 Server/H5 构建。
+- Gateway 自动化测试和独立脚本只使用临时私有目录、Fake Adapter 与临时 SQLite 状态库；临时产物均已删除。没有访问 `server/data` 或业务数据库。
+
+### 已执行命令与结果
+
+| 命令 | 结果 |
+| --- | --- |
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，46/46。|
+| 离线 Node Fake Adapter 映射矩阵 | 通过：多用户路由、未绑定/禁用提前拒绝、静态加载、旧单用户兼容、配置拒绝及脱敏检查均通过。|
+| `git diff --check` | 通过。|
+
+### 覆盖与证据
+
+- 映射文件仅接受 JSON 对象根、规范正整数且安全的系统用户 ID 键、严格 `{target, enabled}` 值；数组、非规范键、51 项、错误权限、相对路径、仓库内路径和符号链接均被拒绝。实现以 `realpath`、`lstat` 和精确 `0600` 检查保证映射文件为仓库外普通文件。
+- 静态 Fake Adapter 复测了两个启用用户的不同 target 路由；`enabled=false` 返回 `OPENCLAW_RECIPIENT_DISABLED`、未绑定返回 `OPENCLAW_RECIPIENT_NOT_BOUND`，两种路径均未增加 Adapter 调用数。
+- 映射模式优先于旧单接收人值；修改映射文件后的同一已加载 Gateway 仍投递到启动时快照。未配置映射时，旧单用户仍可投递，其他用户继续返回 `OPENCLAW_RECIPIENT_NOT_ALLOWED`。
+- `GatewayService.health()` 和 deprecated warning 均不包含完整 target；启动/CLI 仅输出同一脱敏 warning 文本。源码检查未发现把映射内容写入 health 或日志的路径。
+- 46 项回归同时覆盖 HMAC 规范签名、HTTP 认证/重放、幂等与并发、`result_unknown`、严格 OpenClaw 成功响应与 provider messageId；均无回归。
+
+### 未覆盖范围、严重级别与结论
+
+- 按本轮边界，未启动真实 OpenClaw、Gateway、Worker 或微信，不访问外网、DeepSeek 或业务数据库；因此不把本结论解释为真实发送或 Pilot 验证。
+- **P1=0、P2=0、P3=0。允许提交并进入后续代码验收。**
+- 本测试阶段新增的工作区变化仅为本报告第 14、15 节；实现、测试、文档和配置改动均为测试开始前已存在的待验证差异。

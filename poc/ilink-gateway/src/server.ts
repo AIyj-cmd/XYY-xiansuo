@@ -69,7 +69,8 @@ export function createGateway(config: GatewayConfig = loadConfig(), adapter?: Ch
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const gateway = createGateway()
-  gateway.server.listen({ host: loadConfig().ILINK_GATEWAY_HOST, port: loadConfig().ILINK_GATEWAY_PORT }, () => console.log('iLink PoC Gateway 已在本地监听'))
+  const config = loadConfig(); const gateway = createGateway(config)
+  for (const warning of config.deprecatedWarnings) console.warn(`WARNING: ${warning}`)
+  gateway.server.listen({ host: config.ILINK_GATEWAY_HOST, port: config.ILINK_GATEWAY_PORT }, () => console.log('iLink PoC Gateway 已在本地监听'))
   process.on('SIGTERM', () => gateway.close())
 }

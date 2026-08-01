@@ -1,5 +1,7 @@
 # 变更日志
 
+> OpenClaw 轻量级多人内部通知：Gateway 新增启动时一次性加载的仓库外 `OPENCLAW_RECIPIENT_MAP_FILE`。文件必须为精确 `0600` 的严格 JSON 对象（最多 50 个规范正整数系统用户 ID 键，值为 `@im.wechat` target 和 boolean enabled）；映射模式优先，未绑定返回 `OPENCLAW_RECIPIENT_NOT_BOUND`、禁用返回 `OPENCLAW_RECIPIENT_DISABLED`，均不调用 Adapter。旧单接收人配置继续兼容并保留 `OPENCLAW_RECIPIENT_NOT_ALLOWED`，且只输出不含用户或接收人标识的弃用警告；未修改业务数据库、Worker、H5 或真实发送边界。
+
 > 最终闭环（2026-08-01）：legacy import 会登记 generation 1 的 `result_unknown` attempt，人工确认只能写入一个终态；新 synthetic generation 必须使用新隔离 DB、新 key 和 sealed control manifest。私有 key 仅从 `0600` 文件或 stdin 读取，CLI 拒绝 argv key 和未知/重复/缺值参数。最终回归为 Gateway 44/44、Server 138/138、H5 构建通过；本轮未发送消息，仍禁止真实重跑。
 
 > 2026-08-01 离线 result_unknown 修复补充：Gateway 状态库新增 realpath/owner/0700/0600/符号链接与硬链接门禁、内部 checksum 迁移、append-only 人工确认和审计哈希链、永久 key 占用、attempt 与线性 generation ledger。仅离线 CLI 可烧毁 legacy key、记录人工确认、准备/授权/取消 generation 和 reconcile；无 HTTP/H5 入口。超时、断连、abort、非法 JSON 和裸 5xx 均收敛为 `result_unknown`；synthetic 任务最大尝试次数为 1，并携带 sealed control manifest 与稳定 delivery request ID。历史 `result_unknown`、`manually_confirmed_not_received`、confirmed count 0 保持不改写；未实际导入外部 state、启动 daemon 或发送。

@@ -8,7 +8,16 @@ import type { ChannelAdapter, ChannelDeliveryRequest, ChannelDeliveryResult } fr
 export class GatewayService {
   constructor(private readonly config: GatewayConfig, private readonly adapter: ChannelAdapter, private readonly idempotency: IdempotencyStore, private readonly state?: StateStore) {}
   async deliver(request: ChannelDeliveryRequest): Promise<ChannelDeliveryResult> {
-    if (request.recipientUserId !== Number(this.config.OPENCLAW_PILOT_USER_ID)) return { status: 'permanent_failure', errorCode: 'OPENCLAW_RECIPIENT_NOT_ALLOWED' }
+    let recipientExternalId: string | undefined
+    if (this.config.recipientMap) {
+      const recipient = this.config.recipientMap.get(request.recipientUserId)
+      if (!recipient) return { status: 'permanent_failure', errorCode: 'OPENCLAW_RECIPIENT_NOT_BOUND' }
+      if (!recipient.enabled) return { status: 'permanent_failure', errorCode: 'OPENCLAW_RECIPIENT_DISABLED' }
+      recipientExternalId = recipient.target
+    } else {
+      recipientExternalId = request.recipientUserId === Number(this.config.OPENCLAW_PILOT_USER_ID) ? this.config.ILINK_POC_RECIPIENT_EXTERNAL_ID : undefined
+      if (!recipientExternalId) return { status: 'permanent_failure', errorCode: 'OPENCLAW_RECIPIENT_NOT_ALLOWED' }
+    }
     try { assertMessagePolicy(request) } catch (error) { return { status: 'permanent_failure', errorCode: error instanceof Error ? error.message : 'ILINK_INTERNAL_ERROR' } }
     if (request.pilotControl) {
       if (!this.state || request.pilotControl.deliveryRequestId !== request.deliveryId) return { status: 'permanent_failure', errorCode: 'ILINK_PILOT_CONTROL_INVALID' }
@@ -16,12 +25,12 @@ export class GatewayService {
     }
     const message = { title: request.title, body: request.body, detailUrl: request.detailUrl }
     const messageHash = hashMessage(message)
-    const prior = this.idempotency.acquire(request.idempotencyKey, this.config.ILINK_POC_RECIPIENT_EXTERNAL_ID, messageHash, Date.now(), Boolean(request.pilotControl))
+    const prior = this.idempotency.acquire(request.idempotencyKey, recipientExternalId, messageHash, Date.now(), Boolean(request.pilotControl))
     if (prior) return prior
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), this.config.ILINK_REQUEST_TIMEOUT_MS)
     try {
-      const result = await this.adapter.send({ recipientExternalId: this.config.ILINK_POC_RECIPIENT_EXTERNAL_ID, message, idempotencyKey: request.idempotencyKey }, controller.signal)
+      const result = await this.adapter.send({ recipientExternalId, message, idempotencyKey: request.idempotencyKey }, controller.signal)
       // A deduplicated result is usable only when it carries the persisted
       // original local receipt. Never manufacture one in the worker.
       const safeResult = result.status === 'deduplicated' && !result.providerMessageId

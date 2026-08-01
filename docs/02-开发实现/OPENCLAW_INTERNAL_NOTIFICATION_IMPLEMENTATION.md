@@ -2,11 +2,11 @@
 
 本实现为实验性内部渠道，不是客户消息或大规模生产渠道。用户已接受专用账号长轮询、人工扫码、会话失效及账号风控风险；系统仍禁止 Hook、RPA、逆向协议、自动换号、批量发送、客户自动回复和任何入站业务接口。
 
-链路为业务 outbox → 单实例 notification-worker → 回环 iLink Gateway → 固定测试接收人。Gateway 不访问业务数据库；API、AI Scheduler、H5 不读取微信会话或 Gateway Secret。Secret 仅从仓库外精确 0600 文件读取；Gateway 使用规范 `OPENCLAW_STATE_DIR` 作为官方会话状态目录，旧 `ILINK_POC_SESSION_DIR` 仅兼容别名且不可并存。
+链路为业务 outbox → 单实例 notification-worker → 回环 iLink Gateway → 静态批准的内部接收人。Gateway 不访问业务数据库；API、AI Scheduler、H5 不读取微信会话或 Gateway Secret。Secret 与可选 `OPENCLAW_RECIPIENT_MAP_FILE` 均仅从仓库外精确 0600 文件读取；映射为最多 50 项的严格 JSON 对象，键仅允许规范正整数系统用户 ID（如 `"12"`），值为 `{ "target": "<接收人>@im.wechat", "enabled": true|false }`，且仅在 Gateway 启动时加载。未绑定返回 `OPENCLAW_RECIPIENT_NOT_BOUND`、禁用返回 `OPENCLAW_RECIPIENT_DISABLED`，均不会调用 Adapter；旧单接收人路径继续使用 `OPENCLAW_RECIPIENT_NOT_ALLOWED`。Gateway 使用规范 `OPENCLAW_STATE_DIR` 作为官方会话状态目录，旧 `ILINK_POC_SESSION_DIR` 仅兼容别名且不可并存。
 
 迁移 `007` 在单事务内重建 `notification_logs`，保持字段、数据、索引和外键，再将 `channel` 限制扩展为 `NULL`、`mock`、`openclaw`。不改 `001` 至 `006`，不回填、不补发、不启用规则。
 
-OpenClaw 仅支持一个正整数 pilot 用户，以及 `owner_changed`、`scheduled_follow_overdue`、`daily_report` 三个事件的单一 `openclaw` 规则。消息使用固定隐私模板和 `https://xs.tomatopia.top/`，不携带客户数据、AI 输出或登录凭证。`result_unknown` 记录为不可重试 `failed`，不自动重发。
+OpenClaw 支持由静态映射批准的正整数内部用户，以及 `owner_changed`、`scheduled_follow_overdue`、`daily_report` 三个事件的单一 `openclaw` 规则。映射模式优先于旧单 pilot 配置；旧配置仅兼容并产生脱敏弃用警告。消息使用固定隐私模板和 `https://xs.tomatopia.top/`，不携带客户数据、AI 输出或登录凭证。`result_unknown` 记录为不可重试 `failed`，不自动重发。
 
 Gateway 对同一幂等键持久保存投递状态和原子发送锁。只有明确 `retryable_failure` 才能在 Worker 的两次尝试上限内重新获取发送权；重启后仍可重试。同键的并发请求不能重复调用 Adapter；`sent`、`permanent_failure`、`result_unknown` 均失败关闭。`deduplicated` 必须返回已持久化的原本地回执，否则安全失败。OpenClaw 超时完全由 `OPENCLAW_GATEWAY_TIMEOUT_MS` 控制；Worker 的旧 10 秒保护只保留给 Mock。
 

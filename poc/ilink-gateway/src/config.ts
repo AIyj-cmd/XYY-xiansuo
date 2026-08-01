@@ -1,5 +1,6 @@
-import { lstatSync, mkdirSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { dirname, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 
 const bool = z.enum(['true', 'false']).optional().default('false').transform((value) => value === 'true')
@@ -14,18 +15,23 @@ const positiveInt = (min: number, max: number, fallback?: number) => z.string().
 
 const absolutePath = z.string().min(1).refine((value) => value.startsWith('/'), '必须为绝对路径')
 const nonEmpty = z.string().min(1, '不得为空')
+const recipientEntrySchema = z.object({
+  target: z.string().min(1).max(256).regex(/^\S+@im\.wechat$/, 'target 必须以 @im.wechat 结尾'),
+  enabled: z.boolean()
+}).strict()
 
 const configSchema = z.object({
   ILINK_POC_LIVE_ENABLED: bool,
   ILINK_OPENCLAW_BIN: nonEmpty.optional().default('openclaw'),
   ILINK_OPENCLAW_CHANNEL: z.literal('openclaw-weixin').optional().default('openclaw-weixin'),
-  ILINK_POC_RECIPIENT_EXTERNAL_ID: z.string().min(1).max(256),
+  ILINK_POC_RECIPIENT_EXTERNAL_ID: z.string().min(1).max(256).optional(),
   ILINK_POC_STATE_DIR: absolutePath,
   OPENCLAW_STATE_DIR: absolutePath.optional(),
   ILINK_GATEWAY_HOST: z.string().optional().default('127.0.0.1').refine((value) => value === '127.0.0.1' || value === '::1', 'PoC Gateway 只允许本地监听'),
   ILINK_GATEWAY_PORT: positiveInt(1024, 65535, 38115),
   ILINK_GATEWAY_SECRET_FILE: absolutePath,
-  OPENCLAW_PILOT_USER_ID: z.string().regex(/^[1-9]\d*$/, '只能为一个正整数'),
+  OPENCLAW_PILOT_USER_ID: z.string().regex(/^[1-9]\d*$/, '只能为一个正整数').optional(),
+  OPENCLAW_RECIPIENT_MAP_FILE: absolutePath.optional(),
   ILINK_REQUEST_TIMEOUT_MS: positiveInt(1_000, 120_000, 10_000),
   ILINK_SESSION_CHECK_TIMEOUT_MS: positiveInt(100, 60_000, 5_000),
   ILINK_GATEWAY_CLOCK_SKEW_SECONDS: positiveInt(30, 600, 300),
@@ -44,8 +50,11 @@ export type GatewayConfig = z.output<typeof configSchema> & {
   openclawStateDir?: string
   openclawConfigPath: string
   gatewaySecret: string
+  recipientMap?: ReadonlyMap<number, { target: string; enabled: boolean }>
   deprecatedWarnings: string[]
 }
+
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig {
   const unknownManaged = Object.keys(env).filter((key) => key.startsWith('ILINK_') && !knownKeys.has(key))
@@ -69,8 +78,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
   const openclawConfigPath = resolve(rawOpenclawConfigPath)
   ensurePrivateOpenClawConfigPath(openclawConfigPath)
   const gatewaySecret = readSecretFile(parsed.data.ILINK_GATEWAY_SECRET_FILE)
+  const recipientMap = parsed.data.OPENCLAW_RECIPIENT_MAP_FILE === undefined ? undefined : readRecipientMapFile(parsed.data.OPENCLAW_RECIPIENT_MAP_FILE)
+  const hasLegacyRecipientConfig = parsed.data.OPENCLAW_PILOT_USER_ID !== undefined || parsed.data.ILINK_POC_RECIPIENT_EXTERNAL_ID !== undefined
+  if (!recipientMap && (parsed.data.OPENCLAW_PILOT_USER_ID === undefined || parsed.data.ILINK_POC_RECIPIENT_EXTERNAL_ID === undefined)) throw new Error('iLink Gateway 配置无效：未配置 OPENCLAW_RECIPIENT_MAP_FILE 时必须同时设置旧单接收人配置')
+  if (hasLegacyRecipientConfig) warnings.push(recipientMap ? '旧单接收人配置已废弃且被 OPENCLAW_RECIPIENT_MAP_FILE 忽略；未输出用户或接收人标识' : '旧单接收人配置已废弃；请迁移至 OPENCLAW_RECIPIENT_MAP_FILE，未输出用户或接收人标识')
   if (parsed.data.ILINK_POC_LIVE_ENABLED && !openclawStateDir) throw new Error('iLink Gateway 配置无效：live 模式需要 OPENCLAW_STATE_DIR')
-  return { ...parsed.data, stateDir, openclawStateDir, openclawConfigPath, gatewaySecret, deprecatedWarnings: warnings }
+  return { ...parsed.data, stateDir, openclawStateDir, openclawConfigPath, gatewaySecret, recipientMap, deprecatedWarnings: warnings }
 }
 
 function readSecretFile(path: string): string {
@@ -80,6 +93,32 @@ function readSecretFile(path: string): string {
   const secret = readFileSync(resolved, 'utf8').trim()
   if (Buffer.byteLength(secret, 'utf8') < 32) throw new Error('Gateway Secret 至少 32 个字符')
   return secret
+}
+
+function readRecipientMapFile(path: string): ReadonlyMap<number, { target: string; enabled: boolean }> {
+  const resolved = resolve(path)
+  if (resolved === repositoryRoot || resolved.startsWith(`${repositoryRoot}${sep}`)) throw new Error('OPENCLAW_RECIPIENT_MAP_FILE 必须位于仓库外')
+  let actual: string
+  try { actual = realpathSync(resolved) } catch { throw new Error('OPENCLAW_RECIPIENT_MAP_FILE 必须是存在的仓库外文件') }
+  if (actual !== resolved || actual === repositoryRoot || actual.startsWith(`${repositoryRoot}${sep}`)) throw new Error('OPENCLAW_RECIPIENT_MAP_FILE 必须位于仓库外且不得经过符号链接')
+  let state: ReturnType<typeof lstatSync>
+  try { state = lstatSync(resolved) } catch { throw new Error('OPENCLAW_RECIPIENT_MAP_FILE 必须是存在的仓库外文件') }
+  if (!state.isFile() || state.isSymbolicLink() || (state.mode & 0o777) !== 0o600) throw new Error('OPENCLAW_RECIPIENT_MAP_FILE 必须是权限精确 0600 的普通文件')
+  let raw: unknown
+  try { raw = JSON.parse(readFileSync(resolved, 'utf8')) } catch { throw new Error('OPENCLAW_RECIPIENT_MAP_FILE 必须是合法 JSON') }
+  if (raw === null || Array.isArray(raw) || typeof raw !== 'object') throw new Error('OPENCLAW_RECIPIENT_MAP_FILE 格式无效：根必须是对象')
+  const entries = Object.entries(raw)
+  if (entries.length > 50) throw new Error('OPENCLAW_RECIPIENT_MAP_FILE 格式无效：最多 50 个接收人')
+  const recipientMap = new Map<number, { target: string; enabled: boolean }>()
+  for (const [key, value] of entries) {
+    if (!/^[1-9]\d*$/.test(key)) throw new Error('OPENCLAW_RECIPIENT_MAP_FILE 格式无效：用户 ID 键必须为规范正整数')
+    const userId = Number(key)
+    if (!Number.isSafeInteger(userId)) throw new Error('OPENCLAW_RECIPIENT_MAP_FILE 格式无效：用户 ID 键超出安全整数范围')
+    const parsed = recipientEntrySchema.safeParse(value)
+    if (!parsed.success) throw new Error(`OPENCLAW_RECIPIENT_MAP_FILE 格式无效：${parsed.error.issues.map((issue) => issue.message).join('；')}`)
+    recipientMap.set(userId, parsed.data)
+  }
+  return recipientMap
 }
 
 export function ensurePrivateDirectory(path: string, variable: string): void {
