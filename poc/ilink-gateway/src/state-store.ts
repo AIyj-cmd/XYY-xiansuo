@@ -5,6 +5,7 @@ import { join } from 'node:path'
 export type StoredDelivery = {
   idempotencyKey: string; recipientHash: string; messageHash: string; status: string; providerMessageId: string | null; errorCode: string | null
 }
+export type DeliveryAcquire = { acquired: true } | { acquired: false; record: StoredDelivery; retryInProgress?: boolean }
 
 export class StateStore {
   readonly databasePath: string
@@ -38,6 +39,10 @@ export class StateStore {
         value TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS delivery_locks (
+        idempotency_key TEXT PRIMARY KEY NOT NULL,
+        acquired_at INTEGER NOT NULL
+      );
     `)
     this.ensurePrivateArtifacts()
   }
@@ -57,16 +62,35 @@ export class StateStore {
       this.ensurePrivateArtifacts(); return true
     } catch { return false }
   }
-  findDelivery(idempotencyKey: string): StoredDelivery | undefined {
-    return this.db.prepare('SELECT idempotency_key AS idempotencyKey, recipient_hash AS recipientHash, message_hash AS messageHash, status, provider_message_id AS providerMessageId, error_code AS errorCode FROM deliveries WHERE idempotency_key = ?').get(idempotencyKey) as StoredDelivery | undefined
+  /**
+   * Atomically grants the only adapter-send lease for a new delivery or a
+   * previously explicit retryable failure.  A process crash after acquisition
+   * leaves the delivery result_unknown, deliberately failing closed.
+   */
+  acquireDelivery(idempotencyKey: string, recipientHash: string, messageHash: string, now: number): DeliveryAcquire {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const existing = this.db.prepare('SELECT idempotency_key AS idempotencyKey, recipient_hash AS recipientHash, message_hash AS messageHash, status, provider_message_id AS providerMessageId, error_code AS errorCode FROM deliveries WHERE idempotency_key = ?').get(idempotencyKey) as StoredDelivery | undefined
+      if (!existing) {
+        this.db.prepare('INSERT INTO deliveries(idempotency_key,recipient_hash,message_hash,status,provider_message_id,error_code,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run(idempotencyKey, recipientHash, messageHash, 'result_unknown', null, 'ILINK_SEND_RESULT_UNKNOWN', now, now)
+        this.db.prepare('INSERT INTO delivery_locks(idempotency_key,acquired_at) VALUES (?,?)').run(idempotencyKey, now)
+        this.db.exec('COMMIT'); this.ensurePrivateArtifacts(); return { acquired: true }
+      }
+      if (existing.recipientHash !== recipientHash || existing.messageHash !== messageHash) { this.db.exec('COMMIT'); return { acquired: false, record: existing } }
+      if (existing.status !== 'retryable_failure') { this.db.exec('COMMIT'); return { acquired: false, record: existing } }
+      const lock = this.db.prepare('INSERT OR IGNORE INTO delivery_locks(idempotency_key,acquired_at) VALUES (?,?)').run(idempotencyKey, now)
+      if (!lock.changes) { this.db.exec('COMMIT'); return { acquired: false, record: existing, retryInProgress: true } }
+      this.db.prepare("UPDATE deliveries SET status='result_unknown',provider_message_id=NULL,error_code='ILINK_SEND_RESULT_UNKNOWN',updated_at=? WHERE idempotency_key=? AND status='retryable_failure'").run(now, idempotencyKey)
+      this.db.exec('COMMIT'); this.ensurePrivateArtifacts(); return { acquired: true }
+    } catch (error) { try { this.db.exec('ROLLBACK') } catch {} throw error }
   }
-  createDelivery(delivery: StoredDelivery, now: number): void {
-    this.db.prepare('INSERT INTO deliveries(idempotency_key,recipient_hash,message_hash,status,provider_message_id,error_code,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run(delivery.idempotencyKey, delivery.recipientHash, delivery.messageHash, delivery.status, delivery.providerMessageId, delivery.errorCode, now, now)
-    this.ensurePrivateArtifacts()
-  }
-  updateDelivery(idempotencyKey: string, status: string, providerMessageId: string | undefined, errorCode: string | undefined, now: number): void {
-    this.db.prepare('UPDATE deliveries SET status=?, provider_message_id=?, error_code=?, updated_at=? WHERE idempotency_key=?').run(status, providerMessageId ?? null, errorCode ?? null, now, idempotencyKey)
-    this.ensurePrivateArtifacts()
+  finalizeDelivery(idempotencyKey: string, status: string, providerMessageId: string | undefined, errorCode: string | undefined, now: number): void {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare('UPDATE deliveries SET status=?, provider_message_id=?, error_code=?, updated_at=? WHERE idempotency_key=?').run(status, providerMessageId ?? null, errorCode ?? null, now, idempotencyKey)
+      this.db.prepare('DELETE FROM delivery_locks WHERE idempotency_key=?').run(idempotencyKey)
+      this.db.exec('COMMIT'); this.ensurePrivateArtifacts()
+    } catch (error) { try { this.db.exec('ROLLBACK') } catch {} throw error }
   }
   setMeta(key: string, value: string, now: number): void {
     this.db.prepare('INSERT INTO gateway_meta(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at').run(key, value, now)

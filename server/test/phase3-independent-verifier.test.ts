@@ -135,6 +135,37 @@ test('管理 preview 不落库、敏感规则字段被拒绝、版本冲突返�
   assert.equal(conflict.statusCode, 409);
 });
 
+test('管理员 preview 与 PUT 对单渠道和接收人策略采用相同校验，且未实现事件不回归', async () => {
+  const current = (await app.inject({ method: 'GET', url: '/api/admin/notification-rules/owner_changed', headers: { authorization: `Bearer ${adminToken}` } })).json().data;
+  const sample = { lead_id: 1, actor_user_id: ids['iv-admin'], old_owner_id: ids['iv-old'], new_owner_id: ids['iv-new'] };
+  const requestFor = (enabled: boolean, channel_order: string[], recipient_strategy = 'new_owner') => ({ enabled, recipient_strategy, channel_order, config: current.config, expected_version: current.version });
+  for (const enabled of [false, true]) {
+    for (const channel_order of [[], ['mock', 'openclaw'], ['other']]) {
+      const rule = requestFor(enabled, channel_order);
+      const put = await app.inject({ method: 'PUT', url: '/api/admin/notification-rules/owner_changed', headers: { authorization: `Bearer ${adminToken}` }, payload: rule });
+      const preview = await app.inject({ method: 'POST', url: '/api/admin/notification-rules/owner_changed/preview', headers: { authorization: `Bearer ${adminToken}` }, payload: { rule, sample } });
+      assert.equal(put.statusCode, 400); assert.equal(preview.statusCode, 400);
+      assert.equal(put.json().data.error_code, preview.json().data.error_code);
+      assert.notEqual(preview.json().data?.decision, 'pending');
+    }
+    const wrongRecipient = requestFor(enabled, ['mock'], 'reserved');
+    const put = await app.inject({ method: 'PUT', url: '/api/admin/notification-rules/owner_changed', headers: { authorization: `Bearer ${adminToken}` }, payload: wrongRecipient });
+    const preview = await app.inject({ method: 'POST', url: '/api/admin/notification-rules/owner_changed/preview', headers: { authorization: `Bearer ${adminToken}` }, payload: { rule: wrongRecipient, sample } });
+    assert.equal(put.statusCode, 400); assert.equal(preview.statusCode, 400);
+    assert.equal(put.json().data.error_code, 'CHANNEL_NOT_ALLOWED'); assert.equal(preview.json().data.error_code, 'CHANNEL_NOT_ALLOWED');
+  }
+  const memberPreview = await app.inject({ method: 'POST', url: '/api/admin/notification-rules/owner_changed/preview', headers: { authorization: `Bearer ${memberToken}` }, payload: { rule: requestFor(false, ['mock']), sample } });
+  assert.equal(memberPreview.statusCode, 403);
+  const unsupportedRule = requestFor(false, ['mock']);
+  for (const request of [
+    app.inject({ method: 'PUT', url: '/api/admin/notification-rules/visit_reminder', headers: { authorization: `Bearer ${adminToken}` }, payload: unsupportedRule }),
+    app.inject({ method: 'POST', url: '/api/admin/notification-rules/visit_reminder/preview', headers: { authorization: `Bearer ${adminToken}` }, payload: { rule: unsupportedRule, sample } }),
+  ]) {
+    const response = await request;
+    assert.equal(response.statusCode, 400); assert.equal(response.json().data.error_code, 'EVENT_NOT_IMPLEMENTED');
+  }
+});
+
 test('成功投递也必须计入总尝试次数', () => {
   const id = makeLead('成功尝试计数');
   process.env.NOTIFICATION_MOCK_ENABLED = 'true';
@@ -406,7 +437,7 @@ test('五个阶段三开关默认关闭且拒绝非法值', () => {
   const keys = ['LEAD_POOL_CLAIM_ENABLED', 'NOTIFICATION_CAPTURE_ENABLED', 'NOTIFICATION_WORKER_ENABLED', 'NOTIFICATION_MOCK_ENABLED', 'NOTIFICATION_SCHEDULER_ENABLED'] as const;
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
-  assert.deepEqual(resolveNotificationConfig(), { leadPoolClaimEnabled: false, captureEnabled: false, workerEnabled: false, mockEnabled: false, schedulerEnabled: false });
+  assert.deepEqual(resolveNotificationConfig(), { leadPoolClaimEnabled: false, captureEnabled: false, workerEnabled: false, mockEnabled: false, schedulerEnabled: false, openclawEnabled: false, openclawGatewayTimeoutMs: 10000, openclawMaxAttempts: 2 });
   for (const key of keys) {
     process.env[key] = 'invalid';
     assert.throws(() => resolveNotificationConfig(), new RegExp(`${key}.*true.*false`));

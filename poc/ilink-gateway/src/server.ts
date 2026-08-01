@@ -29,7 +29,7 @@ export function createGateway(config: GatewayConfig = loadConfig(), adapter?: Ch
   const service = new GatewayService(config, adapter ?? new ILinkAdapter(config), new IdempotencyStore(store))
   const replay = new ReplayStore(store)
   const rate = new Map<string, number[]>()
-  const secretList = [config.ILINK_GATEWAY_SECRET, config.ILINK_GATEWAY_PREVIOUS_SECRET].filter((value): value is string => Boolean(value))
+  const secretList = [config.gatewaySecret]
   const authorized = (request: IncomingMessage, body: Buffer, path: string): string | undefined => {
     const timestamp = request.headers[SIGNATURE_HEADERS.timestamp] as string | undefined
     const nonce = request.headers[SIGNATURE_HEADERS.nonce] as string | undefined

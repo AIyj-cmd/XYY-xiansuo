@@ -3,15 +3,14 @@ import { z } from 'zod'
 export const deliveryRequestSchema = z.object({
   deliveryId: z.string().uuid(),
   idempotencyKey: z.string().min(16).max(200),
-  recipientExternalId: z.string().min(1).max(256),
-  message: z.object({
-    title: z.string().min(1).max(40),
-    body: z.string().max(500).optional(),
-    detailUrl: z.string().url().max(500).optional()
-  }).strict()
+  recipientUserId: z.number().int().positive(),
+  title: z.string().min(1).max(40),
+  body: z.string().min(1).max(500),
+  detailUrl: z.literal('https://xs.tomatopia.top/')
 }).strict()
 
 export type ChannelDeliveryRequest = z.infer<typeof deliveryRequestSchema>
+export type AdapterDeliveryRequest = { recipientExternalId: string; message: { title: string; body: string; detailUrl: string }; idempotencyKey: string }
 
 export const deliveryStatusSchema = z.enum([
   'sent', 'deduplicated', 'retryable_failure', 'permanent_failure', 'result_unknown'
@@ -31,7 +30,7 @@ export type AdapterHealth = { status: GatewayHealthStatus; code?: string; sessio
 
 export interface ChannelAdapter {
   readonly name: 'fake' | 'ilink'
-  send(request: Pick<ChannelDeliveryRequest, 'recipientExternalId' | 'message' | 'idempotencyKey'>, signal: AbortSignal): Promise<ChannelDeliveryResult>
+  send(request: AdapterDeliveryRequest, signal: AbortSignal): Promise<ChannelDeliveryResult>
   health(): Promise<AdapterHealth>
 }
 
@@ -59,6 +58,7 @@ export const ERROR_DISPOSITIONS: Record<string, ErrorDisposition> = {
   ILINK_SEND_TIMEOUT: { retryable: false, mayDuplicate: true, level: 'warn', requiresHuman: true },
   ILINK_SEND_RESULT_UNKNOWN: { retryable: false, mayDuplicate: true, level: 'error', requiresHuman: true },
   ILINK_RATE_LIMITED: { retryable: true, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_RETRY_IN_PROGRESS: { retryable: true, mayDuplicate: false, level: 'warn', requiresHuman: false },
   ILINK_VERSION_UNSUPPORTED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
   ILINK_CAPABILITY_UNSUPPORTED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
   ILINK_SEND_CONTRACT_UNVERIFIED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },

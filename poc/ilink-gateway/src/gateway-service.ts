@@ -7,19 +7,23 @@ import type { ChannelAdapter, ChannelDeliveryRequest, ChannelDeliveryResult } fr
 export class GatewayService {
   constructor(private readonly config: GatewayConfig, private readonly adapter: ChannelAdapter, private readonly idempotency: IdempotencyStore) {}
   async deliver(request: ChannelDeliveryRequest): Promise<ChannelDeliveryResult> {
-    if (request.recipientExternalId !== this.config.ILINK_POC_RECIPIENT_EXTERNAL_ID) return { status: 'permanent_failure', errorCode: 'ILINK_RECIPIENT_MISMATCH' }
+    if (request.recipientUserId !== Number(this.config.OPENCLAW_PILOT_USER_ID)) return { status: 'permanent_failure', errorCode: 'OPENCLAW_RECIPIENT_NOT_ALLOWED' }
     try { assertMessagePolicy(request) } catch (error) { return { status: 'permanent_failure', errorCode: error instanceof Error ? error.message : 'ILINK_INTERNAL_ERROR' } }
-    const messageHash = hashMessage(request.message)
-    const prior = this.idempotency.existing(request.idempotencyKey, request.recipientExternalId, messageHash)
+    const message = { title: request.title, body: request.body, detailUrl: request.detailUrl }
+    const messageHash = hashMessage(message)
+    const prior = this.idempotency.acquire(request.idempotencyKey, this.config.ILINK_POC_RECIPIENT_EXTERNAL_ID, messageHash, Date.now())
     if (prior) return prior
-    const now = Date.now()
-    this.idempotency.reserve(request.idempotencyKey, request.recipientExternalId, messageHash, now)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), this.config.ILINK_REQUEST_TIMEOUT_MS)
     try {
-      const result = await this.adapter.send(request, controller.signal)
-      this.idempotency.finalize(request.idempotencyKey, result, Date.now())
-      return result
+      const result = await this.adapter.send({ recipientExternalId: this.config.ILINK_POC_RECIPIENT_EXTERNAL_ID, message, idempotencyKey: request.idempotencyKey }, controller.signal)
+      // A deduplicated result is usable only when it carries the persisted
+      // original local receipt. Never manufacture one in the worker.
+      const safeResult = result.status === 'deduplicated' && !result.providerMessageId
+        ? { status: 'permanent_failure' as const, errorCode: 'ILINK_DEDUPLICATED_RECEIPT_MISSING' }
+        : result
+      this.idempotency.finalize(request.idempotencyKey, safeResult, Date.now())
+      return safeResult
     } catch {
       const result: ChannelDeliveryResult = controller.signal.aborted
         ? { status: 'retryable_failure', errorCode: 'ILINK_SEND_TIMEOUT' }

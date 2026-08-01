@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { canonicalRequest, freshNonce, sha256, sign } from '../src/auth.js'
-import { loadConfig, ensurePrivateSessionDirectory, ensurePrivateStateDirectory, type GatewayConfig } from '../src/config.js'
+import { loadConfig, ensurePrivateOpenClawStateDirectory, ensurePrivateStateDirectory, type GatewayConfig } from '../src/config.js'
 import { IdempotencyStore } from '../src/idempotency-store.js'
 import { GatewayService } from '../src/gateway-service.js'
 import { OfficialRuntime, type CommandResult, type OfficialCommandRunner, hasVerifiedOutboundSendCapability, satisfiesDeclaredCompatibility } from '../src/official-runtime.js'
@@ -18,13 +18,16 @@ import { requiredIdempotencyKey } from '../src/cli/arguments.js'
 import { runLogin } from '../src/cli/login.js'
 import { publicPrereq } from '../src/cli/prereq-check.js'
 import { publicSession } from '../src/cli/official-session-status.js'
+import { SYNTHETIC_MESSAGE } from '../src/message-policy.js'
 
 function directory(): string { const value = mkdtempSync(join(tmpdir(), 'xiansuo-ilink-')); chmodSync(value, 0o700); return value }
+function secretFile(dir: string): string { const file = join(dir, 'gateway.secret'); writeFileSync(file, 'a'.repeat(48), { mode: 0o600 }); chmodSync(file, 0o600); return file }
 function openclawConfigPath(dir: string): string { const parent = join(dir, 'openclaw-config'); mkdirSync(parent, { recursive: true, mode: 0o700 }); chmodSync(parent, 0o700); return join(parent, 'openclaw.json') }
 function config(dir: string, extra: Record<string, string> = {}): GatewayConfig {
-  return loadConfig({ ILINK_POC_STATE_DIR: dir, ILINK_POC_SESSION_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1', ...extra })
+  return loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1', ...extra })
 }
-function request() { return { deliveryId: randomUUID(), idempotencyKey: `phase5a-test-${randomUUID()}`, recipientExternalId: 'test-recipient-1', message: { title: '【测试通知】', body: '这是一条XYY-xiansuo渠道隔离测试消息。\n不包含真实客户或业务数据。' } } }
+function request() { return { deliveryId: randomUUID(), idempotencyKey: `phase5a-test-${randomUUID()}`, recipientUserId: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' } }
+function adapterRequest() { return { recipientExternalId: 'test-recipient-1', idempotencyKey: `phase5a-test-${randomUUID()}`, message: { ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' } } }
 function result(stdout = '', exitCode = 0): CommandResult { return { stdout, stderr: '', exitCode } }
 function runner(responses: Record<string, CommandResult>, interactiveExit = 0): OfficialCommandRunner {
   const key = (args: readonly string[]) => args.join(' ')
@@ -63,7 +66,7 @@ test('all OpenClaw subprocesses receive isolated state/config environment and ov
     const observed: OfficialCommandRunner = { run: async (command, args, timeout, environment) => { environments.push(environment); return base.run(command, args, timeout, environment) }, interactive: async (_command, _args, environment) => { environments.push(environment); return 0 } }
     const runtime = new OfficialRuntime(cfg, observed); await runtime.prereqCheck(); await runtime.sessionStatus(); await runtime.login(); await runtime.sendSynthetic('test-recipient-1', 'fixed')
     assert.ok(environments.length >= 7)
-    for (const environment of environments) { assert.equal(environment.OPENCLAW_STATE_DIR, cfg.sessionDir); assert.equal(environment.OPENCLAW_CONFIG_PATH, cfg.openclawConfigPath) }
+    for (const environment of environments) { assert.equal(environment.OPENCLAW_STATE_DIR, cfg.openclawStateDir); assert.equal(environment.OPENCLAW_CONFIG_PATH, cfg.openclawConfigPath) }
   } finally {
     if (previousState === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = previousState
     if (previousConfig === undefined) delete process.env.OPENCLAW_CONFIG_PATH; else process.env.OPENCLAW_CONFIG_PATH = previousConfig
@@ -99,7 +102,7 @@ test('compatibility fallback reads only a bounded real package inside the isolat
       'plugins info openclaw-weixin --json': result(JSON.stringify({ version: '2.4.6', plugin: { rootDir: root }, install: { installPath: root, version: '2.4.6' } })),
       'channels capabilities --channel openclaw-weixin --timeout 5000 --json': result(JSON.stringify(capabilities))
     }))
-    const privatePlugin = (name: string) => { const root = join(cfg.sessionDir!, 'plugins', name); mkdirSync(root, { recursive: true, mode: 0o700 }); return root }
+    const privatePlugin = (name: string) => { const root = join(cfg.openclawStateDir!, 'plugins', name); mkdirSync(root, { recursive: true, mode: 0o700 }); return root }
     const validRoot = privatePlugin('valid'); writeFileSync(join(validRoot, 'package.json'), JSON.stringify({ openclaw: { install: { minHostVersion: '2026.3.22' } } }), { mode: 0o600 })
     assert.equal((await makeRuntime(validRoot).prereqCheck()).conclusion, 'READY')
     const outsideRoot = join(dir, 'outside-plugin'); mkdirSync(outsideRoot, { mode: 0o700 }); writeFileSync(join(outsideRoot, 'package.json'), JSON.stringify({ openclaw: { install: { minHostVersion: '2026.3.22' } } }), { mode: 0o600 })
@@ -118,7 +121,7 @@ test('live-off prereq uses a derived private directory instead of default or par
   try {
     process.env.OPENCLAW_STATE_DIR = '/unsafe-parent-state'
     const configPath = openclawConfigPath(dir)
-    const cfg = loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1' })
+    const cfg = loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1' })
     let environment: NodeJS.ProcessEnv | undefined
     const fake: OfficialCommandRunner = { run: async (_command, _args, _timeout, value) => { environment = value; return { ...result('', 1), spawnError: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) } }, interactive: async () => null }
     assert.equal((await new OfficialRuntime(cfg, fake).prereqCheck()).code, 'ILINK_OPENCLAW_NOT_INSTALLED')
@@ -169,20 +172,23 @@ test('private state and session directories require 0700 and reject symbolic lin
   const parent = directory(); try {
     const real = join(parent, 'real'); const linked = join(parent, 'linked'); mkdirSync(real, { mode: 0o700 }); symlinkSync(real, linked)
     assert.throws(() => ensurePrivateStateDirectory(config(linked)), /ILINK_POC_STATE_DIR/)
-    const cfg = config(parent); ensurePrivateStateDirectory(cfg); ensurePrivateSessionDirectory(cfg); chmodSync(cfg.sessionDir!, 0o755); assert.throws(() => ensurePrivateSessionDirectory(cfg), /0700/)
+    const cfg = config(parent); ensurePrivateStateDirectory(cfg); ensurePrivateOpenClawStateDirectory(cfg); chmodSync(cfg.openclawStateDir!, 0o755); assert.throws(() => ensurePrivateOpenClawStateDirectory(cfg), /0700/)
   } finally { rmSync(parent, { recursive: true, force: true }) }
 })
 
 test('configuration accepts only frozen names, absolute paths and a non-conflicting legacy alias', () => {
   const dir = directory(); try {
     const configPath = openclawConfigPath(dir)
-    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: 'relative', OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }))
-    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: 'relative', ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }))
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: 'relative', OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }))
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: 'relative', ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }))
     assert.throws(() => config(dir, { ILINK_UNKNOWN: 'x' }))
     assert.throws(() => config(dir, { ILINK_GATEWAY_STATE_DIR: '/tmp/one', ILINK_POC_STATE_DIR: '/tmp/two' }))
-    const alias = loadConfig({ ILINK_GATEWAY_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' })
+    const alias = loadConfig({ ILINK_GATEWAY_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' })
     assert.equal(alias.stateDir, dir); assert.equal(alias.deprecatedWarnings.length, 1)
-    assert.throws(() => config(dir, { ILINK_POC_LIVE_ENABLED: 'true', ILINK_POC_SESSION_DIR: '' }))
+    const stateAlias = loadConfig({ ILINK_POC_STATE_DIR: dir, ILINK_POC_SESSION_DIR: join(dir, 'legacy-session'), OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' })
+    assert.equal(stateAlias.openclawStateDir, join(dir, 'legacy-session')); assert.ok(stateAlias.deprecatedWarnings.some((warning) => warning.includes('ILINK_POC_SESSION_DIR')))
+    assert.throws(() => config(dir, { ILINK_POC_SESSION_DIR: join(dir, 'legacy-session') }), /不得同时设置/)
+    assert.throws(() => config(dir, { ILINK_POC_LIVE_ENABLED: 'true', OPENCLAW_STATE_DIR: '' }))
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -191,19 +197,19 @@ test('OpenClaw configuration path requires a private real parent and a private r
     const configPath = openclawConfigPath(dir)
     const parent = join(dir, 'openclaw-config')
     chmodSync(parent, 0o755)
-    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /父目录权限必须为 0700/)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /父目录权限必须为 0700/)
     chmodSync(parent, 0o600)
-    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /父目录权限必须为 0700/)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /父目录权限必须为 0700/)
     chmodSync(parent, 0o700)
-    assert.doesNotThrow(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }))
+    assert.doesNotThrow(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }))
     const realParent = join(dir, 'real-config'); mkdirSync(realParent, { mode: 0o700 }); rmSync(parent, { recursive: true }); symlinkSync(realParent, parent)
-    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /父目录必须是非符号链接目录/)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /父目录必须是非符号链接目录/)
     rmSync(parent, { recursive: true })
     mkdirSync(parent, { mode: 0o700 }); chmodSync(parent, 0o700)
     writeFileSync(configPath, '{}', { mode: 0o600 }); chmodSync(configPath, 0o644)
-    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /权限必须不超过 0600/)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /权限必须不超过 0600/)
     chmodSync(configPath, 0o600); rmSync(configPath); symlinkSync(join(dir, 'target.json'), configPath)
-    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /普通非符号链接文件/)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /普通非符号链接文件/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -215,14 +221,26 @@ test('configuration rejects invalid boolean, port and timeout without silently c
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('Gateway Secret must be an exact 0600 regular file', () => {
+  const dir = directory(); const file = secretFile(dir)
+  try {
+    for (const mode of [0o400, 0o200, 0o000, 0o644]) {
+      chmodSync(file, mode)
+      assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: file, OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'recipient' }), /精确 0600/)
+    }
+    chmodSync(file, 0o600); const linked = join(dir, 'linked.secret'); symlinkSync(file, linked)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: linked, OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'recipient' }), /普通文件/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('ret=0 means sent even with no server message id and local receipt is stable and redacted', () => {
-  const item = request(); const first = classifyOfficialResponse(item, { httpStatus: 200, body: { ret: 0 } }); const second = classifyOfficialResponse(item, { httpStatus: 200, body: { ret: 0 } })
+  const item = adapterRequest(); const first = classifyOfficialResponse(item, { httpStatus: 200, body: { ret: 0 } }); const second = classifyOfficialResponse(item, { httpStatus: 200, body: { ret: 0 } })
   assert.equal(first.status, 'sent'); assert.match(first.providerMessageId!, /^ilink-local:[a-f0-9]{64}$/); assert.equal(first.providerMessageId, second.providerMessageId)
   const supplied = classifyOfficialResponse(item, { httpStatus: 200, body: { ret: 0, message_id: 'provider-secret-id' } }); assert.match(supplied.providerMessageId!, /^ilink-provider:[a-f0-9]{64}$/)
 })
 
 test('nonzero ret is never sent and preserves only safe classifications', () => {
-  const item = request()
+  const item = adapterRequest()
   assert.equal(classifyOfficialResponse(item, { httpStatus: 200, body: { ret: -14, errmsg: 'sensitive upstream text' } }).errorCode, 'ILINK_SESSION_EXPIRED')
   assert.equal(classifyOfficialResponse(item, { httpStatus: 403, body: { ret: 3 } }).errorCode, 'ILINK_ACCOUNT_RESTRICTED')
   assert.equal(classifyOfficialResponse(item, { httpStatus: 429, body: { ret: 3 } }).status, 'retryable_failure')
@@ -230,7 +248,7 @@ test('nonzero ret is never sent and preserves only safe classifications', () => 
 })
 
 test('only possibly committed requests become result_unknown', () => {
-  const item = request()
+  const item = adapterRequest()
   assert.equal(classifyOfficialResponse(item, { httpStatus: 200, body: 'not-json' }).status, 'result_unknown')
   assert.equal(classifyOfficialResponse(item, { httpStatus: 0, body: undefined, phase: 'before_request' }).status, 'permanent_failure')
 })
@@ -239,7 +257,7 @@ test('adapter keeps live disabled offline and never invokes a transport', async 
   const dir = directory(); try {
     const transport = new MockOfficialSendTransport({ httpStatus: 200, body: { ret: 0 } }); const adapter = new ILinkAdapter(config(dir), readyRuntime(config(dir)), transport)
     assert.deepEqual(await adapter.health(), { status: 'healthy', channelStatus: 'disabled', code: 'ILINK_LIVE_DISABLED' })
-    assert.equal((await adapter.send(request(), new AbortController().signal)).errorCode, 'ILINK_LIVE_DISABLED')
+    assert.equal((await adapter.send(adapterRequest(), new AbortController().signal)).errorCode, 'ILINK_LIVE_DISABLED')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -261,7 +279,7 @@ test('request-before-submit failures remain explicit and never become result_unk
   const dir = directory(); try {
     const cfg = config(dir, { ILINK_POC_LIVE_ENABLED: 'true' })
     const adapter = new ILinkAdapter(cfg, readyRuntime(cfg), new MockOfficialSendTransport(undefined, new OfficialTransportError('ILINK_GATEWAY_OFFLINE', 'before_request')))
-    const outcome = await adapter.send(request(), new AbortController().signal)
+    const outcome = await adapter.send(adapterRequest(), new AbortController().signal)
     assert.equal(outcome.status, 'retryable_failure'); assert.equal(outcome.errorCode, 'ILINK_GATEWAY_OFFLINE')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
@@ -269,7 +287,7 @@ test('request-before-submit failures remain explicit and never become result_unk
 test('missing explicit official outbound capability remains a hard live gate', async () => {
   const dir = directory(); try {
     const cfg = config(dir, { ILINK_POC_LIVE_ENABLED: 'true' }); const blocked = new OfficialRuntime(cfg, runner({ '--version': result('2026.8.1'), 'plugins info openclaw-weixin --json': result(JSON.stringify({ version: '2.4.6', engines: { openclaw: '>=2026.3.22' } })), 'channels capabilities --channel openclaw-weixin --timeout 5000 --json': result(JSON.stringify({ capabilities: {} })) }))
-    const outcome = await new ILinkAdapter(cfg, blocked).send(request(), new AbortController().signal)
+    const outcome = await new ILinkAdapter(cfg, blocked).send(adapterRequest(), new AbortController().signal)
     assert.deepEqual({ status: outcome.status, code: outcome.errorCode }, { status: 'permanent_failure', code: 'ILINK_SEND_CONTRACT_UNVERIFIED' })
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
@@ -277,9 +295,9 @@ test('missing explicit official outbound capability remains a hard live gate', a
 test('mock transport validates successful and unknown live send lifecycle without network', async () => {
   const dir = directory(); try {
     const cfg = config(dir, { ILINK_POC_LIVE_ENABLED: 'true' }); const sent = new ILinkAdapter(cfg, readyRuntime(cfg), new MockOfficialSendTransport({ httpStatus: 200, body: { ret: 0 } }))
-    assert.equal((await sent.send(request(), new AbortController().signal)).status, 'sent')
+    assert.equal((await sent.send(adapterRequest(), new AbortController().signal)).status, 'sent')
     const unknown = new ILinkAdapter(cfg, readyRuntime(cfg), new MockOfficialSendTransport(undefined, new OfficialTransportError('ignored', 'after_request')))
-    assert.equal((await unknown.send(request(), new AbortController().signal)).status, 'result_unknown')
+    assert.equal((await unknown.send(adapterRequest(), new AbortController().signal)).status, 'result_unknown')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -288,16 +306,17 @@ test('official CLI transport uses exact fixed send argv and fails closed on non-
     const cfg = config(dir); let args: readonly string[] = []
     const fake = runner({ '--version': result('2026.8.1'), 'plugins info openclaw-weixin --json': result(JSON.stringify({ version: '2.4.6', engines: { openclaw: '>=2026.3.22' } })), 'channels capabilities --channel openclaw-weixin --timeout 5000 --json': result(JSON.stringify({ actions: ['send'] })) })
     const observed: OfficialCommandRunner = { ...fake, run: async (command, value, timeout) => { args = value; return fake.run(command, value, timeout) } }
-    const transport = new OpenClawCliTransport(new OfficialRuntime(cfg, observed), 'openclaw-weixin'); const item = request()
+    const transport = new OpenClawCliTransport(new OfficialRuntime(cfg, observed), 'openclaw-weixin'); const item = adapterRequest()
     await assert.rejects(() => transport.send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
-    assert.deepEqual(args, ['message', 'send', '--channel', 'openclaw-weixin', '--target', 'test-recipient-1', '--message', '【测试通知】\n\n这是一条XYY-xiansuo渠道隔离测试消息。\n不包含真实客户或业务数据。', '--json'])
+    assert.deepEqual(args, ['message', 'send', '--channel', 'openclaw-weixin', '--target', 'test-recipient-1', '--message', `${SYNTHETIC_MESSAGE.title}\n\n${SYNTHETIC_MESSAGE.body}`, '--json'])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('official CLI transport treats raw ret separately from strict runtime confirmations', async () => {
   const dir = directory(); try {
-    const cfg = config(dir); const item = request()
-    const make = (send: CommandResult) => new OpenClawCliTransport(new OfficialRuntime(cfg, runner({ 'message send --channel openclaw-weixin --target test-recipient-1 --message 【测试通知】\n\n这是一条XYY-xiansuo渠道隔离测试消息。\n不包含真实客户或业务数据。 --json': send })), 'openclaw-weixin')
+    const cfg = config(dir); const item = adapterRequest()
+    const sendKey = `message send --channel openclaw-weixin --target test-recipient-1 --message ${SYNTHETIC_MESSAGE.title}\n\n${SYNTHETIC_MESSAGE.body} --json`
+    const make = (send: CommandResult) => new OpenClawCliTransport(new OfficialRuntime(cfg, runner({ [sendKey]: send })), 'openclaw-weixin')
     assert.equal(classifyOfficialResponse(item, await make(result(JSON.stringify({ ret: 0 }))).send(item, new AbortController().signal)).status, 'sent')
     assert.equal(classifyOfficialResponse(item, await make(result(JSON.stringify({ ret: -14 }), 1)).send(item, new AbortController().signal)).errorCode, 'ILINK_SESSION_EXPIRED')
     const confirmed = classifyOfficialResponse(item, await make(result(JSON.stringify({ ok: true, result: { messageId: 'stable-provider-id', channelId: 'provider-target-id' } }))).send(item, new AbortController().signal))
@@ -314,8 +333,50 @@ test('idempotency deduplicates sent results and blocks conflicts and result_unkn
   const dir = directory(); try {
     const state = new StateStore(dir); const service = new GatewayService(config(dir), new FakeAdapter(), new IdempotencyStore(state)); const item = request()
     assert.equal((await service.deliver(item)).status, 'sent'); assert.equal((await service.deliver(item)).status, 'deduplicated')
-    assert.equal((await service.deliver({ ...item, recipientExternalId: 'different' })).errorCode, 'ILINK_RECIPIENT_MISMATCH')
+    assert.equal((await service.deliver({ ...item, recipientUserId: 2 })).errorCode, 'OPENCLAW_RECIPIENT_NOT_ALLOWED')
     const unknown = new GatewayService(config(dir), new FakeAdapter('result_unknown'), new IdempotencyStore(state)); const second = request(); assert.equal((await unknown.deliver(second)).status, 'result_unknown'); assert.equal((await unknown.deliver(second)).status, 'result_unknown'); state.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('deduplicated delivery must return its original persisted receipt', async () => {
+  const dir = directory(); try {
+    const state = new StateStore(dir); const item = request(); const service = new GatewayService(config(dir), new FakeAdapter(), new IdempotencyStore(state))
+    const first = await service.deliver(item); assert.equal(first.status, 'sent'); assert.ok(first.providerMessageId)
+    const duplicate = await service.deliver(item); assert.deepEqual(duplicate, { status: 'deduplicated', providerMessageId: first.providerMessageId, errorCode: 'ILINK_DUPLICATE_SUPPRESSED' })
+    const missing = new GatewayService(config(dir), new FakeAdapter('duplicate'), new IdempotencyStore(state)); const missingResult = await missing.deliver({ ...item, idempotencyKey: `different-${item.idempotencyKey}` })
+    assert.deepEqual(missingResult, { status: 'permanent_failure', errorCode: 'ILINK_DEDUPLICATED_RECEIPT_MISSING' }); state.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('retryable failure can atomically reacquire the same key after Gateway restart without allowing duplicate sends', async () => {
+  const dir = directory(); const item = request(); let calls = 0
+  const adapter = { name: 'fake' as const, health: async () => ({ status: 'healthy' as const }), send: async () => {
+    calls += 1
+    return calls === 1 ? { status: 'retryable_failure' as const, errorCode: 'ILINK_GATEWAY_OFFLINE' } : { status: 'sent' as const, providerMessageId: 'original-receipt' }
+  } }
+  try {
+    const firstState = new StateStore(dir); const first = new GatewayService(config(dir), adapter, new IdempotencyStore(firstState))
+    assert.equal((await first.deliver(item)).status, 'retryable_failure'); firstState.close()
+    const secondState = new StateStore(dir); const second = new GatewayService(config(dir), adapter, new IdempotencyStore(secondState))
+    assert.deepEqual(await second.deliver(item), { status: 'sent', providerMessageId: 'original-receipt' }); assert.equal(calls, 2)
+    assert.deepEqual(await second.deliver(item), { status: 'deduplicated', providerMessageId: 'original-receipt', errorCode: 'ILINK_DUPLICATE_SUPPRESSED' }); assert.equal(calls, 2); secondState.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('concurrent and terminal idempotency requests never invoke the adapter twice', async () => {
+  const dir = directory(); const item = request(); let calls = 0; let release: (() => void) | undefined
+  const delayed = new Promise<void>((resolve) => { release = resolve })
+  const adapter = { name: 'fake' as const, health: async () => ({ status: 'healthy' as const }), send: async () => { calls += 1; await delayed; return { status: 'sent' as const, providerMessageId: 'receipt' } } }
+  try {
+    const state = new StateStore(dir); const service = new GatewayService(config(dir), adapter, new IdempotencyStore(state))
+    const first = service.deliver(item); const second = service.deliver(item); release!()
+    const results = await Promise.all([first, second]); assert.equal(calls, 1); assert.ok(results.some((result) => result.status === 'sent')); assert.ok(results.some((result) => result.status === 'result_unknown'))
+    state.close()
+    for (const terminal of ['result_unknown', 'permanent_failure'] as const) {
+      let terminalCalls = 0; const terminalState = new StateStore(dir); const terminalAdapter = { name: 'fake' as const, health: async () => ({ status: 'healthy' as const }), send: async () => { terminalCalls += 1; return { status: terminal, errorCode: 'terminal' } } }
+      const terminalService = new GatewayService(config(dir), terminalAdapter, new IdempotencyStore(terminalState)); const terminalItem = { ...item, idempotencyKey: `${terminal}-${item.idempotencyKey}` }
+      await terminalService.deliver(terminalItem); await terminalService.deliver(terminalItem); assert.equal(terminalCalls, 1); terminalState.close()
+    }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -337,7 +398,7 @@ test('gateway health reports disabled channel separately and degrades after an u
 test('HTTP gateway retains HMAC, replay, schema and local-only safety', async (t) => {
   const dir = directory(); t.after(() => rmSync(dir, { recursive: true, force: true })); const cfg = config(dir); const gateway = createGateway(cfg, new FakeAdapter()); t.after(() => gateway.close())
   await new Promise<void>((resolve) => gateway.server.listen(0, '127.0.0.1', resolve)); const address = gateway.server.address(); assert.ok(address && typeof address !== 'string'); const url = `http://127.0.0.1:${address.port}/deliveries`
-  const body = JSON.stringify(request()); const timestamp = String(Date.now()); const nonce = freshNonce(); const headers = { 'content-type': 'application/json', 'x-ilink-gateway-timestamp': timestamp, 'x-ilink-gateway-nonce': nonce, 'x-ilink-gateway-signature': sign(cfg.ILINK_GATEWAY_SECRET, canonicalRequest('POST', '/deliveries', timestamp, nonce, sha256(body))) }
+  const body = JSON.stringify(request()); const timestamp = String(Date.now()); const nonce = freshNonce(); const headers = { 'content-type': 'application/json', 'x-ilink-gateway-timestamp': timestamp, 'x-ilink-gateway-nonce': nonce, 'x-ilink-gateway-signature': sign(cfg.gatewaySecret, canonicalRequest('POST', '/deliveries', timestamp, nonce, sha256(body))) }
   assert.equal((await fetch(url, { method: 'POST', headers, body })).status, 200); assert.equal((await fetch(url, { method: 'POST', headers, body })).status, 401)
   assert.equal(deliveryRequestSchema.safeParse({ deliveryId: randomUUID() }).success, false)
 })

@@ -47,7 +47,7 @@ test('空库创建完整版本化 schema，并强制外键', () => {
   const database = open('empty.db');
   runMigrations(database);
   const versions = database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>;
-  assert.deepEqual(versions.map((row) => row.version), ['001', '002', '003', '004', '005', '006']);
+  assert.deepEqual(versions.map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007']);
   assert.equal((database.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys, 1);
   assert.throws(() => database.prepare("INSERT INTO follow_ups (lead_id, user_id, content) VALUES (999, 999, 'invalid')").run(), /FOREIGN KEY constraint failed/);
   database.close();

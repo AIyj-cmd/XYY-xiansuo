@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { resolveNotificationConfig } from '../config.js';
-import { parseAiRule } from '../services/notification.js';
+import { parseAiRule, parseSingleNotificationChannel } from '../services/notification.js';
 import { nowDatetime } from '../utils/datetime.js';
 import { dailySnapshotSchema, scheduledSnapshotSchema } from './snapshot.js';
 import { validateDigestContext } from '../ai/permission-query.js';
@@ -28,13 +28,14 @@ export function createScheduledNotification(db: DatabaseSync, event: AiNotificat
   const config = parseAiRule(rule, event.eventType); const capture = resolveNotificationConfig().captureEnabled;
   if (!capture) return { status: 'suppressed', reason: 'NOTIFICATION_CAPTURE_DISABLED' };
   let status: 'pending' | 'suppressed' = 'pending'; let reason: string | undefined;
+  const notificationConfig = resolveNotificationConfig(); const channel = parseSingleNotificationChannel(rule.channel_order_json);
   if (!rule.enabled) { status = 'suppressed'; reason = 'rule_disabled'; }
-  else if (!resolveNotificationConfig().mockEnabled || !JSON.parse(rule.channel_order_json).includes('mock')) { status = 'suppressed'; reason = 'no_usable_channel'; }
+  else if ((channel === 'mock' && !notificationConfig.mockEnabled) || (channel === 'openclaw' && !notificationConfig.openclawEnabled)) { status = 'suppressed'; reason = 'no_usable_channel'; }
   const dedupe = sha(`v1|${event.eventType}|operation_id=${event.operationId}|recipient_user_id=${event.recipientUserId}|business_date=${event.businessDate}`);
-  const delivery = sha(`v1|channel=mock|event=${dedupe}`);
+  const delivery = sha(`v1|channel=${channel}|event=${dedupe}`);
   try {
     const result = db.prepare(`INSERT INTO notification_logs (event_type,event_source,operation_id,subject_type,subject_id,lead_id,actor_user_id,old_owner_id,new_owner_id,recipient_user_id,occurred_at,dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,suppression_reason,suppressed_at,retain_until,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      event.eventType, 'ai_scheduler', event.operationId, 'recipient_digest', event.recipientUserId, null, null, null, null, event.recipientUserId, now, dedupe, delivery, rule.version, JSON.stringify({ enabled: Boolean(rule.enabled), config }), rule.channel_order_json, status === 'pending' ? 'mock' : null, JSON.stringify(snapshot), status, config.max_attempts, now, reason || null, status === 'suppressed' ? now : null, status === 'suppressed' ? plusMinutes(now, 180 * 24 * 60) : null, plusMinutes(now, config.ttl_minutes),
+      event.eventType, 'ai_scheduler', event.operationId, 'recipient_digest', event.recipientUserId, null, null, null, null, event.recipientUserId, now, dedupe, delivery, rule.version, JSON.stringify({ enabled: Boolean(rule.enabled), config }), rule.channel_order_json, status === 'pending' ? channel : null, JSON.stringify(snapshot), status, channel === 'openclaw' ? notificationConfig.openclawMaxAttempts : config.max_attempts, now, reason || null, status === 'suppressed' ? now : null, status === 'suppressed' ? plusMinutes(now, 180 * 24 * 60) : null, plusMinutes(now, config.ttl_minutes),
     );
     return { id: Number(result.lastInsertRowid), status, reason };
   } catch (error) {

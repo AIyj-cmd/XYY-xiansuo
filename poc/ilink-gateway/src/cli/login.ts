@@ -1,4 +1,4 @@
-import { ensurePrivateSessionDirectory, ensurePrivateStateDirectory, loadConfig, type GatewayConfig } from '../config.js'
+import { ensurePrivateOpenClawStateDirectory, ensurePrivateStateDirectory, loadConfig, type GatewayConfig } from '../config.js'
 import { OfficialRuntime } from '../official-runtime.js'
 
 export async function runLogin(args: readonly string[], runtime?: OfficialRuntime, config?: GatewayConfig): Promise<Record<string, unknown>> {
@@ -7,7 +7,7 @@ export async function runLogin(args: readonly string[], runtime?: OfficialRuntim
   config ??= loadConfig()
   if (!config.ILINK_POC_LIVE_ENABLED) return { code: 'ILINK_LIVE_DISABLED', started: false }
   ensurePrivateStateDirectory(config)
-  ensurePrivateSessionDirectory(config)
+  ensurePrivateOpenClawStateDirectory(config)
   const result = await (runtime ?? new OfficialRuntime(config)).login()
   return { code: result.code ?? 'OK', started: result.code === undefined, exitCode: result.exitCode }
 }

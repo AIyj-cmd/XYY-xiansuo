@@ -4,7 +4,7 @@ import { requiredIdempotencyKey } from './arguments.js'
 const { service, store, config } = localService()
 try {
   const { key, expectDeduplicated } = requiredIdempotencyKey(process.argv.slice(2))
-  const result = await service.deliver(syntheticRequest(config.ILINK_POC_RECIPIENT_EXTERNAL_ID, key))
+  const result = await service.deliver(syntheticRequest(Number(config.OPENCLAW_PILOT_USER_ID), key))
   if (expectDeduplicated && result.status !== 'deduplicated') process.exitCode = 2
   console.log(JSON.stringify(result))
 } catch (error) {

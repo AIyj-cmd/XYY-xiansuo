@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto'
-import type { AdapterHealth, ChannelAdapter, ChannelDeliveryRequest, ChannelDeliveryResult } from '../types.js'
+import type { AdapterDeliveryRequest, AdapterHealth, ChannelAdapter, ChannelDeliveryResult } from '../types.js'
 import type { GatewayConfig } from '../config.js'
 import { OfficialRuntime, type OfficialSessionResult } from '../official-runtime.js'
 
 export type SendPhase = 'before_request' | 'after_request'
 export type OfficialSendResponse = { httpStatus: number; body?: unknown; phase?: SendPhase; runtimeConfirmedMessageId?: string }
 export interface OfficialSendTransport {
-  send(request: Pick<ChannelDeliveryRequest, 'recipientExternalId' | 'message' | 'idempotencyKey'>, signal: AbortSignal): Promise<OfficialSendResponse>
+  send(request: AdapterDeliveryRequest, signal: AbortSignal): Promise<OfficialSendResponse>
 }
 
 /**
@@ -15,7 +15,7 @@ export interface OfficialSendTransport {
  */
 export class OpenClawCliTransport implements OfficialSendTransport {
   constructor(private readonly runtime: OfficialRuntime, private readonly channel: string) {}
-  async send(request: Pick<ChannelDeliveryRequest, 'recipientExternalId' | 'message' | 'idempotencyKey'>): Promise<OfficialSendResponse> {
+  async send(request: AdapterDeliveryRequest): Promise<OfficialSendResponse> {
     const command = await this.runtime.sendSynthetic(request.recipientExternalId, `${request.message.title}\n\n${request.message.body ?? ''}`)
     if (command.spawnError) throw new OfficialTransportError('ILINK_GATEWAY_OFFLINE', 'before_request')
     let body: unknown
@@ -33,7 +33,7 @@ export class OfficialTransportError extends Error {
   constructor(readonly code: string, readonly phase: SendPhase) { super(code) }
 }
 
-function localReceipt(request: Pick<ChannelDeliveryRequest, 'recipientExternalId' | 'message' | 'idempotencyKey'>, classification: string): string {
+function localReceipt(request: AdapterDeliveryRequest, classification: string): string {
   const recipientHash = createHash('sha256').update(request.recipientExternalId).digest('hex')
   const messageHash = createHash('sha256').update(JSON.stringify(request.message)).digest('hex')
   return `ilink-local:${createHash('sha256').update(`${request.idempotencyKey}${recipientHash}${messageHash}${classification}`).digest('hex')}`
@@ -54,7 +54,7 @@ function parseRuntimeConfirmation(value: unknown, channel: string): string | und
   return messageId
 }
 
-export function classifyOfficialResponse(request: Pick<ChannelDeliveryRequest, 'recipientExternalId' | 'message' | 'idempotencyKey'>, response: OfficialSendResponse): ChannelDeliveryResult {
+export function classifyOfficialResponse(request: AdapterDeliveryRequest, response: OfficialSendResponse): ChannelDeliveryResult {
   if (response.runtimeConfirmedMessageId) return { status: 'sent', providerMessageId: `ilink-runtime:${createHash('sha256').update(response.runtimeConfirmedMessageId).digest('hex')}` }
   const data = response.body !== null && typeof response.body === 'object' && !Array.isArray(response.body) ? response.body as Record<string, unknown> : undefined
   const ret = data?.ret
@@ -88,7 +88,7 @@ export class ILinkAdapter implements ChannelAdapter {
     if (!this.config.ILINK_POC_LIVE_ENABLED) return { status: 'healthy', channelStatus: 'disabled', code: 'ILINK_LIVE_DISABLED' }
     return healthFromSession(await this.runtime.sessionStatus())
   }
-  async send(request: Pick<ChannelDeliveryRequest, 'recipientExternalId' | 'message' | 'idempotencyKey'>, signal: AbortSignal): Promise<ChannelDeliveryResult> {
+  async send(request: AdapterDeliveryRequest, signal: AbortSignal): Promise<ChannelDeliveryResult> {
     if (!this.config.ILINK_POC_LIVE_ENABLED) return { status: 'permanent_failure', errorCode: 'ILINK_LIVE_DISABLED' }
     const session = await this.runtime.sessionStatus()
     const health = healthFromSession(session)

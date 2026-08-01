@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, relative, sep } from 'node:path'
-import { ensurePrivateDirectory, ensurePrivateOpenClawConfigPath, ensurePrivateSessionDirectory, ensurePrivateStateDirectory, type GatewayConfig } from './config.js'
+import { ensurePrivateDirectory, ensurePrivateOpenClawConfigPath, ensurePrivateOpenClawStateDirectory, ensurePrivateStateDirectory, type GatewayConfig } from './config.js'
 
 export type PrereqResult = {
   conclusion: 'READY' | 'NOT_READY'
@@ -158,8 +158,8 @@ export class OfficialRuntime {
   constructor(private readonly config: GatewayConfig, private readonly runner: OfficialCommandRunner = childProcessRunner) {}
   private environment(): NodeJS.ProcessEnv {
     ensurePrivateOpenClawConfigPath(this.config.openclawConfigPath)
-    const sessionDir = this.config.sessionDir ?? `${this.config.stateDir}/openclaw-offline`
-    if (this.config.sessionDir) ensurePrivateSessionDirectory(this.config)
+    const sessionDir = this.config.openclawStateDir ?? `${this.config.stateDir}/openclaw-offline`
+    if (this.config.openclawStateDir) ensurePrivateOpenClawStateDirectory(this.config)
     else {
       ensurePrivateStateDirectory(this.config)
       ensurePrivateDirectory(sessionDir, 'ILINK_POC_OFFLINE_OPENCLAW_DIR')
@@ -178,7 +178,7 @@ export class OfficialRuntime {
     if (plugin.spawnError || plugin.exitCode !== 0) return { conclusion: 'NOT_READY', code: 'ILINK_PLUGIN_NOT_INSTALLED', openclawInstalled: true, openclawVersion, pluginInstalled: false, compatible: false }
     const metadata = parseJson(plugin.stdout)
     const pluginVersion = uniqueString(metadata, [['version'], ['plugin', 'version'], ['manifest', 'version']])
-    const pluginCompatibility = uniqueCompatibility(metadata) ?? (hasDeclaredCompatibility(metadata) ? undefined : packageCompatibility(metadata, this.config.sessionDir))
+    const pluginCompatibility = uniqueCompatibility(metadata) ?? (hasDeclaredCompatibility(metadata) ? undefined : packageCompatibility(metadata, this.config.openclawStateDir))
     const compatible = pluginCompatibility === undefined ? undefined : satisfiesDeclaredCompatibility(openclawVersion, pluginCompatibility)
     if (!pluginVersion || !pluginCompatibility || compatible !== true) return { conclusion: 'NOT_READY', code: 'ILINK_VERSION_UNSUPPORTED', openclawInstalled: true, openclawVersion, pluginInstalled: true, pluginVersion, pluginCompatibility, compatible: false }
     const capabilities = await this.run(['channels', 'capabilities', '--channel', this.config.ILINK_OPENCLAW_CHANNEL, '--timeout', String(this.config.ILINK_SESSION_CHECK_TIMEOUT_MS), '--json'], this.config.ILINK_SESSION_CHECK_TIMEOUT_MS)

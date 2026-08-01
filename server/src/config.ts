@@ -1,4 +1,6 @@
 import { randomBytes } from 'crypto';
+import { lstatSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 export function requireJwtSecret(value = process.env.JWT_SECRET): string {
   if (!value) {
@@ -53,16 +55,62 @@ export type NotificationConfig = {
   workerEnabled: boolean;
   mockEnabled: boolean;
   schedulerEnabled: boolean;
+  openclawEnabled: boolean;
+  openclawPilotUserId?: number;
+  openclawGatewayUrl?: string;
+  openclawGatewaySecret?: string;
+  openclawGatewayTimeoutMs: number;
+  openclawMaxAttempts: number;
 };
 
-export function resolveNotificationConfig(env: NodeJS.ProcessEnv = process.env): NotificationConfig {
-  return {
+function strictOpenClawGatewayUrl(value: string): string {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('OPENCLAW_GATEWAY_URL 必须为合法本地 HTTP URL，拒绝启动'); }
+  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.username || url.password || url.hash || url.pathname !== '/' || url.search) {
+    throw new Error('OPENCLAW_GATEWAY_URL 只允许回环 HTTP 根地址，拒绝启动');
+  }
+  return url.toString().replace(/\/$/, '');
+}
+
+/** 业务进程只从仓库外 0600 普通文件读取 Gateway 共享密钥。 */
+function readGatewaySecretFile(value: string | undefined): string {
+  if (!value || !value.startsWith('/')) throw new Error('OPENCLAW_GATEWAY_SECRET_FILE 必须为绝对路径，拒绝启动');
+  const filename = resolve(value);
+  let stat: ReturnType<typeof lstatSync>;
+  try { stat = lstatSync(filename); } catch { throw new Error('OPENCLAW_GATEWAY_SECRET_FILE 不存在，拒绝启动'); }
+  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o600) throw new Error('OPENCLAW_GATEWAY_SECRET_FILE 必须是权限精确 0600 的普通文件，拒绝启动');
+  const secret = readFileSync(filename, 'utf8').trim();
+  if (Buffer.byteLength(secret, 'utf8') < 32) throw new Error('OPENCLAW_GATEWAY_SECRET_FILE 中的密钥至少需要 32 字节，拒绝启动');
+  return secret;
+}
+
+export function resolveNotificationConfig(env: NodeJS.ProcessEnv = process.env, options: { requireOpenClawSecret?: boolean } = {}): NotificationConfig {
+  const openclawEnabled = resolveStrictBoolean('OPENCLAW_CHANNEL_ENABLED', env.OPENCLAW_CHANNEL_ENABLED);
+  const config: NotificationConfig = {
     leadPoolClaimEnabled: resolveStrictBoolean('LEAD_POOL_CLAIM_ENABLED', env.LEAD_POOL_CLAIM_ENABLED),
     captureEnabled: resolveStrictBoolean('NOTIFICATION_CAPTURE_ENABLED', env.NOTIFICATION_CAPTURE_ENABLED),
     workerEnabled: resolveStrictBoolean('NOTIFICATION_WORKER_ENABLED', env.NOTIFICATION_WORKER_ENABLED),
     mockEnabled: resolveStrictBoolean('NOTIFICATION_MOCK_ENABLED', env.NOTIFICATION_MOCK_ENABLED),
     schedulerEnabled: resolveStrictBoolean('NOTIFICATION_SCHEDULER_ENABLED', env.NOTIFICATION_SCHEDULER_ENABLED),
+    openclawEnabled,
+    openclawGatewayTimeoutMs: strictInteger(env, 'OPENCLAW_GATEWAY_TIMEOUT_MS', 10_000, 1_000, 120_000),
+    openclawMaxAttempts: strictInteger(env, 'OPENCLAW_MAX_ATTEMPTS', 2, 2, 2),
   };
+  if (env.OPENCLAW_PILOT_USER_ID !== undefined && env.OPENCLAW_PILOT_USER_ID !== '' && !/^[1-9]\d*$/.test(env.OPENCLAW_PILOT_USER_ID)) {
+    throw new Error('OPENCLAW_PILOT_USER_ID 只能为一个正整数，拒绝启动');
+  }
+  if (env.OPENCLAW_GATEWAY_URL !== undefined && env.OPENCLAW_GATEWAY_URL !== '') strictOpenClawGatewayUrl(env.OPENCLAW_GATEWAY_URL);
+  if (env.OPENCLAW_GATEWAY_SECRET_FILE !== undefined && env.OPENCLAW_GATEWAY_SECRET_FILE !== '' && !env.OPENCLAW_GATEWAY_SECRET_FILE.startsWith('/')) {
+    throw new Error('OPENCLAW_GATEWAY_SECRET_FILE 必须为绝对路径，拒绝启动');
+  }
+  if (openclawEnabled) {
+    const pilot = env.OPENCLAW_PILOT_USER_ID;
+    if (!pilot || !/^[1-9]\d*$/.test(pilot)) throw new Error('OPENCLAW_PILOT_USER_ID 只能为一个正整数，拒绝启动');
+    config.openclawPilotUserId = Number(pilot);
+    config.openclawGatewayUrl = strictOpenClawGatewayUrl(env.OPENCLAW_GATEWAY_URL || '');
+    if (options.requireOpenClawSecret) config.openclawGatewaySecret = readGatewaySecretFile(env.OPENCLAW_GATEWAY_SECRET_FILE);
+  }
+  return config;
 }
 
 export type AiConfig = {

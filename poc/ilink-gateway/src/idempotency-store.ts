@@ -5,19 +5,20 @@ import { StateStore } from './state-store.js'
 const recipientHash = (value: string) => createHash('sha256').update(value).digest('hex')
 export class IdempotencyStore {
   constructor(private readonly state: StateStore) {}
-  existing(key: string, recipientExternalId: string, messageHash: string): ChannelDeliveryResult | undefined {
-    const record = this.state.findDelivery(key)
-    if (!record) return undefined
+  acquire(key: string, recipientExternalId: string, messageHash: string, now: number): ChannelDeliveryResult | undefined {
+    const acquired = this.state.acquireDelivery(key, recipientHash(recipientExternalId), messageHash, now)
+    if (acquired.acquired) return undefined
+    const record = acquired.record
     if (record.recipientHash !== recipientHash(recipientExternalId) || record.messageHash !== messageHash) return { status: 'permanent_failure', errorCode: 'ILINK_IDEMPOTENCY_CONFLICT' }
-    if (record.status === 'sent') return { status: 'deduplicated', providerMessageId: record.providerMessageId ?? undefined, errorCode: 'ILINK_DUPLICATE_SUPPRESSED' }
+    if (acquired.retryInProgress) return { status: 'retryable_failure', errorCode: 'ILINK_RETRY_IN_PROGRESS' }
+    if (record.status === 'sent') return record.providerMessageId
+      ? { status: 'deduplicated', providerMessageId: record.providerMessageId, errorCode: 'ILINK_DUPLICATE_SUPPRESSED' }
+      : { status: 'permanent_failure', errorCode: 'ILINK_DEDUPLICATED_RECEIPT_MISSING' }
     return { status: record.status as ChannelDeliveryResult['status'], providerMessageId: record.providerMessageId ?? undefined, errorCode: record.errorCode ?? undefined }
-  }
-  reserve(key: string, recipientExternalId: string, messageHash: string, now: number): void {
-    this.state.createDelivery({ idempotencyKey: key, recipientHash: recipientHash(recipientExternalId), messageHash, status: 'result_unknown', providerMessageId: null, errorCode: 'ILINK_SEND_RESULT_UNKNOWN' }, now)
   }
   finalize(key: string, result: ChannelDeliveryResult, now: number): void {
     const persistedStatus = result.status === 'deduplicated' ? 'sent' : result.status
-    this.state.updateDelivery(key, persistedStatus, result.providerMessageId, result.errorCode, now)
+    this.state.finalizeDelivery(key, persistedStatus, result.providerMessageId, result.errorCode, now)
     if (persistedStatus === 'sent') {
       this.state.setMeta('recent_success_at', String(now), now)
       this.state.setMeta('consecutive_failure_count', '0', now)

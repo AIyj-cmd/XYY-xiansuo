@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync } from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { z } from 'zod'
 
@@ -21,11 +21,11 @@ const configSchema = z.object({
   ILINK_OPENCLAW_CHANNEL: z.literal('openclaw-weixin').optional().default('openclaw-weixin'),
   ILINK_POC_RECIPIENT_EXTERNAL_ID: z.string().min(1).max(256),
   ILINK_POC_STATE_DIR: absolutePath,
-  ILINK_POC_SESSION_DIR: absolutePath.optional(),
+  OPENCLAW_STATE_DIR: absolutePath.optional(),
   ILINK_GATEWAY_HOST: z.string().optional().default('127.0.0.1').refine((value) => value === '127.0.0.1' || value === '::1', 'PoC Gateway 只允许本地监听'),
   ILINK_GATEWAY_PORT: positiveInt(1024, 65535, 38115),
-  ILINK_GATEWAY_SECRET: z.string().min(32, 'Gateway Secret 至少 32 个字符'),
-  ILINK_GATEWAY_PREVIOUS_SECRET: z.string().min(32).optional(),
+  ILINK_GATEWAY_SECRET_FILE: absolutePath,
+  OPENCLAW_PILOT_USER_ID: z.string().regex(/^[1-9]\d*$/, '只能为一个正整数'),
   ILINK_REQUEST_TIMEOUT_MS: positiveInt(1_000, 120_000, 10_000),
   ILINK_SESSION_CHECK_TIMEOUT_MS: positiveInt(100, 60_000, 5_000),
   ILINK_GATEWAY_CLOCK_SKEW_SECONDS: positiveInt(30, 600, 300),
@@ -34,14 +34,16 @@ const configSchema = z.object({
 
 const legacyAliases: Record<string, keyof z.input<typeof configSchema>> = {
   ILINK_GATEWAY_STATE_DIR: 'ILINK_POC_STATE_DIR',
+  ILINK_POC_SESSION_DIR: 'OPENCLAW_STATE_DIR',
   ILINK_POC_TIMEOUT_MS: 'ILINK_REQUEST_TIMEOUT_MS'
 }
 const knownKeys = new Set([...Object.keys(configSchema.shape), ...Object.keys(legacyAliases)])
 
 export type GatewayConfig = z.output<typeof configSchema> & {
   stateDir: string
-  sessionDir?: string
+  openclawStateDir?: string
   openclawConfigPath: string
+  gatewaySecret: string
   deprecatedWarnings: string[]
 }
 
@@ -61,13 +63,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
   const parsed = configSchema.safeParse(projected)
   if (!parsed.success) throw new Error(`iLink Gateway 配置无效：${parsed.error.issues.map((issue) => issue.message).join('；')}`)
   const stateDir = resolve(parsed.data.ILINK_POC_STATE_DIR)
-  const sessionDir = parsed.data.ILINK_POC_SESSION_DIR === undefined ? undefined : resolve(parsed.data.ILINK_POC_SESSION_DIR)
+  const openclawStateDir = parsed.data.OPENCLAW_STATE_DIR === undefined ? undefined : resolve(parsed.data.OPENCLAW_STATE_DIR)
   const rawOpenclawConfigPath = env.OPENCLAW_CONFIG_PATH
   if (!rawOpenclawConfigPath || !absolutePath.safeParse(rawOpenclawConfigPath).success) throw new Error('iLink Gateway 配置无效：OPENCLAW_CONFIG_PATH 必须为绝对路径')
   const openclawConfigPath = resolve(rawOpenclawConfigPath)
   ensurePrivateOpenClawConfigPath(openclawConfigPath)
-  if (parsed.data.ILINK_POC_LIVE_ENABLED && !sessionDir) throw new Error('iLink Gateway 配置无效：live 模式需要 ILINK_POC_SESSION_DIR')
-  return { ...parsed.data, stateDir, sessionDir, openclawConfigPath, deprecatedWarnings: warnings }
+  const gatewaySecret = readSecretFile(parsed.data.ILINK_GATEWAY_SECRET_FILE)
+  if (parsed.data.ILINK_POC_LIVE_ENABLED && !openclawStateDir) throw new Error('iLink Gateway 配置无效：live 模式需要 OPENCLAW_STATE_DIR')
+  return { ...parsed.data, stateDir, openclawStateDir, openclawConfigPath, gatewaySecret, deprecatedWarnings: warnings }
+}
+
+function readSecretFile(path: string): string {
+  const resolved = resolve(path); let state: ReturnType<typeof lstatSync>
+  try { state = lstatSync(resolved) } catch { throw new Error('ILINK_GATEWAY_SECRET_FILE 必须是存在的仓库外文件') }
+  if (!state.isFile() || state.isSymbolicLink() || (state.mode & 0o777) !== 0o600) throw new Error('ILINK_GATEWAY_SECRET_FILE 必须是权限精确 0600 的普通文件')
+  const secret = readFileSync(resolved, 'utf8').trim()
+  if (Buffer.byteLength(secret, 'utf8') < 32) throw new Error('Gateway Secret 至少 32 个字符')
+  return secret
 }
 
 export function ensurePrivateDirectory(path: string, variable: string): void {
@@ -94,7 +106,7 @@ export function ensurePrivateOpenClawConfigPath(path: string): void {
 }
 
 export function ensurePrivateStateDirectory(config: GatewayConfig): void { ensurePrivateDirectory(config.stateDir, 'ILINK_POC_STATE_DIR') }
-export function ensurePrivateSessionDirectory(config: GatewayConfig): void {
-  if (!config.sessionDir) throw new Error('ILINK_SESSION_PATH_INVALID')
-  ensurePrivateDirectory(config.sessionDir, 'ILINK_POC_SESSION_DIR')
+export function ensurePrivateOpenClawStateDirectory(config: GatewayConfig): void {
+  if (!config.openclawStateDir) throw new Error('ILINK_SESSION_PATH_INVALID')
+  ensurePrivateDirectory(config.openclawStateDir, 'OPENCLAW_STATE_DIR')
 }

@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto'
-import type { ChannelAdapter, ChannelDeliveryRequest, ChannelDeliveryResult, AdapterHealth } from '../types.js'
+import type { AdapterDeliveryRequest, ChannelAdapter, ChannelDeliveryResult, AdapterHealth } from '../types.js'
 
 export type FakeMode = 'success' | 'duplicate' | 'timeout' | 'retryable_failure' | 'permanent_failure' | 'result_unknown' | 'offline' | 'login_required' | 'delay'
 
 export class FakeAdapter implements ChannelAdapter {
   readonly name = 'fake' as const
   constructor(private readonly mode: FakeMode = 'success', private readonly delayMs = 0) {}
-  async send(request: Pick<ChannelDeliveryRequest, 'recipientExternalId' | 'message' | 'idempotencyKey'>, signal: AbortSignal): Promise<ChannelDeliveryResult> {
+  async send(request: AdapterDeliveryRequest, signal: AbortSignal): Promise<ChannelDeliveryResult> {
     if (this.delayMs || this.mode === 'delay') await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(resolve, this.delayMs || 10)
       signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')) }, { once: true })

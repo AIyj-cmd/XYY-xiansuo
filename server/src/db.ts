@@ -269,6 +269,40 @@ function addBusinessConsistencyMetadata(database: DatabaseSync): void {
   `);
 }
 
+/**
+ * SQLite cannot alter a CHECK constraint.  Rebuild only notification_logs in
+ * one migration transaction, preserving its exact columns, data and indexes.
+ * Foreign keys are temporarily disabled by the migration runner because
+ * ai_request_logs references this table; integrity is checked before commit.
+ */
+function allowOpenClawNotificationChannel(database: DatabaseSync): void {
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='notification_logs'").get() as { sql?: string } | undefined;
+  if (!table?.sql) throw new Error('迁移007缺少 notification_logs，拒绝继续');
+  if (table.sql.includes("channel IS NULL OR channel IN ('mock','openclaw')")) return;
+  const oldChannelCheck = "channel IS NULL OR channel = 'mock'";
+  if (!table.sql.includes(oldChannelCheck)) throw new Error('迁移007发现未知 notification_logs channel 约束，拒绝继续');
+  const indexes = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='notification_logs' AND sql IS NOT NULL ORDER BY name")
+    .all() as Array<{ sql: string }>;
+  const before = (database.prepare('SELECT COUNT(*) AS count FROM notification_logs').get() as { count: number }).count;
+  const rebuilt = table.sql
+    .replace(/^CREATE TABLE notification_logs/i, 'CREATE TABLE notification_logs_007_new')
+    .replace(oldChannelCheck, "channel IS NULL OR channel IN ('mock','openclaw')");
+  if (rebuilt === table.sql) throw new Error('迁移007无法生成 notification_logs 新定义');
+  database.exec(rebuilt);
+  const sourceColumns = (database.prepare("PRAGMA table_info('notification_logs')").all() as Array<{ name: string }>).map((row) => row.name);
+  const targetColumns = (database.prepare("PRAGMA table_info('notification_logs_007_new')").all() as Array<{ name: string }>).map((row) => row.name);
+  if (sourceColumns.join(',') !== targetColumns.join(',')) throw new Error('迁移007字段定义不一致');
+  const columns = sourceColumns.map((name) => `"${name}"`).join(',');
+  database.exec(`INSERT INTO notification_logs_007_new (${columns}) SELECT ${columns} FROM notification_logs;`);
+  const copied = (database.prepare('SELECT COUNT(*) AS count FROM notification_logs_007_new').get() as { count: number }).count;
+  if (before !== copied) throw new Error(`迁移007记录数不一致：${before}/${copied}`);
+  database.exec('DROP TABLE notification_logs; ALTER TABLE notification_logs_007_new RENAME TO notification_logs;');
+  for (const index of indexes) database.exec(index.sql);
+  // This migration never writes notification_rules: fresh databases retain the
+  // existing disabled defaults and upgraded databases retain administrators'
+  // explicit prior choices without enabling any rule.
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: '001',
@@ -488,6 +522,13 @@ CREATE INDEX IF NOT EXISTS idx_ai_request_retention ON ai_request_logs(retain_un
       database.exec(`ALTER TABLE ai_request_logs ADD COLUMN latency_ms INTEGER
         CHECK (latency_ms IS NULL OR (typeof(latency_ms) = 'integer' AND latency_ms >= 0));`);
     },
+  },
+  {
+    version: '007',
+    description: 'allow experimental OpenClaw notification channel',
+    checksum: 'c09175e80d010ea056c3e93e5f4fdfc61c4b2f4c08c885d0a6b4e96b1f5242da',
+    requiresForeignKeysOff: true,
+    up: allowOpenClawNotificationChannel,
   },
 ];
 

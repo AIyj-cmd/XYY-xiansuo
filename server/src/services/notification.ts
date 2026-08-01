@@ -35,9 +35,20 @@ export type NotificationRule = {
   config_schema_version: number; config_json: string; version: number;
 };
 
+export type SupportedNotificationChannel = 'mock' | 'openclaw';
+export function parseSingleNotificationChannel(value: string): SupportedNotificationChannel {
+  let channels: unknown;
+  try { channels = JSON.parse(value); } catch { throw new Error('RULE_CONFIG_INVALID'); }
+  const parsed = z.array(z.enum(['mock', 'openclaw'])).length(1).safeParse(channels);
+  if (!parsed.success) throw new Error('RULE_CONFIG_INVALID');
+  return parsed.data[0];
+}
+
 export function parseOwnerRule(rule: NotificationRule): OwnerRuleConfig {
   if (rule.event_type !== 'owner_changed' || rule.recipient_strategy !== 'new_owner') throw new Error('RULE_CONFIG_INVALID');
-  const channels = z.array(z.literal('mock')).max(1).safeParse(JSON.parse(rule.channel_order_json));
+  // Empty owner rules are retained for legacy disabled/no-channel rows and
+  // safely suppress delivery; new admin writes require exactly one channel.
+  const channels = z.array(z.enum(['mock', 'openclaw'])).max(1).safeParse(JSON.parse(rule.channel_order_json));
   const config = ownerRuleSchema.safeParse(JSON.parse(rule.config_json));
   if (!channels.success || !config.success) throw new Error('RULE_CONFIG_INVALID');
   return config.data;
@@ -45,8 +56,7 @@ export function parseOwnerRule(rule: NotificationRule): OwnerRuleConfig {
 export function parseAiRule(rule: NotificationRule | undefined, eventType: 'scheduled_follow_overdue' | 'daily_report'): AiRuleConfig {
   if (!rule || rule.event_type !== eventType || rule.recipient_strategy !== 'reserved') throw new Error('RULE_CONFIG_INVALID');
   try {
-    const channels = z.array(z.literal('mock')).min(1).max(1).parse(JSON.parse(rule.channel_order_json));
-    if (!channels.includes('mock')) throw new Error('invalid channel');
+    z.array(z.enum(['mock', 'openclaw'])).length(1).parse(JSON.parse(rule.channel_order_json));
     return aiRuleSchema.parse(JSON.parse(rule.config_json));
   } catch { throw new Error('RULE_CONFIG_INVALID'); }
 }
@@ -97,16 +107,17 @@ export function captureOwnerChanged(database: DatabaseSync, event: OwnerChangedE
   const rule = database.prepare('SELECT event_type, enabled, recipient_strategy, channel_order_json, config_schema_version, config_json, version FROM notification_rules WHERE event_type = ?').get('owner_changed') as NotificationRule | undefined;
   if (!rule) throw new Error('通知规则缺失，拒绝提交负责人变更');
   const ruleConfig = parseOwnerRule(rule);
-  const channelOrder = JSON.parse(rule.channel_order_json) as unknown[];
+  const rawChannels = JSON.parse(rule.channel_order_json) as SupportedNotificationChannel[];
+  const channel = rawChannels.length === 1 ? rawChannels[0] : undefined;
   const recipient = database.prepare('SELECT id, is_active FROM users WHERE id = ?').get(event.newOwnerId) as { id: number; is_active: number } | undefined;
   const canonical = `v1|owner_changed|operation_id=${event.operationId}|lead_id=${event.leadId}|new_owner_id=${event.newOwnerId}|recipient_user_id=${event.newOwnerId}`;
   const dedupeKey = hash(canonical);
-  const deliveryKey = hash(`v1|channel=mock|event=${dedupeKey}`);
+  const deliveryKey = hash(`v1|channel=${channel ?? 'none'}|event=${dedupeKey}`);
   const now = event.occurredAt;
   let status = 'pending'; let suppression: string | null = null;
   if (!rule.enabled) { status = 'suppressed'; suppression = 'rule_disabled'; }
   else if (!recipient?.is_active) { status = 'suppressed'; suppression = 'recipient_inactive'; }
-  else if (!channelOrder.includes('mock') || !resolveNotificationConfig().mockEnabled) { status = 'suppressed'; suppression = 'no_usable_channel'; }
+  else if (!channel || (channel === 'mock' && !config.mockEnabled) || (channel === 'openclaw' && !config.openclawEnabled)) { status = 'suppressed'; suppression = 'no_usable_channel'; }
   const terminalAt = status === 'suppressed' ? now : null;
   const availableAt = status === 'pending' ? ownerRuleAvailableAt(ruleConfig, now) : now;
   try {
@@ -116,8 +127,8 @@ export function captureOwnerChanged(database: DatabaseSync, event: OwnerChangedE
       suppression_reason,suppressed_at,retain_until,expires_at
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       'owner_changed', event.source, event.operationId, 'lead', event.leadId, event.leadId, event.actorUserId, event.oldOwnerId, event.newOwnerId, event.newOwnerId, now,
-      dedupeKey, deliveryKey, rule.version, JSON.stringify({ enabled: Boolean(rule.enabled), config: ruleConfig }), rule.channel_order_json, status === 'pending' ? 'mock' : null,
-      JSON.stringify({ title: '负责人已变更', detail_path: `/pages/leads/detail?id=${event.leadId}` }), status, ruleConfig.max_attempts, availableAt,
+      dedupeKey, deliveryKey, rule.version, JSON.stringify({ enabled: Boolean(rule.enabled), config: ruleConfig }), rule.channel_order_json, status === 'pending' ? channel! : null,
+      JSON.stringify({ title: '负责人已变更', detail_path: `/pages/leads/detail?id=${event.leadId}` }), status, channel === 'openclaw' ? config.openclawMaxAttempts : ruleConfig.max_attempts, availableAt,
       suppression, terminalAt, terminalAt ? isoPlusMinutes(terminalAt, 180 * 24 * 60) : null, isoPlusMinutes(now, ruleConfig.ttl_minutes),
     );
     console.log(JSON.stringify({ event: status === 'suppressed' ? 'notification.task.suppressed' : 'notification.task.created', dedupe_key: dedupeKey }));
@@ -156,11 +167,13 @@ export function maintainNotificationQueue(database: DatabaseSync, now: string, l
     return Number(result.changes);
   } catch (error) { database.exec('ROLLBACK;'); throw error; }
 }
-export function claimNotificationTasks(database: DatabaseSync, workerId: string, now: string, limit = 10): ClaimedTask[] {
+export function claimNotificationTasks(database: DatabaseSync, workerId: string, now: string, limit = 10, channels: readonly SupportedNotificationChannel[] = ['mock']): ClaimedTask[] {
   maintainNotificationQueue(database, now);
+  if (!channels.length) return [];
+  const channelSql = channels.map(() => '?').join(',');
   database.exec('BEGIN IMMEDIATE;');
   try {
-    const candidates = database.prepare(`SELECT id FROM notification_logs WHERE ${CLAIMABLE_NOTIFICATION_WHERE} ORDER BY available_at, id LIMIT ?`).all(now, now, now, now, limit) as Array<{ id: number }>;
+    const candidates = database.prepare(`SELECT id FROM notification_logs WHERE ${CLAIMABLE_NOTIFICATION_WHERE} AND channel IN (${channelSql}) ORDER BY available_at, id LIMIT ?`).all(now, now, now, now, ...channels, limit) as Array<{ id: number }>;
     const claimed: ClaimedTask[] = [];
     for (const row of candidates) {
       const token = randomUUID(); const leaseUntil = isoPlusMinutes(now, 1);
@@ -171,7 +184,7 @@ export function claimNotificationTasks(database: DatabaseSync, workerId: string,
   } catch (error) { database.exec('ROLLBACK;'); throw error; }
 }
 
-export function finishNotificationTask(database: DatabaseSync, task: ClaimedTask, outcome: { kind: 'sent' | 'temporary' | 'permanent'; code?: string; message?: string; receipt?: string }, now: string): boolean {
+export function finishNotificationTask(database: DatabaseSync, task: ClaimedTask, outcome: { kind: 'sent' | 'temporary' | 'permanent'; code?: string; message?: string; receipt?: string; retryAllowed?: 0 | 1 }, now: string): boolean {
   if (outcome.kind === 'sent') {
     if (!outcome.receipt) throw new Error('发送成功结果缺少 receipt');
     return database.prepare(`UPDATE notification_logs SET status='sent', provider_message_id=?, sent_at=?, retain_until=?, attempt_count=attempt_count+1, automatic_attempt_count=automatic_attempt_count+1, last_attempt_at=?, lease_token=NULL, lease_owner=NULL, lease_until=NULL, updated_at=?, row_version=row_version+1 WHERE id=? AND status='sending' AND lease_token=?`).run(outcome.receipt, now, isoPlusMinutes(now, 180 * 24 * 60), now, now, task.id, task.lease_token).changes === 1;
@@ -179,7 +192,9 @@ export function finishNotificationTask(database: DatabaseSync, task: ClaimedTask
   const attempts = Number(task.automatic_attempt_count) + 1;
   const terminal = outcome.kind === 'permanent' || attempts >= Number(task.max_attempts);
   const delaySeconds = [30, 120, 600, 1800][Math.min(attempts - 1, 3)];
-  const retryAllowed = outcome.code === 'invalid_message_schema' || outcome.code === 'unrecoverable_task_data' ? 0 : 1;
+  // Preserve legacy Mock manual-retry semantics unless a channel explicitly
+  // declares its terminal result unsafe to retry.
+  const retryAllowed = outcome.retryAllowed ?? (outcome.code === 'invalid_message_schema' || outcome.code === 'unrecoverable_task_data' ? 0 : 1);
   return database.prepare(`UPDATE notification_logs SET status=?, automatic_attempt_count=?, attempt_count=attempt_count+1, last_attempt_at=?, failed_at=CASE WHEN ? THEN ? ELSE NULL END, retain_until=CASE WHEN ? THEN ? ELSE NULL END, available_at=CASE WHEN ? THEN available_at ELSE ? END, failure_class=?, last_error_code=?, last_error_message=?, retry_allowed=?, lease_token=NULL, lease_owner=NULL, lease_until=NULL, updated_at=?, row_version=row_version+1 WHERE id=? AND status='sending' AND lease_token=?`).run(terminal ? 'failed' : 'retry_wait', attempts, now, terminal ? 1 : 0, now, terminal ? 1 : 0, isoPlusMinutes(now, 180 * 24 * 60), terminal ? 1 : 0, isoPlusMinutes(now, Math.ceil(delaySeconds / 60)), outcome.kind, outcome.code ?? null, outcome.message?.slice(0, 200) ?? null, retryAllowed, now, task.id, task.lease_token).changes === 1;
 }
 

@@ -4,46 +4,77 @@ import { closeDb, getDb, initDb } from './db.js';
 import { resolveNotificationConfig } from './config.js';
 import { cleanupNotificationRetention, claimNotificationTasks, finishNotificationTask, validateClaimedNotificationTask } from './services/notification.js';
 import { MockNotificationChannel } from './services/mock-notification-channel.js';
+import { OpenClawNotificationChannel, openClawMessage } from './services/openclaw-notification-channel.js';
 import { nowDatetime } from './utils/datetime.js';
 import { parseNotificationSnapshot, toChannelMessage } from './notifications/snapshot.js';
 
 let stopping = false;
 const WORKER_CONCURRENCY = 2;
-async function processTask(db: ReturnType<typeof getDb>, channel: MockNotificationChannel, task: Record<string, any>): Promise<void> {
+export function workerAbortTimeoutMs(channel: string): number | undefined { return channel === 'mock' ? 10_000 : undefined; }
+export function mapChannelResult(task: { channel: string; delivery_idempotency_key: string }, result: { status: string; providerMessageId?: string; errorCode?: string }) {
+  return result.status === 'sent'
+    ? result.providerMessageId
+      ? { kind: 'sent' as const, receipt: result.providerMessageId }
+      : { kind: 'permanent' as const, code: 'OPENCLAW_SENT_RECEIPT_MISSING', retryAllowed: 0 as const }
+    : result.status === 'deduplicated'
+      ? result.providerMessageId
+        ? { kind: 'sent' as const, receipt: result.providerMessageId }
+        : { kind: 'permanent' as const, code: 'OPENCLAW_DEDUPLICATED_RECEIPT_MISSING', retryAllowed: 0 as const }
+      : result.status === 'result_unknown'
+        ? { kind: 'permanent' as const, code: 'OPENCLAW_SEND_RESULT_UNKNOWN', message: result.errorCode, retryAllowed: 0 as const }
+        : result.status === 'permanent_failure'
+          ? { kind: 'permanent' as const, code: result.errorCode, retryAllowed: task.channel === 'openclaw' ? 0 as const : undefined }
+          : { kind: 'temporary' as const, code: result.errorCode };
+}
+async function processTask(db: ReturnType<typeof getDb>, channels: { mock: MockNotificationChannel; openclaw?: OpenClawNotificationChannel }, task: Record<string, any>): Promise<void> {
   const validation = validateClaimedNotificationTask(db, task, nowDatetime());
   if (validation !== 'valid') {
     console.log(JSON.stringify({ event: validation === 'cancelled' ? 'notification.worker.cancelled' : 'notification.worker.lease_lost', id: task.id }));
     return;
   }
-  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 10_000);
+  const controller = new AbortController();
+  // Mock retains its historical 10s Worker ceiling. OpenClaw owns its timeout
+  // inside the channel so OPENCLAW_GATEWAY_TIMEOUT_MS is never masked here.
+  const workerTimeout = workerAbortTimeoutMs(task.channel);
+  const timer = workerTimeout === undefined ? undefined : setTimeout(() => controller.abort(), workerTimeout);
   try {
-    const snapshot = parseNotificationSnapshot(task.event_type, task.message_snapshot_json);
     if (!Number.isInteger(task.recipient_user_id) || typeof task.delivery_idempotency_key !== 'string') {
       throw Object.assign(new Error('任务数据不完整'), { code: 'unrecoverable_task_data', permanent: true });
     }
-    const receipt = await channel.send({ userId: task.recipient_user_id }, toChannelMessage(task.event_type, snapshot), task.delivery_idempotency_key, controller.signal);
-    const updated = finishNotificationTask(db, task, { kind: 'sent', receipt: receipt.providerMessageId }, nowDatetime());
+    let result: { status: string; providerMessageId?: string; errorCode?: string };
+    if (task.channel === 'mock') {
+      const snapshot = parseNotificationSnapshot(task.event_type, task.message_snapshot_json);
+      const receipt = await channels.mock.send({ userId: task.recipient_user_id }, toChannelMessage(task.event_type, snapshot), task.delivery_idempotency_key, controller.signal);
+      result = { status: 'sent', providerMessageId: receipt.providerMessageId };
+    } else if (task.channel === 'openclaw' && channels.openclaw) {
+      result = await channels.openclaw.send({ userId: task.recipient_user_id }, openClawMessage(task.event_type), task.delivery_idempotency_key, controller.signal);
+    } else throw Object.assign(new Error('渠道任务不允许领取'), { code: 'CHANNEL_NOT_ALLOWED', permanent: true });
+    const outcome = mapChannelResult(task as { channel: string; delivery_idempotency_key: string }, result);
+    const updated = finishNotificationTask(db, task, outcome, nowDatetime());
     console.log(JSON.stringify({ event: updated ? 'notification.worker.sent' : 'notification.worker.lease_lost', id: task.id }));
   } catch (error) {
     const e = error as { code?: string; permanent?: boolean; message?: string };
     const updated = finishNotificationTask(db, task, { kind: e.permanent ? 'permanent' : 'temporary', code: e.code, message: e.message }, nowDatetime());
     console.log(JSON.stringify({ event: updated ? (e.permanent ? 'notification.worker.failed' : 'notification.worker.retry_scheduled') : 'notification.worker.lease_lost', id: task.id, error_code: e.code ?? 'unknown' }));
   }
-  finally { clearTimeout(timer); }
+  finally { if (timer) clearTimeout(timer); }
 }
 export async function runOnce(): Promise<void> {
-  const config = resolveNotificationConfig(); if (!config.workerEnabled) return;
+  const config = resolveNotificationConfig(process.env, { requireOpenClawSecret: true }); if (!config.workerEnabled) return;
   const db = getDb(); const now = nowDatetime(); const cleaned = cleanupNotificationRetention(db, now);
   if (cleaned) console.log(JSON.stringify({ event: 'notification.worker.retention_cleaned', count: cleaned }));
-  const tasks = claimNotificationTasks(db, `notification-worker:${process.pid}:${randomUUID()}`, now, 10);
+  const available: Array<'mock' | 'openclaw'> = [];
+  if (config.mockEnabled) available.push('mock');
+  if (config.openclawEnabled) available.push('openclaw');
+  const tasks = claimNotificationTasks(db, `notification-worker:${process.pid}:${randomUUID()}`, now, 10, available);
   if (tasks.length) console.log(JSON.stringify({ event: 'notification.worker.claimed', count: tasks.length }));
-  const channel = new MockNotificationChannel();
+  const channels = { mock: new MockNotificationChannel(), ...(config.openclawEnabled ? { openclaw: new OpenClawNotificationChannel(config) } : {}) };
   for (let index = 0; index < tasks.length && !stopping; index += WORKER_CONCURRENCY) {
-    await Promise.all(tasks.slice(index, index + WORKER_CONCURRENCY).map((task) => processTask(db, channel, task)));
+    await Promise.all(tasks.slice(index, index + WORKER_CONCURRENCY).map((task) => processTask(db, channels, task)));
   }
 }
 export async function startWorker(): Promise<void> {
-  const config = resolveNotificationConfig();
+  const config = resolveNotificationConfig(process.env, { requireOpenClawSecret: true });
   if (!config.workerEnabled) { console.log(JSON.stringify({ event: 'notification.worker.disabled' })); return; }
   if (!process.env.DB_PATH || !path.isAbsolute(process.env.DB_PATH)) throw new Error('通知 Worker 启用时 DB_PATH 必须为与 API 相同的绝对路径');
   initDb();
