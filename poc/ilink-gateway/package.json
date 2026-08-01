@@ -10,8 +10,10 @@
     "start": "tsx src/server.ts",
     "gateway:health": "tsx src/cli/health.ts",
     "gateway:session-status": "tsx src/cli/session-status.ts",
-    "gateway:send-synthetic": "tsx src/cli/send-synthetic.ts",
-    "gateway:clear-session": "tsx src/cli/clear-session.ts"
+    "gateway:prereq-check": "tsx src/cli/prereq-check.ts",
+    "gateway:official-session-status": "tsx src/cli/official-session-status.ts",
+    "gateway:login": "tsx src/cli/login.ts",
+    "gateway:send-synthetic": "tsx src/cli/send-synthetic.ts"
   },
   "dependencies": { "zod": "^4.4.3" },
   "devDependencies": {

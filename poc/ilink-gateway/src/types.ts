@@ -27,7 +27,7 @@ export type ChannelDeliveryResult = {
 
 export type GatewayHealthStatus = 'healthy' | 'degraded' | 'offline' | 'login_required' | 'restricted' | 'unsupported'
 
-export type AdapterHealth = { status: GatewayHealthStatus; code?: string }
+export type AdapterHealth = { status: GatewayHealthStatus; code?: string; sessionStatus?: 'authenticated' | 'login_required' | 'expired' | 'restricted' | 'unsupported' | 'unknown' | 'offline'; channelStatus?: 'enabled' | 'disabled' }
 
 export interface ChannelAdapter {
   readonly name: 'fake' | 'ilink'
@@ -46,10 +46,6 @@ export const ERROR_DISPOSITIONS: Record<string, ErrorDisposition> = {
   ILINK_CHANNEL_DISABLED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
   ILINK_LIVE_DISABLED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
   ILINK_GATEWAY_OFFLINE: { retryable: true, mayDuplicate: false, level: 'warn', requiresHuman: false },
-  ILINK_SESSION_MISSING: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
-  ILINK_SESSION_INVALID: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
-  ILINK_SESSION_PERMISSION_INVALID: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
-  ILINK_SESSION_PATH_INVALID: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
   ILINK_SESSION_EXPIRED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
   ILINK_LOGIN_REQUIRED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
   ILINK_ACCOUNT_RESTRICTED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
@@ -60,10 +56,15 @@ export const ERROR_DISPOSITIONS: Record<string, ErrorDisposition> = {
   ILINK_DETAIL_URL_FORBIDDEN: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
   ILINK_IDEMPOTENCY_CONFLICT: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
   ILINK_MESSAGE_TOO_LONG: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
-  ILINK_SEND_TIMEOUT: { retryable: true, mayDuplicate: true, level: 'warn', requiresHuman: false },
+  ILINK_SEND_TIMEOUT: { retryable: false, mayDuplicate: true, level: 'warn', requiresHuman: true },
   ILINK_SEND_RESULT_UNKNOWN: { retryable: false, mayDuplicate: true, level: 'error', requiresHuman: true },
   ILINK_RATE_LIMITED: { retryable: true, mayDuplicate: false, level: 'warn', requiresHuman: false },
   ILINK_VERSION_UNSUPPORTED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
+  ILINK_CAPABILITY_UNSUPPORTED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
+  ILINK_SEND_CONTRACT_UNVERIFIED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
+  ILINK_OPENCLAW_NOT_INSTALLED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
+  ILINK_PLUGIN_NOT_INSTALLED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
+  ILINK_OFFICIAL_LOGIN_FAILED: { retryable: false, mayDuplicate: false, level: 'error', requiresHuman: true },
   ILINK_PROVIDER_REJECTED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
   ILINK_DUPLICATE_SUPPRESSED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
   ILINK_SIGNATURE_INVALID: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },

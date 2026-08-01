@@ -39,6 +39,14 @@ export class StateStore {
         updated_at INTEGER NOT NULL
       );
     `)
+    this.ensurePrivateArtifacts()
+  }
+
+  private ensurePrivateArtifacts(): void {
+    for (const suffix of ['', '-wal', '-shm']) {
+      const path = `${this.databasePath}${suffix}`
+      if (existsSync(path)) chmodSync(path, 0o600)
+    }
   }
 
   close(): void { this.db.close() }
@@ -46,7 +54,7 @@ export class StateStore {
     this.db.exec('DELETE FROM used_nonces WHERE expires_at < ' + Math.floor(now))
     try {
       this.db.prepare('INSERT INTO used_nonces(nonce, expires_at, created_at) VALUES (?, ?, ?)').run(nonce, expiresAt, now)
-      return true
+      this.ensurePrivateArtifacts(); return true
     } catch { return false }
   }
   findDelivery(idempotencyKey: string): StoredDelivery | undefined {
@@ -54,12 +62,15 @@ export class StateStore {
   }
   createDelivery(delivery: StoredDelivery, now: number): void {
     this.db.prepare('INSERT INTO deliveries(idempotency_key,recipient_hash,message_hash,status,provider_message_id,error_code,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run(delivery.idempotencyKey, delivery.recipientHash, delivery.messageHash, delivery.status, delivery.providerMessageId, delivery.errorCode, now, now)
+    this.ensurePrivateArtifacts()
   }
   updateDelivery(idempotencyKey: string, status: string, providerMessageId: string | undefined, errorCode: string | undefined, now: number): void {
     this.db.prepare('UPDATE deliveries SET status=?, provider_message_id=?, error_code=?, updated_at=? WHERE idempotency_key=?').run(status, providerMessageId ?? null, errorCode ?? null, now, idempotencyKey)
+    this.ensurePrivateArtifacts()
   }
   setMeta(key: string, value: string, now: number): void {
     this.db.prepare('INSERT INTO gateway_meta(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at').run(key, value, now)
+    this.ensurePrivateArtifacts()
   }
   getMeta(key: string): string | undefined { return (this.db.prepare('SELECT value FROM gateway_meta WHERE key=?').get(key) as { value?: string } | undefined)?.value }
   deleteMeta(key: string): void { this.db.prepare('DELETE FROM gateway_meta WHERE key=?').run(key) }

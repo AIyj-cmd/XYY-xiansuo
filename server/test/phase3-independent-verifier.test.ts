@@ -326,6 +326,9 @@ test('Worker 租约竞争、恢复、最多五次自动尝试和 180 天限批�
 });
 
 test('管理日志分页筛选脱敏，failed 仅在条件恢复后允许一次人工重试', async () => {
+  const manualRetryUpdatedAt = new Date(Date.now() - 2_000).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace('T', ' ');
+  const manualRetryClaimedAt = new Date(Date.now() - 1_000).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace('T', ' ');
+  const manualRetryFailedAt = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace('T', ' ');
   process.env.NOTIFICATION_MOCK_ENABLED = 'true';
   db.prepare(`UPDATE notification_rules SET enabled=1,channel_order_json='["mock"]',
     config_json='{"schema_version":1,"quiet_hours":{"enabled":false,"start":"22:00","end":"08:00","timezone":"Asia/Shanghai"},"max_attempts":5,"ttl_minutes":1440}'
@@ -337,12 +340,12 @@ test('管理日志分页筛选脱敏，failed 仅在条件恢复后允许一次�
     actorUserId: ids['iv-admin'],
     source: 'single_edit',
     operationId: 'independent-manual-retry',
-    updatedAt: '2026-07-30 19:00:00',
+    updatedAt: manualRetryUpdatedAt,
   });
-  const task = claimNotificationTasks(db, 'manual-retry-worker', '2026-07-30 19:00:01')
+  const task = claimNotificationTasks(db, 'manual-retry-worker', manualRetryClaimedAt)
     .find((candidate) => candidate.operation_id === 'independent-manual-retry');
   assert.ok(task);
-  assert.equal(finishNotificationTask(db, task, { kind: 'permanent', code: 'invalid_channel_config', message: 'sensitive provider detail' }, '2026-07-30 19:00:02'), true);
+  assert.equal(finishNotificationTask(db, task, { kind: 'permanent', code: 'invalid_channel_config', message: 'sensitive provider detail' }, manualRetryFailedAt), true);
   const failed = db.prepare('SELECT id,row_version FROM notification_logs WHERE id=?').get(task.id) as any;
 
   const list = await app.inject({

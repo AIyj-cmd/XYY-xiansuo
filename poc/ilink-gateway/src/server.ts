@@ -7,7 +7,6 @@ import { StateStore } from './state-store.js'
 import { ReplayStore } from './replay-store.js'
 import { IdempotencyStore } from './idempotency-store.js'
 import { deliveryRequestSchema, type ChannelAdapter } from './types.js'
-import { FakeAdapter } from './adapters/fake-adapter.js'
 import { ILinkAdapter } from './adapters/ilink-adapter.js'
 import { GatewayService } from './gateway-service.js'
 
@@ -27,7 +26,7 @@ async function readBody(request: IncomingMessage): Promise<Buffer> {
 export function createGateway(config: GatewayConfig = loadConfig(), adapter?: ChannelAdapter) {
   ensurePrivateStateDirectory(config)
   const store = new StateStore(config.stateDir)
-  const service = new GatewayService(config, adapter ?? (config.ILINK_POC_ADAPTER === 'fake' ? new FakeAdapter() : new ILinkAdapter(config)), new IdempotencyStore(store))
+  const service = new GatewayService(config, adapter ?? new ILinkAdapter(config), new IdempotencyStore(store))
   const replay = new ReplayStore(store)
   const rate = new Map<string, number[]>()
   const secretList = [config.ILINK_GATEWAY_SECRET, config.ILINK_GATEWAY_PREVIOUS_SECRET].filter((value): value is string => Boolean(value))
