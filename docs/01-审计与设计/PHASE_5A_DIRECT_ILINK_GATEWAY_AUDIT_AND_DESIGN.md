@@ -1,5 +1,12 @@
 # 阶段五A-2：Direct iLink Gateway 官方协议审计与技术设计
 
+> **2026-08-01 最新用户授权说明：** 本文对 **Direct iLink** 的 No-Go 结论仍然
+> 有效；用户没有批准深层导入、私有凭据解析或 Direct Gateway。用户另行批准的是
+> 复用现有 `poc/ilink-gateway` 与官方 OpenClaw CLI/daemon 的实验性内部通知路线，
+> 并明确接受其人工扫码、长轮询、会话失效和主动通知不确定性。本文中把 OpenClaw
+> daemon No-Go、阶段五A全部关闭或所有真实渠道暂停写成“当前状态”的文字，仅作为
+> 当时审计历史保留，不得用于否定这项后续明确授权；Hook、RPA、逆向协议仍禁止。
+
 > 状态：**2026-08-01 用户决定：OpenClaw daemon 与 Direct iLink 均为 No-Go；所有真实外部消息渠道暂停。本文仅保留路线关闭的历史审计事实与未来重新审计参考。**
 > 审计日期：2026-08-01
 > 审计基线：`validation/phase5a-ilink-authenticated-session` /

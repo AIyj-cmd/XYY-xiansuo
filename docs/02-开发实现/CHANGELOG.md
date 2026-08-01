@@ -1,5 +1,16 @@
 # 变更日志
 
+## Unreleased — OpenClaw 普通微信内部通知（实验性）
+
+- 用户的最新明确授权覆盖了此前“OpenClaw daemon No-Go / 全部真实渠道暂停”的执行口径：接受长轮询、人工扫码、会话维护和实验性主动通知风险，仅批准单账号、单 pilot、单固定接收人的内部文本通知；Direct iLink、Hook、RPA、逆向协议和客户自动回复仍禁止。旧设计文档保留历史风险事实，并增加了最新授权说明。
+- 新增迁移 `007`，以事务重建方式保留 `notification_logs` 数据、字段和索引，并允许 `mock`、`openclaw` 或 NULL 渠道；`001` 至 `006` 未修改。
+- notification-worker 仅在渠道启用时领取对应任务，新增本地 HMAC Gateway 的 OpenClaw Adapter、单 pilot 用户限制、固定隐私文本和 `result_unknown` 不自动重试映射。OpenClaw 所有永久失败显式禁止人工重试，Mock 保持既有语义。
+- Gateway 保持独立进程和业务数据库隔离，投递契约改为系统用户 ID；Gateway 仅接受 pilot，并固定投递到其受保护配置的单测试接收人。共享 Secret 改为仓库外精确 0600 文件；官方会话状态使用 `OPENCLAW_STATE_DIR`，旧 session 配置仅兼容别名。
+- Gateway retryable 结果使用持久原子发送锁，重启后同一幂等键可在 Worker 两次上限内继续真实尝试；并发、永久和未知结果均不会双发。OpenClaw 使用配置化 Gateway 超时，Mock 维持既有 Worker 10 秒保护。
+- 管理员规则 preview 与 PUT 统一要求单一 `mock`/`openclaw` 渠道和事件接收人策略；禁用规则也不能使用空、多渠道或未知渠道，避免错误显示为 `pending`。清理 Gateway 已废弃且无调用的幂等入口，状态只经原子 `acquire`/`finalize` 维护。
+- 验收将 Gateway 固定合成消息校准为“XYY-xiansuo普通微信通知通道已连接 / 这是一条内部测试消息”，并补强迁移 `007` 固定 checksum、历史整行、规则关闭、重复执行和冲突拒绝回归。固定合成 CLI 不等同于 outbox/Worker 实况；真实 Pilot 必须先在运行手册的两种模式中明确选择，不能直接伪造 outbox。
+- 未进行扫码、登录、真实微信发送、DeepSeek 调用、客户业务操作或生产部署；Pilot 报告明确为尚未执行。
+
 ## 2026-08-01 — 真实外部渠道暂停（仅文档决策）
 
 - 本条仅更新文档口径，未修改源码、依赖、迁移、测试或任何真实外部服务。
