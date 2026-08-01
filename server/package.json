@@ -16,6 +16,7 @@
     "start:ai-scheduler:prod": "node dist/ai-scheduler.js",
     "ai:dry-run": "tsx src/cli/ai-dry-run.ts",
     "pilot:queue-check": "tsx src/cli/pilot-queue-check.ts",
+    "openclaw:enqueue-synthetic-pilot": "tsx src/cli/openclaw-enqueue-synthetic-pilot.ts",
     "build": "tsc",
     "test": "tsx --test test/*.test.ts",
     "seed": "tsx ../scripts/seed.ts"

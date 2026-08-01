@@ -5,6 +5,7 @@ import { resolveNotificationConfig } from './config.js';
 import { cleanupNotificationRetention, claimNotificationTasks, finishNotificationTask, validateClaimedNotificationTask } from './services/notification.js';
 import { MockNotificationChannel } from './services/mock-notification-channel.js';
 import { OpenClawNotificationChannel, openClawMessage } from './services/openclaw-notification-channel.js';
+import { SYNTHETIC_PILOT_EVENT_SOURCE, assertSyntheticDatabasePath, assertSyntheticDatabaseSafety, assertSyntheticWorkerBatchSafety, isSyntheticPilotTask, openClawSyntheticPilotMessage, type SyntheticPilotTask } from './openclaw-synthetic-pilot.js';
 import { nowDatetime } from './utils/datetime.js';
 import { parseNotificationSnapshot, toChannelMessage } from './notifications/snapshot.js';
 
@@ -42,12 +43,24 @@ async function processTask(db: ReturnType<typeof getDb>, channels: { mock: MockN
       throw Object.assign(new Error('任务数据不完整'), { code: 'unrecoverable_task_data', permanent: true });
     }
     let result: { status: string; providerMessageId?: string; errorCode?: string };
+    const syntheticMessage = task.event_source === SYNTHETIC_PILOT_EVENT_SOURCE
+      ? isSyntheticPilotTask(task as SyntheticPilotTask, Number(task.recipient_user_id), String(task.delivery_idempotency_key)) ? openClawSyntheticPilotMessage() : undefined
+      : undefined;
+    if (task.event_source === SYNTHETIC_PILOT_EVENT_SOURCE && (!syntheticMessage || task.channel !== 'openclaw')) {
+      throw Object.assign(new Error('合成测试任务不合法'), { code: 'OPENCLAW_SYNTHETIC_TASK_INVALID', permanent: true });
+    }
+    if (syntheticMessage) {
+      try {
+        const databasePath = assertSyntheticDatabasePath(process.env.DB_PATH || '').databasePath;
+        assertSyntheticDatabaseSafety(db, { databasePath, pilotUserId: Number(task.recipient_user_id), idempotencyKey: String(task.delivery_idempotency_key) }, 'worker');
+      } catch { throw Object.assign(new Error('合成测试数据库封印不合法'), { code: 'OPENCLAW_SYNTHETIC_DATABASE_UNSAFE', permanent: true }); }
+    }
     if (task.channel === 'mock') {
       const snapshot = parseNotificationSnapshot(task.event_type, task.message_snapshot_json);
       const receipt = await channels.mock.send({ userId: task.recipient_user_id }, toChannelMessage(task.event_type, snapshot), task.delivery_idempotency_key, controller.signal);
       result = { status: 'sent', providerMessageId: receipt.providerMessageId };
     } else if (task.channel === 'openclaw' && channels.openclaw) {
-      result = await channels.openclaw.send({ userId: task.recipient_user_id }, openClawMessage(task.event_type), task.delivery_idempotency_key, controller.signal);
+      result = await channels.openclaw.send({ userId: task.recipient_user_id }, syntheticMessage ?? openClawMessage(task.event_type), task.delivery_idempotency_key, controller.signal);
     } else throw Object.assign(new Error('渠道任务不允许领取'), { code: 'CHANNEL_NOT_ALLOWED', permanent: true });
     const outcome = mapChannelResult(task as { channel: string; delivery_idempotency_key: string }, result);
     const updated = finishNotificationTask(db, task, outcome, nowDatetime());
@@ -61,13 +74,30 @@ async function processTask(db: ReturnType<typeof getDb>, channels: { mock: MockN
 }
 export async function runOnce(): Promise<void> {
   const config = resolveNotificationConfig(process.env, { requireOpenClawSecret: true }); if (!config.workerEnabled) return;
-  const db = getDb(); const now = nowDatetime(); const cleaned = cleanupNotificationRetention(db, now);
+  const db = getDb(); const now = nowDatetime();
+  // The synthetic marker turns this DB into a sealed single-task workspace.
+  // Gate before *any* queue maintenance, and again after claim with the
+  // expected `sending` phase. Retention cleanup must never erase evidence of
+  // contamination before the sealed-state proof runs.
+  try { assertSyntheticWorkerBatchSafety(db, process.env.DB_PATH || '', config.openclawPilotUserId, 'repeat'); }
+  catch {
+    console.error(JSON.stringify({ event: 'notification.worker.synthetic_batch_blocked', stage: 'before_claim' }));
+    return;
+  }
+  const cleaned = cleanupNotificationRetention(db, now);
   if (cleaned) console.log(JSON.stringify({ event: 'notification.worker.retention_cleaned', count: cleaned }));
   const available: Array<'mock' | 'openclaw'> = [];
   if (config.mockEnabled) available.push('mock');
   if (config.openclawEnabled) available.push('openclaw');
   const tasks = claimNotificationTasks(db, `notification-worker:${process.pid}:${randomUUID()}`, now, 10, available);
   if (tasks.length) console.log(JSON.stringify({ event: 'notification.worker.claimed', count: tasks.length }));
+  if (tasks.length) {
+    try { assertSyntheticWorkerBatchSafety(db, process.env.DB_PATH || '', config.openclawPilotUserId, 'worker'); }
+    catch {
+      console.error(JSON.stringify({ event: 'notification.worker.synthetic_batch_blocked', stage: 'after_claim', claimed: tasks.length }));
+      return;
+    }
+  }
   const channels = { mock: new MockNotificationChannel(), ...(config.openclawEnabled ? { openclaw: new OpenClawNotificationChannel(config) } : {}) };
   for (let index = 0; index < tasks.length && !stopping; index += WORKER_CONCURRENCY) {
     await Promise.all(tasks.slice(index, index + WORKER_CONCURRENCY).map((task) => processTask(db, channels, task)));
