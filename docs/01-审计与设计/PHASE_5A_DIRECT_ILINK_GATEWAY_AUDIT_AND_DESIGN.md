@@ -1,6 +1,6 @@
 # 阶段五A-2：Direct iLink Gateway 官方协议审计与技术设计
 
-> 状态：**已由用户确认：OpenClaw daemon 与 Direct iLink 路线当前均为 No-Go；本文作为阶段五A路线关闭和未来重新审计的批准依据。**
+> 状态：**2026-08-01 用户决定：OpenClaw daemon 与 Direct iLink 均为 No-Go；所有真实外部消息渠道暂停。本文仅保留路线关闭的历史审计事实与未来重新审计参考。**
 > 审计日期：2026-08-01
 > 审计基线：`validation/phase5a-ilink-authenticated-session` /
 > `0b308fc6200d9d466e258d7f6ba27b164f529dff`
@@ -8,6 +8,15 @@
 > `@tencent-weixin/openclaw-weixin@2.4.6`、现有隔离 PoC Gateway
 
 ## 1. 执行结论
+
+> **后续决策覆盖说明：** 企业微信自建应用已由用户明确取消，不属于后续候选；
+> 公众号/服务号及其他真实外部渠道也全部暂停。现行正式通知仅为 H5 站内通知，
+> Mock 仅用于测试/灰度验证；阶段三通知基础设施与阶段四 DeepSeek 调度、
+> `scheduled_follow_overdue`、`daily_report`、AI 审计和模板降级保留，但不向外部
+> 渠道发送。迁移 `007`、`notification_deliveries`、`notification_channel_bindings`
+> 暂缓，不进入实现，不补发。本文中任何企业微信门禁、Gateway、握手、轮询、
+> 测试、PoC、fallback 或实施顺序均不是当前计划。后续仅等待新的官方普通微信
+> 独立 client/session 且支持主动通知，或用户重新批准合法官方渠道后重新审计。
 
 本轮最终结论为 **双 No-Go，阶段五A关闭**：OpenClaw daemon 与 Direct iLink
 路线当前均不得进入实现、登录、入站轮询、固定握手、延迟发送 PoC、3 至 7 天
@@ -566,7 +575,7 @@ notice、记录来源版本并取得接口使用方式确认。本结论不是�
 | 19 | 总结论 | No-Go |
 | 20 | 是否有阻塞 P1 | 有：公开 client/session/凭据闭环缺失 |
 | 21 | 当前任务拆分 | 无；阶段五A已关闭 |
-| 22 | 后续顺序 | 当前从企业微信主体、自建应用和员工 UserID 外部门禁核验开始；Direct 仅待官方能力解锁后重新审计 |
+| 22 | 后续顺序 | 所有真实外部渠道暂停；仅等待新的官方普通微信独立 client/session 且支持主动通知，或用户重新批准合法官方渠道后重新审计 |
 
 ## 20. 未决项
 

@@ -1,5 +1,12 @@
 # 变更日志
 
+## 2026-08-01 — 真实外部渠道暂停（仅文档决策）
+
+- 本条仅更新文档口径，未修改源码、依赖、迁移、测试或任何真实外部服务。
+- 用户决定 OpenClaw daemon 与 Direct iLink 为 No-Go；企业微信自建应用取消，不属于后续候选；公众号/服务号及其他真实外部消息渠道全部暂停。Hook、RPA、逆向协议和 Windows 自动化继续禁止。
+- 现行正式通知仅为 H5 站内通知，Mock 仅用于测试/灰度验证。阶段三 outbox、通知规则、租约、重试、TTL、审计保留；阶段四 DeepSeek 调度、`scheduled_follow_overdue`、`daily_report`、AI 审计和模板降级保留，但只写通知基础设施→站内展示→Mock 验证，不发送真实外部渠道。
+- 迁移 `007`、`notification_deliveries`、`notification_channel_bindings` 全部暂缓，不进入实现，不补发历史通知；只有官方普通微信提供独立 client/session 且支持主动通知，或用户重新批准公众号/服务号/其他合法官方渠道后，才重新审计。
+
 ## Unreleased — 阶段五A：iLink 实况 PoC 就绪补丁（2026-08-01）
 
 - Gateway 改由官方 OpenClaw CLI 管理登录与会话状态；每个子进程显式覆盖 `OPENCLAW_STATE_DIR` 与 `OPENCLAW_CONFIG_PATH` 到仓库外隔离会话目录，移除自定义 `session.json`/token/context token 读取，新增版本、插件 metadata 与 capability 的失败关闭前置检查。

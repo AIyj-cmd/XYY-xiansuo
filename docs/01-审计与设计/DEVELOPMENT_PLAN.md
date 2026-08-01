@@ -1,5 +1,7 @@
 # XYY-xiansuo 后续开发计划
 
+> **后续决策覆盖说明（2026-08-01）：** 用户决定取消企业微信自建应用并暂停所有真实外部消息渠道；OpenClaw daemon 与 Direct iLink 为 No-Go，Hook/RPA/逆向/Windows 自动化继续禁止。本文中普通微信、企业微信、降级/fallback、PoC、Gateway 和相关迁移的设计/计划均不是当前计划，只保留为历史方案。现行正式通知仅为 H5 站内通知，Mock 仅用于测试/灰度；阶段三 outbox、通知规则、租约、重试、TTL、审计及阶段四 DeepSeek 调度、`scheduled_follow_overdue`、`daily_report`、AI 审计和模板降级保留，但不向真实外部渠道发送。迁移 `007`、`notification_deliveries`、`notification_channel_bindings` 暂缓，不进入实现，不补发。只有官方普通微信提供独立 client/session 且支持主动通知，或用户批准公众号/服务号/其他合法官方渠道后，才可重新审计。
+
 > 修订日期：2026-07-30
 > 当前状态：需求审计与技术设计修订
 > 重要：本计划只描述以后如何开发，本次不执行任何开发、测试、迁移或接入
