@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
-import { join } from 'node:path'
-import { ensurePrivateDirectory, ensurePrivateSessionDirectory, ensurePrivateStateDirectory, type GatewayConfig } from './config.js'
+import { lstatSync, readFileSync, realpathSync } from 'node:fs'
+import { isAbsolute, join, relative, sep } from 'node:path'
+import { ensurePrivateDirectory, ensurePrivateOpenClawConfigPath, ensurePrivateSessionDirectory, ensurePrivateStateDirectory, type GatewayConfig } from './config.js'
 
 export type PrereqResult = {
   conclusion: 'READY' | 'NOT_READY'
@@ -75,6 +76,38 @@ function uniqueCompatibility(object: Record<string, unknown> | undefined): strin
   }
   return values.length > 0 && new Set(values).size === 1 ? values[0] : undefined
 }
+function hasDeclaredCompatibility(object: Record<string, unknown> | undefined): boolean {
+  const paths: readonly (readonly string[])[] = [['engines', 'openclaw'], ['plugin', 'engines', 'openclaw'], ['manifest', 'engines', 'openclaw'], ['openclaw', 'install', 'minHostVersion'], ['install', 'minHostVersion']]
+  return paths.some((path) => valueAt(object, path) !== undefined)
+}
+const maxPluginPackageBytes = 64 * 1024
+function pluginRootFromMetadata(metadata: Record<string, unknown> | undefined, sessionDir: string | undefined): string | undefined {
+  if (!sessionDir) return undefined
+  const paths: readonly (readonly string[])[] = [['rootDir'], ['plugin', 'rootDir'], ['install', 'installPath'], ['plugin', 'install', 'installPath']]
+  const declared = paths.map((path) => valueAt(metadata, path)).filter((value): value is string => typeof value === 'string' && value.length > 0)
+  if (declared.length === 0 || declared.some((path) => !isAbsolute(path))) return undefined
+  let stateRoot: string
+  let roots: string[]
+  try { stateRoot = realpathSync(sessionDir); roots = declared.map((path) => realpathSync(path)) } catch { return undefined }
+  if (new Set(roots).size !== 1) return undefined
+  const root = roots[0]
+  const pathFromState = relative(stateRoot, root)
+  if (pathFromState === '' || pathFromState === '..' || pathFromState.startsWith(`..${sep}`) || isAbsolute(pathFromState)) return undefined
+  return root
+}
+/** Falls back only when the official CLI has no compatibility field at all, and only inside the isolated state root. */
+function packageCompatibility(metadata: Record<string, unknown> | undefined, sessionDir: string | undefined): string | undefined {
+  const root = pluginRootFromMetadata(metadata, sessionDir)
+  if (!root) return undefined
+  const packagePath = join(root, 'package.json')
+  let fileState: ReturnType<typeof lstatSync>
+  try { fileState = lstatSync(packagePath) } catch { return undefined }
+  if (!fileState.isFile() || fileState.isSymbolicLink() || fileState.size > maxPluginPackageBytes) return undefined
+  let parsed: Record<string, unknown> | undefined
+  try { parsed = parseJson(readFileSync(packagePath, 'utf8')) } catch { return undefined }
+  const minimum = valueAt(parsed, ['openclaw', 'install', 'minHostVersion'])
+  return typeof minimum === 'string' && /^(?:>=)?\d{4}\.\d{1,2}\.\d{1,2}$/.test(minimum) ? `>=${minimum.replace(/^>=/, '')}` : undefined
+}
 function numericVersion(value: string): [number, number, number] | undefined {
   const match = value.match(/^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:[-+].*)?$/)
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined
@@ -91,8 +124,18 @@ function declaredSendAction(value: unknown): boolean | undefined {
   return undefined
 }
 /** Only public, explicit send declarations can prove the CLI bridge. `sendText` and free-form shapes are deliberately rejected. */
-export function hasVerifiedOutboundSendCapability(payload: Record<string, unknown> | undefined): boolean {
+export function hasVerifiedOutboundSendCapability(payload: Record<string, unknown> | undefined, channel = 'openclaw-weixin'): boolean {
   if (!payload) return false
+  if (payload.channels !== undefined) {
+    if (!Array.isArray(payload.channels)) return false
+    const matched = payload.channels.filter((entry): entry is Record<string, unknown> => {
+      const value = asRecord(entry)
+      return value?.channel === channel
+    })
+    if (matched.length !== 1) return false
+    const plugin = asRecord(matched[0].plugin)
+    return plugin?.id === channel && declaredSendAction(matched[0].actions) === true
+  }
   const roots = [payload, asRecord(payload.capabilities)].filter((value): value is Record<string, unknown> => value !== undefined)
   const declarations: boolean[] = []
   for (const root of roots) {
@@ -114,14 +157,15 @@ export function satisfiesDeclaredCompatibility(openclawVersion: string, compatib
 export class OfficialRuntime {
   constructor(private readonly config: GatewayConfig, private readonly runner: OfficialCommandRunner = childProcessRunner) {}
   private environment(): NodeJS.ProcessEnv {
-    const sessionDir = this.config.sessionDir ?? join(this.config.stateDir, 'openclaw-offline')
+    ensurePrivateOpenClawConfigPath(this.config.openclawConfigPath)
+    const sessionDir = this.config.sessionDir ?? `${this.config.stateDir}/openclaw-offline`
     if (this.config.sessionDir) ensurePrivateSessionDirectory(this.config)
     else {
       ensurePrivateStateDirectory(this.config)
       ensurePrivateDirectory(sessionDir, 'ILINK_POC_OFFLINE_OPENCLAW_DIR')
     }
     // Explicitly overwrite, rather than inherit, any parent OpenClaw state/config location.
-    return { ...process.env, OPENCLAW_STATE_DIR: sessionDir, OPENCLAW_CONFIG_PATH: join(sessionDir, 'openclaw.json') }
+    return { ...process.env, OPENCLAW_STATE_DIR: sessionDir, OPENCLAW_CONFIG_PATH: this.config.openclawConfigPath }
   }
   private async run(args: readonly string[], timeoutMs: number): Promise<CommandResult> { return this.runner.run(this.config.ILINK_OPENCLAW_BIN, args, timeoutMs, this.environment()) }
   async prereqCheck(): Promise<PrereqResult> {
@@ -134,11 +178,11 @@ export class OfficialRuntime {
     if (plugin.spawnError || plugin.exitCode !== 0) return { conclusion: 'NOT_READY', code: 'ILINK_PLUGIN_NOT_INSTALLED', openclawInstalled: true, openclawVersion, pluginInstalled: false, compatible: false }
     const metadata = parseJson(plugin.stdout)
     const pluginVersion = uniqueString(metadata, [['version'], ['plugin', 'version'], ['manifest', 'version']])
-    const pluginCompatibility = uniqueCompatibility(metadata)
+    const pluginCompatibility = uniqueCompatibility(metadata) ?? (hasDeclaredCompatibility(metadata) ? undefined : packageCompatibility(metadata, this.config.sessionDir))
     const compatible = pluginCompatibility === undefined ? undefined : satisfiesDeclaredCompatibility(openclawVersion, pluginCompatibility)
     if (!pluginVersion || !pluginCompatibility || compatible !== true) return { conclusion: 'NOT_READY', code: 'ILINK_VERSION_UNSUPPORTED', openclawInstalled: true, openclawVersion, pluginInstalled: true, pluginVersion, pluginCompatibility, compatible: false }
     const capabilities = await this.run(['channels', 'capabilities', '--channel', this.config.ILINK_OPENCLAW_CHANNEL, '--timeout', String(this.config.ILINK_SESSION_CHECK_TIMEOUT_MS), '--json'], this.config.ILINK_SESSION_CHECK_TIMEOUT_MS)
-    if (capabilities.spawnError || capabilities.exitCode !== 0 || !hasVerifiedOutboundSendCapability(parseJson(capabilities.stdout))) return { conclusion: 'NOT_READY', code: 'ILINK_SEND_CONTRACT_UNVERIFIED', openclawInstalled: true, openclawVersion, pluginInstalled: true, pluginVersion, pluginCompatibility, compatible: false }
+    if (capabilities.spawnError || capabilities.exitCode !== 0 || !hasVerifiedOutboundSendCapability(parseJson(capabilities.stdout), this.config.ILINK_OPENCLAW_CHANNEL)) return { conclusion: 'NOT_READY', code: 'ILINK_SEND_CONTRACT_UNVERIFIED', openclawInstalled: true, openclawVersion, pluginInstalled: true, pluginVersion, pluginCompatibility, compatible: false }
     return { conclusion: 'READY', openclawInstalled: true, openclawVersion, pluginInstalled: true, pluginVersion, pluginCompatibility, compatible: true }
   }
   async sessionStatus(): Promise<OfficialSessionResult> {

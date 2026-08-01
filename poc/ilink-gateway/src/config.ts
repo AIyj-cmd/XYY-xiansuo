@@ -1,5 +1,5 @@
 import { lstatSync, mkdirSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { z } from 'zod'
 
 const bool = z.enum(['true', 'false']).optional().default('false').transform((value) => value === 'true')
@@ -41,6 +41,7 @@ const knownKeys = new Set([...Object.keys(configSchema.shape), ...Object.keys(le
 export type GatewayConfig = z.output<typeof configSchema> & {
   stateDir: string
   sessionDir?: string
+  openclawConfigPath: string
   deprecatedWarnings: string[]
 }
 
@@ -61,8 +62,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
   if (!parsed.success) throw new Error(`iLink Gateway 配置无效：${parsed.error.issues.map((issue) => issue.message).join('；')}`)
   const stateDir = resolve(parsed.data.ILINK_POC_STATE_DIR)
   const sessionDir = parsed.data.ILINK_POC_SESSION_DIR === undefined ? undefined : resolve(parsed.data.ILINK_POC_SESSION_DIR)
+  const rawOpenclawConfigPath = env.OPENCLAW_CONFIG_PATH
+  if (!rawOpenclawConfigPath || !absolutePath.safeParse(rawOpenclawConfigPath).success) throw new Error('iLink Gateway 配置无效：OPENCLAW_CONFIG_PATH 必须为绝对路径')
+  const openclawConfigPath = resolve(rawOpenclawConfigPath)
+  ensurePrivateOpenClawConfigPath(openclawConfigPath)
   if (parsed.data.ILINK_POC_LIVE_ENABLED && !sessionDir) throw new Error('iLink Gateway 配置无效：live 模式需要 ILINK_POC_SESSION_DIR')
-  return { ...parsed.data, stateDir, sessionDir, deprecatedWarnings: warnings }
+  return { ...parsed.data, stateDir, sessionDir, openclawConfigPath, deprecatedWarnings: warnings }
 }
 
 export function ensurePrivateDirectory(path: string, variable: string): void {
@@ -70,6 +75,22 @@ export function ensurePrivateDirectory(path: string, variable: string): void {
   const state = lstatSync(path)
   if (!state.isDirectory() || state.isSymbolicLink()) throw new Error(`${variable} 必须是非符号链接目录`)
   if ((state.mode & 0o077) !== 0) throw new Error(`${variable} 权限必须为 0700`)
+}
+
+/** OpenClaw configuration remains outside the state directory and must never traverse a symlink. */
+export function ensurePrivateOpenClawConfigPath(path: string): void {
+  const parent = dirname(path)
+  let parentState: ReturnType<typeof lstatSync>
+  try { parentState = lstatSync(parent) } catch { throw new Error('OPENCLAW_CONFIG_PATH 父目录必须存在且权限为 0700') }
+  if (!parentState.isDirectory() || parentState.isSymbolicLink()) throw new Error('OPENCLAW_CONFIG_PATH 父目录必须是非符号链接目录')
+  if ((parentState.mode & 0o777) !== 0o700) throw new Error('OPENCLAW_CONFIG_PATH 父目录权限必须为 0700')
+  let fileState: ReturnType<typeof lstatSync>
+  try { fileState = lstatSync(path) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+  if (!fileState.isFile() || fileState.isSymbolicLink()) throw new Error('OPENCLAW_CONFIG_PATH 必须是普通非符号链接文件')
+  if ((fileState.mode & 0o077) !== 0) throw new Error('OPENCLAW_CONFIG_PATH 权限必须不超过 0600')
 }
 
 export function ensurePrivateStateDirectory(config: GatewayConfig): void { ensurePrivateDirectory(config.stateDir, 'ILINK_POC_STATE_DIR') }

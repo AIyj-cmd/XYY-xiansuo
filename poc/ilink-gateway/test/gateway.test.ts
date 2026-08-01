@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -20,8 +20,9 @@ import { publicPrereq } from '../src/cli/prereq-check.js'
 import { publicSession } from '../src/cli/official-session-status.js'
 
 function directory(): string { const value = mkdtempSync(join(tmpdir(), 'xiansuo-ilink-')); chmodSync(value, 0o700); return value }
+function openclawConfigPath(dir: string): string { const parent = join(dir, 'openclaw-config'); mkdirSync(parent, { recursive: true, mode: 0o700 }); chmodSync(parent, 0o700); return join(parent, 'openclaw.json') }
 function config(dir: string, extra: Record<string, string> = {}): GatewayConfig {
-  return loadConfig({ ILINK_POC_STATE_DIR: dir, ILINK_POC_SESSION_DIR: join(dir, 'sessions'), ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1', ...extra })
+  return loadConfig({ ILINK_POC_STATE_DIR: dir, ILINK_POC_SESSION_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1', ...extra })
 }
 function request() { return { deliveryId: randomUUID(), idempotencyKey: `phase5a-test-${randomUUID()}`, recipientExternalId: 'test-recipient-1', message: { title: '【测试通知】', body: '这是一条XYY-xiansuo渠道隔离测试消息。\n不包含真实客户或业务数据。' } } }
 function result(stdout = '', exitCode = 0): CommandResult { return { stdout, stderr: '', exitCode } }
@@ -57,11 +58,12 @@ test('all OpenClaw subprocesses receive isolated state/config environment and ov
   try {
     process.env.OPENCLAW_STATE_DIR = '/unsafe-parent-state'; process.env.OPENCLAW_CONFIG_PATH = '/unsafe-parent-config'
     const cfg = config(dir); const environments: NodeJS.ProcessEnv[] = []
+    assert.equal(cfg.openclawConfigPath, join(dir, 'openclaw-config', 'openclaw.json'))
     const base = runner({ '--version': result('2026.8.1'), 'plugins info openclaw-weixin --json': result(JSON.stringify({ version: '2.4.6', engines: { openclaw: '>=2026.3.22' } })), 'channels capabilities --channel openclaw-weixin --timeout 5000 --json': result(JSON.stringify({ actions: ['send'] })), 'channels status --channel openclaw-weixin --probe --timeout 5000 --json': result(JSON.stringify({ status: 'authenticated' })), 'message send --channel openclaw-weixin --target test-recipient-1 --message fixed --json': result(JSON.stringify({ ok: true, channel: 'openclaw-weixin', result: { messageId: 'm-1' } })) })
     const observed: OfficialCommandRunner = { run: async (command, args, timeout, environment) => { environments.push(environment); return base.run(command, args, timeout, environment) }, interactive: async (_command, _args, environment) => { environments.push(environment); return 0 } }
     const runtime = new OfficialRuntime(cfg, observed); await runtime.prereqCheck(); await runtime.sessionStatus(); await runtime.login(); await runtime.sendSynthetic('test-recipient-1', 'fixed')
     assert.ok(environments.length >= 7)
-    for (const environment of environments) { assert.equal(environment.OPENCLAW_STATE_DIR, cfg.sessionDir); assert.equal(environment.OPENCLAW_CONFIG_PATH, join(cfg.sessionDir!, 'openclaw.json')) }
+    for (const environment of environments) { assert.equal(environment.OPENCLAW_STATE_DIR, cfg.sessionDir); assert.equal(environment.OPENCLAW_CONFIG_PATH, cfg.openclawConfigPath) }
   } finally {
     if (previousState === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = previousState
     if (previousConfig === undefined) delete process.env.OPENCLAW_CONFIG_PATH; else process.env.OPENCLAW_CONFIG_PATH = previousConfig
@@ -80,6 +82,34 @@ test('metadata minHostVersion and only explicit send capability declarations are
     assert.equal(hasVerifiedOutboundSendCapability({ actions: ['send'] }), true)
     assert.equal(hasVerifiedOutboundSendCapability({ capabilities: { send: true } }), true)
     assert.equal(hasVerifiedOutboundSendCapability({ send: true, capabilities: { actions: [] } }), false)
+    const currentOfficialShape = { channels: [{ channel: 'openclaw-weixin', plugin: { id: 'openclaw-weixin' }, actions: ['send', 'broadcast'] }] }
+    assert.equal(hasVerifiedOutboundSendCapability(currentOfficialShape, 'openclaw-weixin'), true)
+    assert.equal(hasVerifiedOutboundSendCapability({ channels: [{ channel: 'other', plugin: { id: 'other' }, actions: ['send'] }] }, 'openclaw-weixin'), false)
+    assert.equal(hasVerifiedOutboundSendCapability({ channels: [currentOfficialShape.channels[0], currentOfficialShape.channels[0]] }, 'openclaw-weixin'), false)
+    assert.equal(hasVerifiedOutboundSendCapability({ channels: [{ channel: 'openclaw-weixin', plugin: { id: 'other' }, actions: ['send'] }] }, 'openclaw-weixin'), false)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('compatibility fallback reads only a bounded real package inside the isolated session state', async () => {
+  const dir = directory(); try {
+    const cfg = config(dir)
+    const capabilities = { channels: [{ channel: 'openclaw-weixin', plugin: { id: 'openclaw-weixin' }, actions: ['send', 'broadcast'] }] }
+    const makeRuntime = (root: string) => new OfficialRuntime(cfg, runner({
+      '--version': result('OpenClaw 2026.7.1-2'),
+      'plugins info openclaw-weixin --json': result(JSON.stringify({ version: '2.4.6', plugin: { rootDir: root }, install: { installPath: root, version: '2.4.6' } })),
+      'channels capabilities --channel openclaw-weixin --timeout 5000 --json': result(JSON.stringify(capabilities))
+    }))
+    const privatePlugin = (name: string) => { const root = join(cfg.sessionDir!, 'plugins', name); mkdirSync(root, { recursive: true, mode: 0o700 }); return root }
+    const validRoot = privatePlugin('valid'); writeFileSync(join(validRoot, 'package.json'), JSON.stringify({ openclaw: { install: { minHostVersion: '2026.3.22' } } }), { mode: 0o600 })
+    assert.equal((await makeRuntime(validRoot).prereqCheck()).conclusion, 'READY')
+    const outsideRoot = join(dir, 'outside-plugin'); mkdirSync(outsideRoot, { mode: 0o700 }); writeFileSync(join(outsideRoot, 'package.json'), JSON.stringify({ openclaw: { install: { minHostVersion: '2026.3.22' } } }), { mode: 0o600 })
+    assert.equal((await makeRuntime(outsideRoot).prereqCheck()).code, 'ILINK_VERSION_UNSUPPORTED')
+    const linkedRoot = privatePlugin('linked'); const target = join(dir, 'outside-package.json'); writeFileSync(target, JSON.stringify({ openclaw: { install: { minHostVersion: '2026.3.22' } } }), { mode: 0o600 }); symlinkSync(target, join(linkedRoot, 'package.json'))
+    assert.equal((await makeRuntime(linkedRoot).prereqCheck()).code, 'ILINK_VERSION_UNSUPPORTED')
+    const malformedRoot = privatePlugin('malformed'); writeFileSync(join(malformedRoot, 'package.json'), '{', { mode: 0o600 })
+    assert.equal((await makeRuntime(malformedRoot).prereqCheck()).code, 'ILINK_VERSION_UNSUPPORTED')
+    const missingFieldRoot = privatePlugin('missing-field'); writeFileSync(join(missingFieldRoot, 'package.json'), '{}', { mode: 0o600 })
+    assert.equal((await makeRuntime(missingFieldRoot).prereqCheck()).code, 'ILINK_VERSION_UNSUPPORTED')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -87,12 +117,13 @@ test('live-off prereq uses a derived private directory instead of default or par
   const dir = directory(); const prior = process.env.OPENCLAW_STATE_DIR
   try {
     process.env.OPENCLAW_STATE_DIR = '/unsafe-parent-state'
-    const cfg = loadConfig({ ILINK_POC_STATE_DIR: dir, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1' })
+    const configPath = openclawConfigPath(dir)
+    const cfg = loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1' })
     let environment: NodeJS.ProcessEnv | undefined
     const fake: OfficialCommandRunner = { run: async (_command, _args, _timeout, value) => { environment = value; return { ...result('', 1), spawnError: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) } }, interactive: async () => null }
     assert.equal((await new OfficialRuntime(cfg, fake).prereqCheck()).code, 'ILINK_OPENCLAW_NOT_INSTALLED')
     assert.equal(environment?.OPENCLAW_STATE_DIR, join(dir, 'openclaw-offline'))
-    assert.equal(environment?.OPENCLAW_CONFIG_PATH, join(dir, 'openclaw-offline', 'openclaw.json'))
+    assert.equal(environment?.OPENCLAW_CONFIG_PATH, configPath)
   } finally { if (prior === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = prior; rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -144,12 +175,35 @@ test('private state and session directories require 0700 and reject symbolic lin
 
 test('configuration accepts only frozen names, absolute paths and a non-conflicting legacy alias', () => {
   const dir = directory(); try {
-    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: 'relative', ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }))
+    const configPath = openclawConfigPath(dir)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: 'relative', OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }))
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: 'relative', ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }))
     assert.throws(() => config(dir, { ILINK_UNKNOWN: 'x' }))
     assert.throws(() => config(dir, { ILINK_GATEWAY_STATE_DIR: '/tmp/one', ILINK_POC_STATE_DIR: '/tmp/two' }))
-    const alias = loadConfig({ ILINK_GATEWAY_STATE_DIR: dir, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' })
+    const alias = loadConfig({ ILINK_GATEWAY_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' })
     assert.equal(alias.stateDir, dir); assert.equal(alias.deprecatedWarnings.length, 1)
     assert.throws(() => config(dir, { ILINK_POC_LIVE_ENABLED: 'true', ILINK_POC_SESSION_DIR: '' }))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('OpenClaw configuration path requires a private real parent and a private regular file when present', () => {
+  const dir = directory(); try {
+    const configPath = openclawConfigPath(dir)
+    const parent = join(dir, 'openclaw-config')
+    chmodSync(parent, 0o755)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /父目录权限必须为 0700/)
+    chmodSync(parent, 0o600)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /父目录权限必须为 0700/)
+    chmodSync(parent, 0o700)
+    assert.doesNotThrow(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }))
+    const realParent = join(dir, 'real-config'); mkdirSync(realParent, { mode: 0o700 }); rmSync(parent, { recursive: true }); symlinkSync(realParent, parent)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /父目录必须是非符号链接目录/)
+    rmSync(parent, { recursive: true })
+    mkdirSync(parent, { mode: 0o700 }); chmodSync(parent, 0o700)
+    writeFileSync(configPath, '{}', { mode: 0o600 }); chmodSync(configPath, 0o644)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /权限必须不超过 0600/)
+    chmodSync(configPath, 0o600); rmSync(configPath); symlinkSync(join(dir, 'target.json'), configPath)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_CONFIG_PATH: configPath, ILINK_GATEWAY_SECRET: 'a'.repeat(48), ILINK_POC_RECIPIENT_EXTERNAL_ID: 'r' }), /普通非符号链接文件/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
