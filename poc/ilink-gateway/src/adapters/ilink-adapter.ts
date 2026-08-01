@@ -18,11 +18,19 @@ export class OpenClawCliTransport implements OfficialSendTransport {
   async send(request: AdapterDeliveryRequest): Promise<OfficialSendResponse> {
     const command = await this.runtime.sendSynthetic(request.recipientExternalId, `${request.message.title}\n\n${request.message.body ?? ''}`)
     if (command.spawnError) throw new OfficialTransportError('ILINK_GATEWAY_OFFLINE', 'before_request')
-    let body: unknown
-    try { body = JSON.parse(command.stdout) } catch { body = undefined }
-    // A raw provider ret, if present, remains a provider response even when the wrapper exits non-zero.
-    if (body !== undefined && isRawRetResponse(body)) return { httpStatus: 200, body, phase: 'after_request' }
-    const confirmation = command.exitCode === 0 ? parseRuntimeConfirmation(body, this.channel) : undefined
+    if (command.timedOut) throw new OfficialTransportError('ILINK_SEND_TIMEOUT', 'after_request')
+    const cleanStdout = stripTerminalAnsi(command.stdout)
+    const cleanStderr = stripTerminalAnsi(command.stderr)
+    if (command.exitCode === 1 && !cleanStdout.trim() && isExplicitUnknownTarget(cleanStderr, request.recipientExternalId, this.channel)) return { httpStatus: 400, phase: 'before_request' }
+    const body = parseCliJson(cleanStdout)
+    // A nonzero raw provider result is still an explicit failure (for example,
+    // Unknown target). A ret=0 wrapper response lacks the CLI success contract,
+    // so it cannot prove delivery even if the wrapper exited successfully.
+    if (body !== undefined && isRawRetResponse(body)) {
+      if (body.ret === 0) throw new OfficialTransportError('ILINK_SEND_RESULT_UNKNOWN', 'after_request')
+      return { httpStatus: command.exitCode === 0 ? 200 : 400, body, phase: 'after_request' }
+    }
+    const confirmation = command.exitCode === 0 && !hasExplicitErrorLine(cleanStderr) ? parseRuntimeConfirmation(body, this.channel) : undefined
     if (confirmation) return { httpStatus: 200, runtimeConfirmedMessageId: confirmation, phase: 'after_request' }
     // The CLI ran but did not produce a provider response we can classify: it might have submitted.
     throw new OfficialTransportError(command.timedOut ? 'ILINK_SEND_TIMEOUT' : 'ILINK_SEND_RESULT_UNKNOWN', 'after_request')
@@ -40,22 +48,45 @@ function localReceipt(request: AdapterDeliveryRequest, classification: string): 
 }
 function safeProviderReceipt(value: string): string { return `ilink-provider:${createHash('sha256').update(value).digest('hex')}` }
 function isRawRetResponse(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) && typeof (value as Record<string, unknown>).ret === 'number' }
+function stripTerminalAnsi(value: string): string {
+  return value
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+}
+function escapeRegExp(value: string): string { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
+function isExplicitUnknownTarget(stderr: string, target: string, channel: string): boolean {
+  return new RegExp(`^Error: Unknown target ${escapeRegExp(target)} for ${escapeRegExp(channel)}\\.\\r?\\n?$`).test(stderr)
+}
+function hasExplicitErrorLine(stderr: string): boolean { return stderr.split(/\r?\n/).some((line) => /^Error:\s+\S(?:.*\S)?$/.test(line)) }
+function parseCliJson(stdout: string): unknown {
+  const clean = stdout.trim()
+  if (!clean) return undefined
+  try { return JSON.parse(clean) } catch { /* fall through to exactly one complete JSON output line */ }
+  const candidates: unknown[] = []
+  const lines = clean.split(/\r?\n/)
+  for (let start = 0; start < lines.length;) {
+    if (!lines[start].trim().startsWith('{')) { start += 1; continue }
+    let parsed: unknown | undefined; let end = start
+    for (; end < lines.length; end++) {
+      const candidate = lines.slice(start, end + 1).join('\n')
+      try { parsed = JSON.parse(candidate); break } catch { /* wait for a complete bounded object */ }
+    }
+    if (parsed === undefined) return undefined
+    candidates.push(parsed); start = end + 1
+  }
+  return candidates.length === 1 ? candidates[0] : undefined
+}
 function parseRuntimeConfirmation(value: unknown, channel: string): string | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const envelope = value as Record<string, unknown>; const result = envelope.result
-  if (envelope.ok !== true || result === null || typeof result !== 'object' || Array.isArray(result)) return undefined
-  const data = result as Record<string, unknown>
-  const messageId = typeof data.messageId === 'string' ? data.messageId : undefined
-  const channelFields = [envelope.channel, data.channel].filter((field) => field !== undefined)
-  const providerChannelIds = [envelope.channelId, data.channelId].filter((field) => field !== undefined)
+  const envelope = value as Record<string, unknown>
+  if (envelope.action !== 'send' || envelope.channel !== channel || envelope.dryRun !== false || envelope.handledBy !== 'core' || !Object.hasOwn(envelope, 'payload') || envelope.payload === null || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) return undefined
+  const messageId = typeof envelope.messageId === 'string' ? envelope.messageId : undefined
   if (!messageId || !/^[\x21-\x7e]{1,512}$/.test(messageId)) return undefined
-  if (channelFields.some((field) => typeof field !== 'string' || field !== channel)) return undefined
-  if (providerChannelIds.some((field) => (typeof field !== 'string' && typeof field !== 'number') || String(field).length === 0 || String(field).length > 512 || !/^[\x20-\x7e]+$/.test(String(field)))) return undefined
   return messageId
 }
 
 export function classifyOfficialResponse(request: AdapterDeliveryRequest, response: OfficialSendResponse): ChannelDeliveryResult {
-  if (response.runtimeConfirmedMessageId) return { status: 'sent', providerMessageId: `ilink-runtime:${createHash('sha256').update(response.runtimeConfirmedMessageId).digest('hex')}` }
+  if (response.runtimeConfirmedMessageId) return { status: 'sent', providerMessageId: response.runtimeConfirmedMessageId }
   const data = response.body !== null && typeof response.body === 'object' && !Array.isArray(response.body) ? response.body as Record<string, unknown> : undefined
   const ret = data?.ret
   if (response.httpStatus >= 200 && response.httpStatus < 300 && ret === 0) {

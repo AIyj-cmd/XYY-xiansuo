@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,6 +29,8 @@ function config(dir: string, extra: Record<string, string> = {}): GatewayConfig 
 function request() { return { deliveryId: randomUUID(), idempotencyKey: `phase5a-test-${randomUUID()}`, recipientUserId: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' } }
 function adapterRequest() { return { recipientExternalId: 'test-recipient-1', idempotencyKey: `phase5a-test-${randomUUID()}`, message: { ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' } } }
 function result(stdout = '', exitCode = 0): CommandResult { return { stdout, stderr: '', exitCode } }
+const openClawMessageSendSuccessFixture = readFileSync(new URL('./fixtures/openclaw-2026.7.1-message-send-success.json', import.meta.url), 'utf8').trim()
+const openClawUnknownTargetFixture = readFileSync(new URL('./fixtures/openclaw-2026.7.1-unknown-target.stderr.txt', import.meta.url), 'utf8')
 function runner(responses: Record<string, CommandResult>, interactiveExit = 0): OfficialCommandRunner {
   const key = (args: readonly string[]) => args.join(' ')
   return { run: async (_command, args) => responses[key(args)] ?? result('', 1), interactive: async () => interactiveExit }
@@ -370,19 +372,32 @@ test('official CLI transport uses exact fixed send argv and fails closed on non-
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('official CLI transport treats raw ret separately from strict runtime confirmations', async () => {
+test('official CLI transport accepts only the observed 2026.7.1 structured send confirmation', async () => {
   const dir = directory(); try {
     const cfg = config(dir); const item = adapterRequest()
     const sendKey = `message send --channel openclaw-weixin --target test-recipient-1 --message ${SYNTHETIC_MESSAGE.title}\n\n${SYNTHETIC_MESSAGE.body} --json`
     const make = (send: CommandResult) => new OpenClawCliTransport(new OfficialRuntime(cfg, runner({ [sendKey]: send })), 'openclaw-weixin')
-    assert.equal(classifyOfficialResponse(item, await make(result(JSON.stringify({ ret: 0 }))).send(item, new AbortController().signal)).status, 'sent')
+    await assert.rejects(() => make(result(JSON.stringify({ ret: 0 }))).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
     assert.equal(classifyOfficialResponse(item, await make(result(JSON.stringify({ ret: -14 }), 1)).send(item, new AbortController().signal)).errorCode, 'ILINK_SESSION_EXPIRED')
-    const confirmed = classifyOfficialResponse(item, await make(result(JSON.stringify({ ok: true, result: { messageId: 'stable-provider-id', channelId: 'provider-target-id' } }))).send(item, new AbortController().signal))
-    assert.equal(confirmed.status, 'sent'); assert.match(confirmed.providerMessageId!, /^ilink-runtime:[a-f0-9]{64}$/)
-    await assert.rejects(() => make(result(JSON.stringify({ ok: true, channel: 'wrong-channel', result: { messageId: 'stable-provider-id' } }))).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
-    await assert.rejects(() => make(result(JSON.stringify({ ok: true, channel: 'openclaw-weixin', result: {} }))).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
-    await assert.rejects(() => make(result(JSON.stringify({ ok: true, result: { messageId: 'stable-provider-id', channel: 'unknown-channel' } }))).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
-    await assert.rejects(() => make({ ...result('', 1), timedOut: true }).send(item, new AbortController().signal), /ILINK_SEND_TIMEOUT/)
+    const confirmed = classifyOfficialResponse(item, await make(result(openClawMessageSendSuccessFixture)).send(item, new AbortController().signal))
+    assert.deepEqual({ status: confirmed.status, providerMessageId: confirmed.providerMessageId }, { status: 'sent', providerMessageId: 'openclaw-2026-7-1-2-fixture-message-id' })
+    assert.equal(classifyOfficialResponse(item, await make(result(`普通日志\n${openClawMessageSendSuccessFixture}\n普通日志`)).send(item, new AbortController().signal)).status, 'sent')
+    assert.equal(classifyOfficialResponse(item, await make(result(`普通日志 {花括号噪声}\n${openClawMessageSendSuccessFixture}\n普通日志 {花括号噪声}`)).send(item, new AbortController().signal)).status, 'sent')
+    assert.equal(classifyOfficialResponse(item, await make(result(`\u001b[32m${openClawMessageSendSuccessFixture}\u001b[0m`)).send(item, new AbortController().signal)).status, 'sent')
+    assert.equal(classifyOfficialResponse(item, await make({ ...result(openClawMessageSendSuccessFixture), stderr: 'warning: plugin emitted a diagnostic\n' }).send(item, new AbortController().signal)).status, 'sent')
+    await assert.rejects(() => make({ ...result(openClawMessageSendSuccessFixture), stderr: 'Error: outbound action failed\n' }).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
+    const missingId = JSON.parse(openClawMessageSendSuccessFixture) as Record<string, unknown>; delete missingId.messageId
+    await assert.rejects(() => make(result(JSON.stringify(missingId))).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
+    await assert.rejects(() => make(result('{"action":"send","channel":"openclaw-weixin"')).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
+    await assert.rejects(() => make(result(JSON.stringify({ ...JSON.parse(openClawMessageSendSuccessFixture), action: 'poll' }))).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
+    await assert.rejects(() => make(result(`${openClawMessageSendSuccessFixture}\n${openClawMessageSendSuccessFixture}`)).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
+    await assert.rejects(() => make(result(`普通日志\n{不是 JSON}\n${openClawMessageSendSuccessFixture}`)).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
+    const unknownTarget = classifyOfficialResponse(item, await make(result(JSON.stringify({ ret: 1, error: 'Unknown target' }), 1)).send(item, new AbortController().signal))
+    assert.deepEqual({ status: unknownTarget.status, errorCode: unknownTarget.errorCode }, { status: 'permanent_failure', errorCode: 'ILINK_PROVIDER_REJECTED' })
+    const stderrUnknownTarget = classifyOfficialResponse(item, await make({ ...result('', 1), stderr: openClawUnknownTargetFixture }).send(item, new AbortController().signal))
+    assert.deepEqual({ status: stderrUnknownTarget.status, errorCode: stderrUnknownTarget.errorCode }, { status: 'permanent_failure', errorCode: 'ILINK_PROVIDER_REJECTED' })
+    await assert.rejects(() => make({ ...result('', 1), stderr: 'warning: Error: Unknown target test-recipient-1 for openclaw-weixin.' }).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
+    await assert.rejects(() => make({ ...result(openClawMessageSendSuccessFixture), timedOut: true }).send(item, new AbortController().signal), /ILINK_SEND_TIMEOUT/)
     await assert.rejects(() => make(result('', 1)).send(item, new AbortController().signal), /ILINK_SEND_RESULT_UNKNOWN/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
