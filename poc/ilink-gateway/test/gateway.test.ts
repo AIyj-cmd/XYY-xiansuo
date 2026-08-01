@@ -8,7 +8,7 @@ import { canonicalRequest, freshNonce, sha256, sign } from '../src/auth.js'
 import { loadConfig, ensurePrivateOpenClawStateDirectory, ensurePrivateStateDirectory, type GatewayConfig } from '../src/config.js'
 import { IdempotencyStore } from '../src/idempotency-store.js'
 import { GatewayService } from '../src/gateway-service.js'
-import { OfficialRuntime, type CommandResult, type OfficialCommandRunner, hasVerifiedOutboundSendCapability, satisfiesDeclaredCompatibility } from '../src/official-runtime.js'
+import { OfficialRuntime, type CommandResult, type OfficialCommandRunner, hasVerifiedOutboundSendCapability, parseOfficialSessionStatus, satisfiesDeclaredCompatibility } from '../src/official-runtime.js'
 import { ILinkAdapter, MockOfficialSendTransport, OfficialTransportError, OpenClawCliTransport, classifyOfficialResponse } from '../src/adapters/ilink-adapter.js'
 import { FakeAdapter } from '../src/adapters/fake-adapter.js'
 import { StateStore } from '../src/state-store.js'
@@ -35,6 +35,12 @@ function runner(responses: Record<string, CommandResult>, interactiveExit = 0): 
 }
 function readyRuntime(cfg: GatewayConfig, session = 'authenticated'): OfficialRuntime {
   return new OfficialRuntime(cfg, runner({ '--version': result('OpenClaw 2026.8.1'), 'plugins info openclaw-weixin --json': result(JSON.stringify({ version: '2.4.6', engines: { openclaw: '>=2026.3.22' } })), 'channels capabilities --channel openclaw-weixin --timeout 5000 --json': result(JSON.stringify({ capabilities: { actions: ['send'] } })), 'channels status --channel openclaw-weixin --probe --timeout 5000 --json': result(JSON.stringify({ status: session })) }))
+}
+function currentChannelStatus(account: Record<string, unknown> = {}, channel = 'openclaw-weixin'): Record<string, unknown> {
+  return {
+    channels: { [channel]: { configured: true } },
+    channelAccounts: { [channel]: [{ accountId: 'private-account-id-must-not-escape', enabled: true, configured: true, running: true, restartPending: false, lastError: null, reconnectAttempts: 0, ...account }] },
+  }
 }
 
 test('HMAC canonical signature remains deterministic', () => {
@@ -147,6 +153,58 @@ test('official session state uses only public CLI JSON and never exposes identit
     assert.equal((await readyRuntime(config(dir), 'expired').sessionStatus()).state, 'expired')
     assert.equal((await readyRuntime(config(dir), 'restricted').sessionStatus()).state, 'restricted')
     assert.equal((await readyRuntime(config(dir), 'unrecognized').sessionStatus()).state, 'unknown')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('2026.7 structured channel status strictly proves one healthy configured account without exposing account ID', async () => {
+  const dir = directory(); try {
+    const cfg = config(dir); const structured = currentChannelStatus()
+    const runtime = new OfficialRuntime(cfg, runner({ '--version': result('OpenClaw 2026.7.1-2'), 'plugins info openclaw-weixin --json': result(JSON.stringify({ version: '2.4.6', engines: { openclaw: '>=2026.3.22' } })), 'channels capabilities --channel openclaw-weixin --timeout 5000 --json': result(JSON.stringify({ capabilities: { actions: ['send'] } })), 'channels status --channel openclaw-weixin --probe --timeout 5000 --json': result(JSON.stringify(structured)) }))
+    const publicResult = publicSession(await runtime.sessionStatus())
+    assert.deepEqual(publicResult, { installed: true, loggedIn: true, sessionStatus: 'authenticated', requiresHumanLogin: false, code: undefined })
+    assert.equal(JSON.stringify(publicResult).includes('private-account-id-must-not-escape'), false)
+    assert.equal(parseOfficialSessionStatus(structured, 'other-channel')?.state, 'unknown')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('2026.7 structured status rejects tampering, account ambiguity and errors without inferring restriction from text', () => {
+  const state = (payload: Record<string, unknown>) => parseOfficialSessionStatus(payload, 'openclaw-weixin')?.state
+  assert.equal(state({ channels: { other: { configured: true } }, channelAccounts: { 'openclaw-weixin': [] } }), 'unknown')
+  assert.equal(state({ channels: { 'openclaw-weixin': { configured: true } }, channelAccounts: { 'openclaw-weixin': [] } }), 'login_required')
+  const multiple = currentChannelStatus(); ((multiple.channelAccounts as Record<string, unknown>)['openclaw-weixin'] as unknown[]).push({ accountId: 'second', enabled: true, configured: true, running: true, restartPending: false, lastError: null, reconnectAttempts: 0 })
+  assert.equal(state(multiple), 'unknown')
+  assert.equal(state(currentChannelStatus({ accountId: 1 })), 'unknown')
+  assert.equal(state(currentChannelStatus({ accountId: '   ' })), 'unknown')
+  assert.equal(state(currentChannelStatus({ reconnectAttempts: 1 })), 'unknown')
+  assert.equal(state(currentChannelStatus({ lastError: 'account restricted maybe' })), 'unknown')
+  assert.equal(state(currentChannelStatus({ status: 1 })), 'unknown')
+  assert.equal(state(currentChannelStatus({ status: 'unrecognized' })), 'unknown')
+  assert.equal(state(currentChannelStatus({ status: 'authenticated' })), 'authenticated')
+  assert.equal(state(currentChannelStatus({ status: 'authenticated', lastError: 'ambiguous' })), 'unknown')
+  assert.equal(state(currentChannelStatus({ enabled: false })), 'offline')
+  assert.equal(state(currentChannelStatus({ running: false })), 'offline')
+  assert.equal(state(currentChannelStatus({ restartPending: true })), 'offline')
+  assert.equal(state(currentChannelStatus({ configured: false })), 'login_required')
+  assert.equal(state(currentChannelStatus({ status: 'restricted', lastError: 'official status' })), 'restricted')
+  // A malformed structured envelope is authoritative and must not be rescued
+  // by a legacy top-level authenticated flag.
+  assert.equal(state({ status: 'authenticated', channels: {}, channelAccounts: {} }), 'unknown')
+})
+
+test('structured unknown session fails closed before the send transport', async () => {
+  const dir = directory(); try {
+    const cfg = config(dir, { ILINK_POC_LIVE_ENABLED: 'true' }); let transportCalls = 0
+    const responses = {
+      '--version': result('OpenClaw 2026.7.1-2'),
+      'plugins info openclaw-weixin --json': result(JSON.stringify({ version: '2.4.6', engines: { openclaw: '>=2026.3.22' } })),
+      'channels capabilities --channel openclaw-weixin --timeout 5000 --json': result(JSON.stringify({ capabilities: { actions: ['send'] } })),
+      'channels status --channel openclaw-weixin --probe --timeout 5000 --json': result(JSON.stringify(currentChannelStatus({ status: 'unrecognized' }))),
+    }
+    const transport = { send: async () => { transportCalls += 1; return { httpStatus: 200, body: { ret: 0 } } } }
+    const outcome = await new ILinkAdapter(cfg, new OfficialRuntime(cfg, runner(responses)), transport).send(adapterRequest(), new AbortController().signal)
+    assert.deepEqual(outcome, { status: 'permanent_failure', errorCode: 'ILINK_SESSION_STATUS_UNKNOWN' })
+    assert.equal(transportCalls, 0)
+    assert.equal(JSON.stringify(outcome).includes('private-account-id-must-not-escape'), false)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

@@ -117,6 +117,7 @@ function compareVersion(left: [number, number, number], right: [number, number, 
   return 0
 }
 function asRecord(value: unknown): Record<string, unknown> | undefined { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined }
+function hasOwn(object: Record<string, unknown>, key: string): boolean { return Object.prototype.hasOwnProperty.call(object, key) }
 function declaredSendAction(value: unknown): boolean | undefined {
   if (value === true) return true
   if (value === false) return false
@@ -152,6 +153,54 @@ export function satisfiesDeclaredCompatibility(openclawVersion: string, compatib
   const match = compatibility.trim().match(/^>=\s*(\d{4}\.\d{1,2}\.\d{1,2})(?:\s*)$/)
   const actual = numericVersion(openclawVersion); const minimum = match?.[1] === undefined ? undefined : numericVersion(match[1])
   return actual && minimum ? compareVersion(actual, minimum) >= 0 : undefined
+}
+
+function session(state: OfficialSessionState, code?: string): OfficialSessionResult {
+  return { state, code, requiresHumanLogin: state === 'login_required' || state === 'expired' }
+}
+function explicitAccountState(account: Record<string, unknown>): OfficialSessionResult | undefined {
+  // This is deliberately an exact official state field, never a substring of
+  // lastError. Error prose must not be used to infer account restriction.
+  if (!hasOwn(account, 'status')) return undefined
+  if (typeof account.status !== 'string' || account.status.length === 0) return session('unknown', 'ILINK_SESSION_STATUS_UNKNOWN')
+  const raw = account.status.toLowerCase()
+  if (['restricted', 'blocked', 'account_restricted'].includes(raw)) return session('restricted', 'ILINK_ACCOUNT_RESTRICTED')
+  if (['login_required', 'not_logged_in', 'unauthenticated'].includes(raw)) return session('login_required', 'ILINK_LOGIN_REQUIRED')
+  if (['expired', 'session_expired'].includes(raw)) return session('expired', 'ILINK_SESSION_EXPIRED')
+  if (['offline', 'unreachable'].includes(raw)) return session('offline', 'ILINK_GATEWAY_OFFLINE')
+  if (['authenticated', 'logged_in', 'ready', 'online', 'running'].includes(raw)) return undefined
+  return session('unknown', 'ILINK_SESSION_STATUS_UNKNOWN')
+}
+/**
+ * Parses the 2026.7 channel-status envelope without exposing accountId. A
+ * structured envelope is authoritative when present; it must never fall back
+ * to a permissive legacy top-level status if its account proof is incomplete.
+ */
+export function parseOfficialSessionStatus(payload: Record<string, unknown> | undefined, channel: string): OfficialSessionResult | undefined {
+  if (!payload) return undefined
+  const structured = hasOwn(payload, 'channels') || hasOwn(payload, 'channelAccounts')
+  if (!structured) return undefined
+  const channels = asRecord(payload.channels); const accountsByChannel = asRecord(payload.channelAccounts)
+  if (!channels || !accountsByChannel || !hasOwn(channels, channel) || !hasOwn(accountsByChannel, channel)) return session('unknown', 'ILINK_SESSION_STATUS_UNKNOWN')
+  const channelConfig = asRecord(channels[channel]); const accountList = accountsByChannel[channel]
+  if (!channelConfig || typeof channelConfig.configured !== 'boolean') return session('unknown', 'ILINK_SESSION_STATUS_UNKNOWN')
+  if (channelConfig.configured === false) return session('login_required', 'ILINK_LOGIN_REQUIRED')
+  if (!Array.isArray(accountList)) return session('unknown', 'ILINK_SESSION_STATUS_UNKNOWN')
+  if (accountList.length === 0) return session('login_required', 'ILINK_LOGIN_REQUIRED')
+  if (accountList.length !== 1) return session('unknown', 'ILINK_SESSION_STATUS_UNKNOWN')
+  const account = asRecord(accountList[0])
+  if (!account || typeof account.accountId !== 'string' || account.accountId.trim().length === 0
+    || typeof account.enabled !== 'boolean' || typeof account.configured !== 'boolean' || typeof account.running !== 'boolean'
+    || typeof account.restartPending !== 'boolean' || !Number.isSafeInteger(account.reconnectAttempts) || (account.reconnectAttempts as number) < 0
+    || !hasOwn(account, 'lastError')) return session('unknown', 'ILINK_SESSION_STATUS_UNKNOWN')
+  const explicit = explicitAccountState(account)
+  if (explicit) return explicit
+  if (account.configured === false) return session('login_required', 'ILINK_LOGIN_REQUIRED')
+  if (account.enabled === false || account.running === false || account.restartPending === true) return session('offline', 'ILINK_GATEWAY_OFFLINE')
+  // A present error/reconnect attempt is an unsafe/ambiguous state. It is not
+  // evidence of restriction, even if its text happens to contain that word.
+  if (account.lastError !== null || account.reconnectAttempts !== 0) return session('unknown', 'ILINK_SESSION_STATUS_UNKNOWN')
+  return session('authenticated')
 }
 
 export class OfficialRuntime {
@@ -190,7 +239,10 @@ export class OfficialRuntime {
     if (prereq.conclusion !== 'READY') return { state: 'unsupported', code: prereq.code ?? 'ILINK_VERSION_UNSUPPORTED', requiresHumanLogin: false }
     const result = await this.run(['channels', 'status', '--channel', this.config.ILINK_OPENCLAW_CHANNEL, '--probe', '--timeout', String(this.config.ILINK_SESSION_CHECK_TIMEOUT_MS), '--json'], this.config.ILINK_SESSION_CHECK_TIMEOUT_MS)
     if (result.spawnError) return { state: 'offline', code: 'ILINK_GATEWAY_OFFLINE', requiresHumanLogin: false }
-    const payload = parseJson(result.stdout); const raw = uniqueString(payload, [['status'], ['session', 'status'], ['channel', 'status']])?.toLowerCase()
+    const payload = parseJson(result.stdout)
+    const structured = parseOfficialSessionStatus(payload, this.config.ILINK_OPENCLAW_CHANNEL)
+    if (structured) return result.exitCode === 0 ? structured : session('unknown', 'ILINK_SESSION_STATUS_UNKNOWN')
+    const raw = uniqueString(payload, [['status'], ['session', 'status'], ['channel', 'status']])?.toLowerCase()
     if (result.exitCode !== 0 || !raw) return { state: 'unknown', code: 'ILINK_SESSION_STATUS_UNKNOWN', requiresHumanLogin: false }
     if (['authenticated', 'logged_in', 'ready'].includes(raw)) return { state: 'authenticated', requiresHumanLogin: false }
     if (['login_required', 'not_logged_in', 'unauthenticated'].includes(raw)) return { state: 'login_required', code: 'ILINK_LOGIN_REQUIRED', requiresHumanLogin: true }
