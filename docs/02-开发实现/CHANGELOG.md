@@ -14,7 +14,7 @@
 - 最终验收补强：synthetic sealed 门禁现在先于 retention cleanup，终态过期污染不能被清理后继续发送；封存任务新增 `lease_recovery_count`、`management_audit_json`、`row_version`、尝试/发送/保留时间约束。新增终态污染与元数据篡改回归，完整后端测试为 137/137。
 - 实况前 P1 兼容修复：OpenClaw `2026.7.1-2` 的 `channels status` 使用 `channels.<channel>.configured` 与 `channelAccounts.<channel>` 单账号状态，不再只有旧 top-level session 字段。Gateway 现仅在精确 channel、恰好一个结构完整账号、已启用/配置/运行、无重启待定/错误/重连时判为 authenticated；多账号、空账号、篡改、错误或歧义一律失败关闭，账号 ID 不进入任何公开结果。旧格式继续兼容。最终验收进一步拒绝空白 accountId、未知或类型错误的显式 account status，并固定验证 unknown 状态不会调用发送 transport；Gateway 37/37 通过。
 - 验收将 Gateway 固定合成消息校准为“XYY-xiansuo普通微信通知通道已连接 / 这是一条内部测试消息”，并补强迁移 `007` 固定 checksum、历史整行、规则关闭、重复执行和冲突拒绝回归。固定合成 CLI 不等同于 outbox/Worker 实况；真实 Pilot 必须先在运行手册的两种模式中明确选择，不能直接伪造 outbox。
-- 未进行扫码、登录、真实微信发送、DeepSeek 调用、客户业务操作或生产部署；Pilot 报告明确为尚未执行。
+- 自动化验收后执行了一次受控实况：唯一 Worker 尝试因 `OPENCLAW_GATEWAY_TIMEOUT` 进入 `retry_wait`，Gateway 持久结果为 `result_unknown/ILINK_SEND_RESULT_UNKNOWN`，两侧均无 receipt。系统确认发送成功数为 0，微信端实际可能为 0 或 1；按停止条件未执行第二次尝试、同键重跑或真实去重验证，全部进程已停止且临时运行目录已精确删除。Pilot 判定未通过，当前禁止扩大或重试。
 
 ## 2026-08-01 — 真实外部渠道暂停（仅文档决策）
 

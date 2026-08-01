@@ -1,20 +1,80 @@
 # OpenClaw 内部通知 Pilot 报告
 
-状态：**尚未执行；最终自动化与隔离验收已通过，允许在运行手册全部前置条件满足后执行一次受控实况。**
+日期：2026-08-01
+基线：`feature/openclaw-internal-notifications` / `6ff67fb7b24c34029371b32734777395bed54e46`
+状态：**实况 Pilot 未通过（NO-GO）；已按停止条件关闭全部相关进程，不得重试或扩大。**
 
-届时只允许专用发送账号、固定测试接收人、非生产数据库和一条固定合成通知：
+## 1. 实况边界与前置门禁
 
-```text
-【测试通知】
+本次使用全新的仓库外 `/tmp` 隔离目录、一个 synthetic 用户和一条固定合成通知；未连接生产数据库、`server/data`、真实业务 outbox 或 DeepSeek。OpenClaw 为 `2026.7.1-2`，官方插件为 `2.4.6`，prereq-check 为 `READY`。
 
-XYY-xiansuo普通微信通知通道已连接。
-这是一条内部测试消息。
-```
+在临时 loopback/no-auth 配置下，官方 session 明确为 `authenticated`，Gateway health 为 `healthy/authenticated`。该临时配置、会话副本、Secret、日志和状态均仅存在于本次隔离目录，未写入仓库或报告。
 
-首次实际发送最多一条；重复验证必须使用同一幂等键并由 Gateway 返回 `deduplicated`，不得再次抵达微信。完成后必须关闭真实开关。若出现 `result_unknown`、账号限制、重复发送或非测试接收人收到，立即停止。当前没有因本实现执行扫码、登录、真实微信发送或 DeepSeek 调用。
+## 2. 入队与队列证明
 
-本轮已批准隔离 synthetic 入队：它使用既有 `daily_report` 严格快照和受限 source/operation，不新增事件、迁移或 API。实况前记录新建私有临时 DB 的路径哈希、固定键哈希、两次 queue-check SAFE、唯一任务 ID 和 Worker/Gateway 脱敏回执；不得记录客户数据、账号、接收人、Secret 或会话。CLI 本身不会删除临时库，安全清理仅在实况结束后由主代理按单独授权执行。
+synthetic CLI 创建了唯一任务：
 
-在开始前还必须记录 sealed-state 门禁成功：请求路径与 realpath 一致、目录 `0700`、DB/WAL/SHM `0600`，且完整性、外键、迁移 checksum、零业务数据、默认关闭规则和唯一任务阶段均通过。test_verifier 已关闭路径、污染和批次 P1；最终验收又确认门禁先于 retention cleanup，并补齐行版本、租约恢复、管理审计及时间字段封存。当前 P1/P2/P3 为 0，但本报告只有真实执行后才能补写结果。
+| 项目 | 结果 |
+| --- | --- |
+| task ID | 1 |
+| 事件 | `daily_report` / `openclaw_synthetic_pilot` |
+| pilot user | 1 |
+| business date | `2026-08-01` |
+| 隔离 DB 哈希标识 | `15e433…` |
+| 初始任务状态 | 唯一 `pending` |
+| queue-check | 连续两次 `SAFE` |
+| queue-check 前后哈希 | 完全不变 |
 
-OpenClaw `2026.7.1-2` structured status P1 已完成独立复验和最终验收：只接受精确 channel 的一个完整健康账号；多账号、空账号、空白 accountId、未知/错误类型 status、错误、重启待定或其他歧义均停止，unknown 不调用发送 transport，公开结果不记录 accountId。当前允许恢复一次受控 Pilot，但本报告仍为尚未执行；必须先重新通过运行手册的 daemon/session、两次 queue-check SAFE 和零污染门禁。
+固定消息不含客户名称、联系人、手机号、微信号、需求、跟进、Prompt、JWT、Key 或真实业务数据。
+
+## 3. 唯一发送尝试
+
+仅启动一个 notification-worker，并只允许第一次尝试。结果如下：
+
+| 证据层 | 结果 |
+| --- | --- |
+| 业务隔离 DB | `retry_wait` |
+| `attempt_count` | 1 |
+| `automatic_attempt_count` | 1 |
+| Worker 错误码 | `OPENCLAW_GATEWAY_TIMEOUT` |
+| Worker receipt | 无 |
+| Gateway 持久 delivery | `result_unknown` |
+| Gateway 错误码 | `ILINK_SEND_RESULT_UNKNOWN` |
+| Gateway receipt | 无 |
+| 系统确认发送成功数 | **0** |
+| 微信端实际投递数 | **可能为 0 或 1，无法确认** |
+
+Gateway 的终态说明请求可能已提交，但没有取得可解释的最终响应。不得把无回执解释为“明确未发送”，也不得把接口调用解释为“已经发送”。本次没有进行第二次 Worker 尝试，没有以同一或不同幂等键重跑，也没有执行真实 `deduplicated` 验证。
+
+## 4. 停止、数据检查与清理
+
+命中用户批准的 `result_unknown` 停止条件后，立即停止 notification-worker、Gateway 和 OpenClaw。未继续等待 `retry_wait`，未人工修改任务，未尝试补发或查询业务数据。
+
+- 本地端口 `18789` 与 `38115` 均已关闭。
+- 清理前隔离库：`integrity_check=ok`、`foreign_key_check=0`。
+- 行数：users=1、leads=0、follow_ups=0、audit_logs=0、notification_logs=1、ai_request_logs=0。
+- 隐私扫描未发现批准范围外内容。
+- 随后精确删除本次整个 `/tmp` 运行目录，包括隔离 DB、Secret、临时配置、日志和 Gateway/OpenClaw 状态。
+- `server/data` 未被打开或修改；实况前 Git 工作区干净。
+- 未发生 DeepSeek 调用、客户业务操作、第二接收人发送或生产部署。
+
+## 5. 结论与问题分级
+
+| 分级 | 数量 | 说明 |
+| --- | ---: | --- |
+| P1 | 1 | 唯一真实发送结果为 `result_unknown`；微信端可能收到 0 或 1 条，存在无法安全自动重试的重复风险 |
+| P2 | 0 | 无 |
+| P3 | 0 | 无 |
+
+结论：**Pilot 未通过。** 自动化的 HMAC、防重放、幂等、sealed DB、队列预检、Gateway 37/37、Server 137/137 和 H5 构建验收事实继续有效，但不能替代真实投递回执。
+
+当前禁止：
+
+- 第二次自动或人工发送；
+- 使用相同或新幂等键重试；
+- 补做真实 deduplicated 验证；
+- 扩大 pilot 用户、接收人或事件；
+- 启用 AI 日报或生产规则；
+- 将本次结果写成成功、sent 或微信端明确未收到。
+
+只有另行完成 `OPENCLAW_GATEWAY_TIMEOUT / ILINK_SEND_RESULT_UNKNOWN` 根因审计、获得新的用户批准并使用新的隔离环境后，才可讨论新的实况验证。本报告不授权该后续动作。

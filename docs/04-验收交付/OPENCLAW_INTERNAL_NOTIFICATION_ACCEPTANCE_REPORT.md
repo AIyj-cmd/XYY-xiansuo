@@ -2,7 +2,7 @@
 
 日期：2026-08-01
 基线：`feature/openclaw-internal-notifications` / `6e4a1e6823fcc339b17f9cff4a1d509f2b39c706` 之后的一次性 synthetic 隔离增量
-结论：**自动化与隔离集成验收通过；允许按运行手册进入一次受控真实 Pilot（CONDITIONAL GO），不得生产部署或扩大灰度。**
+结论：**自动化与隔离集成验收通过；其后一次受控真实 Pilot 命中 result_unknown 停止条件并未通过。当前对继续实况、扩大灰度或生产部署均为 NO-GO。**
 
 ## 验收结论
 
@@ -26,7 +26,7 @@
 | `server/data` | 前后哈希完全一致 |
 | 真实微信 / DeepSeek | 均未调用 |
 
-## 问题分级
+## 自动化代码验收问题分级（实况前）
 
 - P1：0
 - P2：0
@@ -34,7 +34,7 @@
 
 独立测试曾发现的永久失败人工重试、Secret 非精确 `0600`、retryable 幂等缓存、Worker 超时覆盖、preview 空渠道五类问题均已修复并独立复验。验收补充核对了 `007` 固定 checksum、完整历史行、规则关闭和重复执行/冲突拒绝，并将首次 Pilot 固定文本校准到用户批准内容。
 
-## Pilot 放行条件
+## Pilot 放行条件（实况前历史门禁）
 
 仅当运行手册的前置检查全部满足时，才允许执行一次真实 Pilot：专用已登录账号、固定测试接收人、一个 pilot 系统用户、全新的 `/tmp` 隔离库、Gateway/Worker 单实例、DeepSeek 与 AI Scheduler 关闭。Pilot 完成后必须立即关闭真实开关并停止进程。
 
@@ -46,7 +46,7 @@ P1 修复以共享的阶段化 sealed-state 校验取代原先的部分 envelope
 
 最终验收另行复现并修复一项 P1：retention cleanup 原先先于 sealed 门禁，可能删除已到保留期的终态污染证据。现在门禁先于任何队列维护；新增回归证明额外终态行仍保留且 Gateway 调用为 0。验收同时补齐任务 `lease_recovery_count`、`management_audit_json`、`row_version`、尝试/发送/保留时间的严格封存。修复后 Server 137/137、Gateway 34/34、H5 build 与数据哈希复核均通过。
 
-本结论仅放行“一条固定合成消息”的受控实况步骤，不代表渠道生产批准；实况尚未执行，也未发生微信登录、消息发送或 DeepSeek 调用。
+本段在实况前仅放行“一条固定合成消息”的受控验证；该次授权已经使用完毕。实况结果及其对当前上线建议的覆盖见下文，仍不代表渠道生产批准，也不得扩大用户、启用 AI 日报或批量发送。
 
 ### OpenClaw 2026.7.1-2 structured status 最终验收
 
@@ -54,4 +54,12 @@ P1 修复以共享的阶段化 sealed-state 校验取代原先的部分 envelope
 
 最终验收又复现一项 P1：显式 `account.status` 为未知值或错误类型时曾被忽略，并可能由其他健康字段放行为 authenticated；纯空白 accountId 也未被拒绝。现已收紧为：status 缺失继续兼容实际 2026.7 结构，status 存在时仅接受明确健康或明确状态枚举，其余一律 unknown；accountId 必须 trim 后非空。新增 unknown→transport 调用 0 回归。修复后 Gateway build 与 37/37、Server build 与 137/137、H5 build、`git diff --check`、`server/data` 哈希均通过。
 
-当前 P1/P2/P3 为 0/0/0，允许恢复运行手册限定的一次受控 Pilot；仍不得启动生产渠道、扩大用户或自动发送。验收过程中未启动 daemon、未登录、未扫码、未发送消息。
+该段结论是实况执行前的代码验收放行，已被使用且不再构成新的发送授权。代码验收当时 P1/P2/P3 为 0/0/0；验收过程中未启动 daemon、未登录、未扫码、未发送消息。
+
+## 实况结果对上线建议的覆盖
+
+随后执行的一次受控实况只进行了首次尝试。Worker 记录 `retry_wait / attempt_count=1 / automatic_attempt_count=1 / OPENCLAW_GATEWAY_TIMEOUT` 且没有 receipt；Gateway 对同一 delivery 的持久结果为 `result_unknown / ILINK_SEND_RESULT_UNKNOWN`，同样没有 receipt。系统可确认的发送成功数为 0，但微信端实际可能收到 0 或 1 条，不能推断为明确失败或成功。
+
+已按停止条件关闭 Worker、Gateway 和 OpenClaw；没有第二次尝试、同键重跑、换键补发或真实 deduplicated 验证。隔离库清理前完整性、外键、零业务数据和隐私检查通过，随后精确删除整个临时运行目录；`server/data` 未触碰。
+
+当前综合分级为 P1/P2/P3 = **1/0/0**。P1 是无法确认最终投递且自动重试可能重复发送；这不是对既有自动化测试通过事实的否定，但会阻止任何继续实况、扩大 pilot 和生产启用。未经新的根因审计与用户批准，不得重试。
