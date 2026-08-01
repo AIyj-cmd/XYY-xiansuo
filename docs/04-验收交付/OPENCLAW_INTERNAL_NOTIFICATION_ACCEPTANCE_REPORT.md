@@ -20,7 +20,7 @@
 | --- | --- |
 | `server npm run build` | 通过 |
 | `server npm test` | 137/137 通过（含 sealed-state、终态污染与元数据篡改回归） |
-| Gateway build/test | 34/34 通过，全部 Fake/本地测试 |
+| Gateway build/test | 37/37 通过，全部 Fake/伪 CLI/本地测试 |
 | `app npm run build:h5` | 通过；未构建小程序 |
 | `git diff --check` | 通过 |
 | `server/data` | 前后哈希完全一致 |
@@ -47,3 +47,11 @@ P1 修复以共享的阶段化 sealed-state 校验取代原先的部分 envelope
 最终验收另行复现并修复一项 P1：retention cleanup 原先先于 sealed 门禁，可能删除已到保留期的终态污染证据。现在门禁先于任何队列维护；新增回归证明额外终态行仍保留且 Gateway 调用为 0。验收同时补齐任务 `lease_recovery_count`、`management_audit_json`、`row_version`、尝试/发送/保留时间的严格封存。修复后 Server 137/137、Gateway 34/34、H5 build 与数据哈希复核均通过。
 
 本结论仅放行“一条固定合成消息”的受控实况步骤，不代表渠道生产批准；实况尚未执行，也未发生微信登录、消息发送或 DeepSeek 调用。
+
+### OpenClaw 2026.7.1-2 structured status 最终验收
+
+在尚未入队、登录或发送且 daemon 已停止的前置检查中，发现 OpenClaw `2026.7.1-2` structured `channels status` 输出不能被旧解析器识别，Gateway 因而安全拒绝。实现新增严格单账号状态解析并保留旧格式；test_verifier 已确认精确 channel 的唯一完整健康账号才可 authenticated，多账号、空账号、错误、重启待定、停止或结构歧义均失败关闭，unknown 不调用 transport，公开状态不投影 accountId。
+
+最终验收又复现一项 P1：显式 `account.status` 为未知值或错误类型时曾被忽略，并可能由其他健康字段放行为 authenticated；纯空白 accountId 也未被拒绝。现已收紧为：status 缺失继续兼容实际 2026.7 结构，status 存在时仅接受明确健康或明确状态枚举，其余一律 unknown；accountId 必须 trim 后非空。新增 unknown→transport 调用 0 回归。修复后 Gateway build 与 37/37、Server build 与 137/137、H5 build、`git diff --check`、`server/data` 哈希均通过。
+
+当前 P1/P2/P3 为 0/0/0，允许恢复运行手册限定的一次受控 Pilot；仍不得启动生产渠道、扩大用户或自动发送。验收过程中未启动 daemon、未登录、未扫码、未发送消息。

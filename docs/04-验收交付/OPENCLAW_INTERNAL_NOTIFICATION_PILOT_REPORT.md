@@ -16,3 +16,5 @@ XYY-xiansuo普通微信通知通道已连接。
 本轮已批准隔离 synthetic 入队：它使用既有 `daily_report` 严格快照和受限 source/operation，不新增事件、迁移或 API。实况前记录新建私有临时 DB 的路径哈希、固定键哈希、两次 queue-check SAFE、唯一任务 ID 和 Worker/Gateway 脱敏回执；不得记录客户数据、账号、接收人、Secret 或会话。CLI 本身不会删除临时库，安全清理仅在实况结束后由主代理按单独授权执行。
 
 在开始前还必须记录 sealed-state 门禁成功：请求路径与 realpath 一致、目录 `0700`、DB/WAL/SHM `0600`，且完整性、外键、迁移 checksum、零业务数据、默认关闭规则和唯一任务阶段均通过。test_verifier 已关闭路径、污染和批次 P1；最终验收又确认门禁先于 retention cleanup，并补齐行版本、租约恢复、管理审计及时间字段封存。当前 P1/P2/P3 为 0，但本报告只有真实执行后才能补写结果。
+
+OpenClaw `2026.7.1-2` structured status P1 已完成独立复验和最终验收：只接受精确 channel 的一个完整健康账号；多账号、空账号、空白 accountId、未知/错误类型 status、错误、重启待定或其他歧义均停止，unknown 不调用发送 transport，公开结果不记录 accountId。当前允许恢复一次受控 Pilot，但本报告仍为尚未执行；必须先重新通过运行手册的 daemon/session、两次 queue-check SAFE 和零污染门禁。

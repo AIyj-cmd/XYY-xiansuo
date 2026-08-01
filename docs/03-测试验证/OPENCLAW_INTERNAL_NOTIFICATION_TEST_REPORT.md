@@ -363,6 +363,41 @@ rule.channel_order=[]
 
 ---
 
+## OpenClaw 2026.7.1-2 structured channel status 独立复验（2026-08-01）
+
+### 范围与方法
+
+- 基线包含实现阶段已存在的 [official-runtime.ts](/home/yj/xiansuo/poc/ilink-gateway/src/official-runtime.ts) 和 Gateway 测试差异；本测试阶段只更新本报告。
+- 以伪 `OfficialCommandRunner` 返回官方 CLI JSON，未启动 OpenClaw daemon、未登录、未扫码、未运行真实官方发送命令或 HTTP 外呼。
+- 该版本没有可配置的发送账号 ID 绑定字段；`ILINK_POC_RECIPIENT_EXTERNAL_ID` 是接收人标识而非账号绑定。因此“accountId mismatch”无可适用的绑定语义；解析器仍只使用 accountId 的类型/非空校验，且公开输出不投影它。
+
+### 已独立复验通过
+
+- 仅当精确配置渠道 `openclaw-weixin` 的 `configured=true`，且该渠道恰有一个完整账号（非空字符串 accountId、布尔 enabled/configured/running/restartPending、`lastError` 显式存在、非负整数 reconnectAttempts），并且 `enabled/running=true`、`restartPending=false`、`lastError=null`、`reconnectAttempts=0` 时，状态为 `authenticated`。
+- 伪 CLI 矩阵验证：空账号→`login_required`；多账号、错误渠道、缺失 `lastError`、错误 accountId/reconnectAttempts/lastError 类型、或 reconnectAttempts>0/lastError 非空→`unknown`；enabled=false、running=false、restartPending=true→`offline`；账号或渠道 configured=false→`login_required`；仅账户显式 `status='restricted'` 才为 `restricted`。`lastError` 中包含 “restricted” 的文字仍为 `unknown`，不会从错误文案推断限制状态。
+- 旧顶层 `{status:'authenticated'}` 仍由 `OfficialRuntime.sessionStatus()` 的 legacy 路径兼容为 authenticated；但任何带有 `channels` 或 `channelAccounts` 的不完整 structured envelope 均为权威输入，不能被同一 payload 的顶层 authenticated 宽松放行。
+- 独立发送门禁复现：伪 CLI 返回 `{status:'authenticated', channels:{}, channelAccounts:{}}`，Adapter 返回 `permanent_failure/ILINK_SESSION_STATUS_UNKNOWN`，伪 transport 调用数为 **0**。因此 unknown 不会进入发送 transport。
+- `official-session-status` 的公开投影仅有 installed、loggedIn、sessionStatus、requiresHumanLogin、code；结构化健康用例确认 accountId 不出现在输出。
+
+### 命令与结果
+
+- `cd poc/ilink-gateway && npm run build && npm test`：通过，**36/36**。
+- `cd server && npm run build && npm test`：通过，**137/137**。
+- `cd app && npm run build:h5`：通过；未构建小程序。
+- `git diff --check`：通过；`server/data` 全部哈希保持基线值。
+
+### 结论
+
+| 分级 | 数量 |
+| --- | ---: |
+| P1 | 0 |
+| P2 | 0 |
+| P3 | 0 |
+
+**允许再次进入 `acceptance_optimizer`。** 本次仅验证伪 CLI 与伪 transport 的失败关闭；不构成真实 daemon、真实微信账号或真实 Pilot 的授权。
+
+---
+
 ## 最终验收范围内加固（2026-08-01，非独立测试结论）
 
 `acceptance_optimizer` 在最终顺序审查中复现：Worker 原先在 synthetic sealed 门禁前运行 retention cleanup，额外终态污染若已到保留期会先被删除，存在污染证据被清除后继续投递的可能。验收将 sealed 门禁前移到任何队列维护之前，并新增“额外过期 failed 行”回归，确认污染行不被删除且 Gateway 调用为 0。普通无 synthetic marker 的 Worker 仍执行原 retention 流程。
@@ -370,3 +405,19 @@ rule.channel_order=[]
 同时补齐唯一任务的 `lease_recovery_count`、`management_audit_json`、`row_version`、`last_attempt_at`、`sent_at`、`retain_until` 和固定 TTL 封存；新增相应篡改拒绝用例。验收执行结果：Server build 与 **137/137** 测试通过，Gateway build 与 **34/34** 测试通过，H5 build 通过，`git diff --check` 通过，`server/data` 哈希未变化。未登录微信、未发送消息、未调用 DeepSeek。
 
 该加固由最终验收角色完成并复跑全量验证，不追溯改写上面的独立复验事实。修复后最终分级为 P1/P2/P3 = **0/0/0**。
+
+---
+
+## 实况前 P1：OpenClaw 2026.7 structured status 兼容（实现记录，已由上文独立复验关闭）
+
+实况前置检查发现 OpenClaw `2026.7.1-2` 的官方 `channels status --channel openclaw-weixin --probe --json` 输出没有旧的 top-level `status`、`session.status` 或 `channel.status`，而是 `channels.openclaw-weixin.configured=true` 和 `channelAccounts.openclaw-weixin` 的单账号运行状态。因此旧 Gateway 映射为 `unknown` 并拒绝实况；该 P1 发生在 daemon 已停止、未入队和未发送的前置检查阶段。
+
+实现新增严格兼容解析：仅精确指定 channel、configured、恰好一个账号、`enabled/configured/running=true`、`restartPending=false`、`lastError=null`、`reconnectAttempts=0` 且账号字段类型完整时映射 authenticated。空/多账号、缺失、错误、重连、停止或篡改均不会认证；明确 `configured=false` 映射 login_required，明确 disabled/running=false/restartPending 映射 offline，仅 `account.status` 的官方精确枚举可映射 restricted，错误文本绝不推断限制。账号 ID 不输出。该初始实现的 Gateway build/test 为 **36/36**；上文记录了 test_verifier 的独立复验结论。
+
+---
+
+## structured status 最终验收加固（2026-08-01，非独立测试结论）
+
+`acceptance_optimizer` 复现：结构化账号如果携带未知字符串或非字符串 `status`，初始解析器会忽略该字段，并可能由其他健康字段认证；纯空格 accountId 也会通过非空检查。验收修复后，status 缺失仍兼容实际 2026.7 结构，存在时必须属于明确健康或明确状态枚举，否则返回 unknown；accountId 必须 trim 后非空。
+
+新增持久回归确认未知 status 返回 `permanent_failure/ILINK_SESSION_STATUS_UNKNOWN`，发送 transport 调用数为 0，结果中不含 accountId。最终命令：Gateway build 与 **37/37**、Server build 与 **137/137**、H5 build、`git diff --check` 全部通过，`server/data` 哈希不变。未启动 daemon、未登录、未扫码、未发送消息。最终 P1/P2/P3 = **0/0/0**。

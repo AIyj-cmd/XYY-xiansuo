@@ -12,6 +12,7 @@
 - P1 修复补充：synthetic DB 父目录的请求路径必须等于其 realpath、且严格位于 `realpath(os.tmpdir())` 内；目录为精确 `0700`，DB/WAL/SHM 为非链接、非 hardlink 的精确 `0600` 普通文件。创建、重复 CLI、queue-check 与 Worker 投递前均运行阶段化 sealed-state 证明，拒绝任一业务表污染、规则变化、迁移/checksum、完整性/外键或唯一任务字段异常。
 - P1 批次门禁补充：只要当前库有 synthetic 标记或使用 synthetic 固定库名，Worker 会在 claim 前和有任务的 claim 后验证整个密封库；发现额外 `pending`、`retry_wait` 或可恢复 `sending` 任务时，本轮全局停止且不调用 Gateway，不依赖候选任务顺序。无 synthetic 标记的普通 Worker 不进入该分支。
 - 最终验收补强：synthetic sealed 门禁现在先于 retention cleanup，终态过期污染不能被清理后继续发送；封存任务新增 `lease_recovery_count`、`management_audit_json`、`row_version`、尝试/发送/保留时间约束。新增终态污染与元数据篡改回归，完整后端测试为 137/137。
+- 实况前 P1 兼容修复：OpenClaw `2026.7.1-2` 的 `channels status` 使用 `channels.<channel>.configured` 与 `channelAccounts.<channel>` 单账号状态，不再只有旧 top-level session 字段。Gateway 现仅在精确 channel、恰好一个结构完整账号、已启用/配置/运行、无重启待定/错误/重连时判为 authenticated；多账号、空账号、篡改、错误或歧义一律失败关闭，账号 ID 不进入任何公开结果。旧格式继续兼容。最终验收进一步拒绝空白 accountId、未知或类型错误的显式 account status，并固定验证 unknown 状态不会调用发送 transport；Gateway 37/37 通过。
 - 验收将 Gateway 固定合成消息校准为“XYY-xiansuo普通微信通知通道已连接 / 这是一条内部测试消息”，并补强迁移 `007` 固定 checksum、历史整行、规则关闭、重复执行和冲突拒绝回归。固定合成 CLI 不等同于 outbox/Worker 实况；真实 Pilot 必须先在运行手册的两种模式中明确选择，不能直接伪造 outbox。
 - 未进行扫码、登录、真实微信发送、DeepSeek 调用、客户业务操作或生产部署；Pilot 报告明确为尚未执行。
 
