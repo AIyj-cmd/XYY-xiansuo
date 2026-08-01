@@ -8,6 +8,10 @@
 - Gateway 保持独立进程和业务数据库隔离，投递契约改为系统用户 ID；Gateway 仅接受 pilot，并固定投递到其受保护配置的单测试接收人。共享 Secret 改为仓库外精确 0600 文件；官方会话状态使用 `OPENCLAW_STATE_DIR`，旧 session 配置仅兼容别名。
 - Gateway retryable 结果使用持久原子发送锁，重启后同一幂等键可在 Worker 两次上限内继续真实尝试；并发、永久和未知结果均不会双发。OpenClaw 使用配置化 Gateway 超时，Mock 维持既有 Worker 10 秒保护。
 - 管理员规则 preview 与 PUT 统一要求单一 `mock`/`openclaw` 渠道和事件接收人策略；禁用规则也不能使用空、多渠道或未知渠道，避免错误显示为 `pending`。清理 Gateway 已废弃且无调用的幂等入口，状态只经原子 `acquire`/`finalize` 维护。
+- 新增默认不执行的一次性隔离 synthetic 入队 CLI：只接受仓库外私有临时空目录、显式 pilot ID 和固定键，创建/复核唯一 `daily_report` OpenClaw outbox；不增加事件、迁移、HTTP/H5 接口或真实外呼。只读队列预检可识别该严格 envelope，其他任务继续阻断为 UNSAFE。
+- P1 修复补充：synthetic DB 父目录的请求路径必须等于其 realpath、且严格位于 `realpath(os.tmpdir())` 内；目录为精确 `0700`，DB/WAL/SHM 为非链接、非 hardlink 的精确 `0600` 普通文件。创建、重复 CLI、queue-check 与 Worker 投递前均运行阶段化 sealed-state 证明，拒绝任一业务表污染、规则变化、迁移/checksum、完整性/外键或唯一任务字段异常。
+- P1 批次门禁补充：只要当前库有 synthetic 标记或使用 synthetic 固定库名，Worker 会在 claim 前和有任务的 claim 后验证整个密封库；发现额外 `pending`、`retry_wait` 或可恢复 `sending` 任务时，本轮全局停止且不调用 Gateway，不依赖候选任务顺序。无 synthetic 标记的普通 Worker 不进入该分支。
+- 最终验收补强：synthetic sealed 门禁现在先于 retention cleanup，终态过期污染不能被清理后继续发送；封存任务新增 `lease_recovery_count`、`management_audit_json`、`row_version`、尝试/发送/保留时间约束。新增终态污染与元数据篡改回归，完整后端测试为 137/137。
 - 验收将 Gateway 固定合成消息校准为“XYY-xiansuo普通微信通知通道已连接 / 这是一条内部测试消息”，并补强迁移 `007` 固定 checksum、历史整行、规则关闭、重复执行和冲突拒绝回归。固定合成 CLI 不等同于 outbox/Worker 实况；真实 Pilot 必须先在运行手册的两种模式中明确选择，不能直接伪造 outbox。
 - 未进行扫码、登录、真实微信发送、DeepSeek 调用、客户业务操作或生产部署；Pilot 报告明确为尚未执行。
 

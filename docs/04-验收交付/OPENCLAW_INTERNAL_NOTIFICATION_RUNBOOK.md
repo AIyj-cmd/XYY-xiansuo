@@ -18,18 +18,41 @@
 6. API、AI Scheduler、DeepSeek、Mock、其他 Worker 和其他队列写入来源均停止；Gateway/Worker 必须为单实例。
 7. 记录隔离数据库、Gateway 状态库和 `server/data` 的安全哈希；不得输出客户数据、接收人标识或 Secret。
 
-## 首次真实 Pilot 的二选一门禁
+## 首次真实 Pilot 的隔离 synthetic 门禁
 
-当前固定合成 CLI 不写业务 outbox，而 Worker 只发送三种批准事件模板。不得为凑齐验收证据直接伪造数据库记录、增加第四事件或绕过消息策略。操作者必须先取得用户对以下一种模式的明确选择：
+默认不执行。仅在主代理获得实况授权后，以新建的 `0700` 系统临时目录运行一次：
 
-- **模式 A：渠道实况。** 仅启动 OpenClaw daemon 与 `xiansuo-ilink-gateway`，运行一次 `gateway:send-synthetic`。正文固定为“XYY-xiansuo普通微信通知通道已连接 / 这是一条内部测试消息”。随后以同一幂等键调用 `--expect-deduplicated`；预期不再次发送。该模式不声称验证了 Worker/outbox 实况。
-- **模式 B：完整链路实况。** 使用隔离业务动作生成三种既有事件之一的唯一 OpenClaw outbox，再启动单实例 Worker；实际正文为该事件的固定最小化模板，不是合成连接文案。执行前必须单独批准事件类型、隔离数据库和测试用户。该模式最多一条真实消息。
+```bash
+mkdir -p /tmp/<本次唯一随机目录>
+chmod 700 /tmp/<本次唯一随机目录>
 
-没有明确选择时保持所有 live 开关关闭，不发送。
+cd server
+npm run openclaw:enqueue-synthetic-pilot -- \
+  --db-path /tmp/<本次唯一随机目录>/openclaw-synthetic-pilot.db \
+  --pilot-user-id <唯一正整数> \
+  --idempotency-key <固定键>
+```
+
+CLI 拒绝相对、仓库内、`server/data`、非 `0700`、非空或已有但不完全匹配的库；不会删除、清理、登录或发送。Gateway Secret 必须放在另一个仓库外私有目录，不能放进这个要求首次为空的 DB 目录。成功输出中的 `business_date` 只用于下面两次只读预检：
+
+```bash
+DB_PATH=/tmp/<本次唯一随机目录>/openclaw-synthetic-pilot.db \
+npm run pilot:queue-check -- \
+  --recipient-user-id <唯一正整数> \
+  --event-type daily_report \
+  --business-date <入队输出日期> \
+  --synthetic-idempotency-key <同一固定键>
+```
+
+必须原样连续执行两次且均为 `SAFE`，并核对每次预检前后 DB/WAL/SHM 哈希不变；中间不得启动任何写入进程。随后才可使用完全相同的绝对 `DB_PATH` 启动单实例 Worker。不得通过 API/H5、业务动作、直接 SQL 或不同键创建任务；任何非 synthetic 任务或终态污染均停止。
+
+路径的请求父目录必须等于 realpath 且严格位于 `realpath(os.tmpdir())` 内；上级符号链接、硬链接和 DB/WAL/SHM 非精确 `0600` 均会失败。每次 CLI、queue-check 与 Worker 发送前会证明 sealed 状态（完整性、外键、迁移 checksum、零业务数据、关闭规则、唯一任务阶段）；任一失败均不得启动或继续发送。
+
+如库存在 synthetic 标记，Worker 将在 retention cleanup 和 claim 之前对整库门禁，并在 claim 后再次校验：额外 pending、retry_wait、可恢复 sending 或任何终态项均会停止整轮，不能通过任务顺序或保留期清理绕过。出现 `notification.worker.synthetic_batch_blocked` 时不重试本轮或手改任务，保持渠道关闭并交由独立复验。
 
 ## 结果检查与停止
 
 - 成功必须有 Gateway 安全回执；去重返回必须携带相同原回执。`result_unknown`、永久失败或账号受限均停止且不重试。
-- 模式 B 还必须确认唯一任务为 `sent`、自动尝试不超过 2、无其他任务被领取、无 DeepSeek 调用或业务副作用。
+- 必须确认唯一任务为 `sent`、自动尝试不超过 2、无其他任务被领取、无 DeepSeek 调用或业务副作用。
 - 完成后关闭 `OPENCLAW_CHANNEL_ENABLED` 和 `ILINK_POC_LIVE_ENABLED`，正常停止 Worker、Gateway 与 OpenClaw daemon，确认无残留进程。
 - 不退出或删除会话，除非用户明确要求；不补发历史任务。将脱敏结果写入 Pilot 报告，不提交配置、状态库、二维码、日志或 Secret。

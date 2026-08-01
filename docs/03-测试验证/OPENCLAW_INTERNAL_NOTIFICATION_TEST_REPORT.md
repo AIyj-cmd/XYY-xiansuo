@@ -238,3 +238,135 @@ rule.channel_order=[]
 - 删除 Gateway `IdempotencyStore.existing`、`reserve` 和无其他调用的 StateStore `findDelivery`、`createDelivery`、`updateDelivery` 包装，唯一状态路径仍为持久事务 `acquireDelivery`/`finalizeDelivery`。
 - 实现侧回归：Server build 通过、`npm test` **128/128** 通过；Gateway build 通过、`npm test` **34/34** 通过；H5 build 与 `git diff --check` 通过。上述结果仍需 test_verifier 独立复核。
 - 本补充不表示独立验收完成；未进行真实登录、扫码、微信发送或 Pilot。
+
+## 隔离 synthetic 入队实现补充（待独立复验）
+
+- 自动化覆盖相对/仓库内/非私有/非全新 DB 拒绝、首次迁移 `001–007`、唯一测试用户和唯一任务、严格 snapshot 与隐私、同键不新增、队列连续两次 SAFE、额外任务 UNSAFE、Worker→OpenClaw Channel→伪 Gateway 的一条 Fake 链路及第二次 Worker 不二发。
+- 测试拦截 `fetch` 并只返回内存伪 Gateway 回执；没有真实网络、OpenClaw 登录、微信发送、Provider 或业务表读取。
+- 实现侧回归：Server build 与 **134/134** 测试、Gateway build 与 **34/34** 测试、H5 build、`git diff --check` 全部通过；`server/data` 前后哈希一致。仍待 test_verifier 独立复验。
+
+---
+
+## 隔离 synthetic 入队扩展独立复验（2026-08-01）
+
+### 测试环境、基线与范围
+
+- 工作区：`/home/yj/xiansuo`；测试开始前已存在 OpenClaw 实现、文档和本次 synthetic 入队相关差异。测试代理未恢复、覆盖或清理它们，仅写入本报告。
+- 测试前 `git diff --check` 通过。`server/data` 哈希基线为 `app.db=8b8bc326ab3ac27a553b22ea7cacf6e34681d1f471246277907a8ed0a061d5f2`，测试过程中未作为目标数据库。
+- 范围：synthetic CLI/隔离路径、重复入队封存校验、queue-check、Worker→伪 Gateway、迁移 `001–007` 回归及 H5 构建。未执行 HTTP 业务联调、真实网络、OpenClaw 登录、扫码、真实微信发送、DeepSeek 或真实 Pilot。
+
+### 已执行命令及通过项
+
+- `cd server && npm run build && npm test`：通过，**134/134**。现有 synthetic 覆盖确认首次空库迁移 `001–007`、唯一用户/任务、固定快照、Fake Gateway 单发、同键第二次 Worker 不二发，以及基础 queue-check SAFE/额外任务 UNSAFE。
+- `cd poc/ilink-gateway && npm run build && npm test`：通过，**34/34**。仅使用 Fake Adapter/本地状态，未访问真实微信。
+- `cd app && npm run build:h5`：通过。未构建微信小程序。
+- `git diff --check`：测试前通过；本轮未对业务源码作任何修改。
+
+### 失败项
+
+#### P1：临时目录仅进行词法检查，接受含上级符号链接的路径
+
+位置：[openclaw-synthetic-pilot.ts](/home/yj/xiansuo/server/src/openclaw-synthetic-pilot.ts:45)。
+
+最小复现：创建 `/tmp/xiansuo-synthetic-parent-link-*` 指向另一临时目录，在其下建立 `0700 private/`，再执行 synthetic 入队。独立命令输出：
+
+```json
+{"result":"created","requestedPath":"/tmp/xiansuo-synthetic-parent-link-…/private/openclaw-synthetic-pilot.db","realDatabasePath":"/tmp/xiansuo-synthetic-target-…/private/openclaw-synthetic-pilot.db","ancestorSymlinkAccepted":true}
+```
+
+实际结果：`privateTemporaryDirectory()` 用 `path.relative()` 判断词法上位于 `/tmp`，且只 `lstat()` 末级 `private`；上级符号链接未被拒绝，也没有先验证 `realpath(directory)` 仍在真实临时根之内。
+
+预期结果：只接受真实路径位于真实临时根下的全新私有目录，并拒绝路径链中任一符号链接或逃逸。
+
+建议修复：逐段 `lstat` 路径组件拒绝链接；再对目录及最终数据库路径的已解析真实路径做边界比较，确保仍在 `realpath(os.tmpdir())` 下；补充“上级链接但末级 0700”与“链接逃逸”测试。
+
+#### P1：既有库的 sealed 重复校验可接受污染和关键任务字段篡改，queue-check 仍给出 SAFE
+
+位置：[openclaw-synthetic-pilot.ts](/home/yj/xiansuo/server/src/openclaw-synthetic-pilot.ts:65)、[pilot-queue-check.ts](/home/yj/xiansuo/server/src/pilot-queue-check.ts:20)。
+
+最小复现：在首次成功入队后，以 SQLite 修改隔离库：插入一条 `tags` 业务记录；将 `daily_report` 规则置为启用；将唯一任务 `max_attempts=10` 并将 `rule_snapshot_json` 替换为非预期值。再以同一 idempotency key 入队并运行 synthetic queue-check。
+
+独立输出：
+
+```json
+{"first":"created","repeat":"deduplicated","before":{"tags":1,"enabled":1,"maxAttempts":10},"queueConclusion":"SAFE","blockers":[]}
+```
+
+实际结果：`assertSealedRepeatState()` 仅核验迁移记录、`users` 和 `notification_logs` 的部分 envelope。它没有核验目录/数据库权限、业务/跟进/审计/AI 表计数为零、规则仍全关闭，亦未固定校验 `status`、所有尝试/租约/回执字段、`max_attempts`、`rule_snapshot_json`、`available_at`、`expires_at` 等。`isSyntheticPilotTask()` 也不覆盖上述字段，所以 queue-check 仍将被污染库的唯一可领取任务视为 SAFE。
+
+预期结果：重复仅能对完整 sealed 状态去重；任一业务数据、规则开启、任务不可变字段或文件权限变化都必须拒绝。投递前 queue-check 应证明数据库完整、外键正确、无额外/污染数据并输出相应证据。
+
+建议修复：建立并验证完整白名单封存清单（所有表计数、唯一规则默认关闭、唯一任务全部不可变字段、文件与目录权限）；首次入队前后及重复/queue-check 均显式执行 `PRAGMA integrity_check` 和 `PRAGMA foreign_key_check`，并将检查结果、隔离表计数和隐私扫描摘要纳入 CLI/queue-check 输出；为每一项篡改增加拒绝回归测试。
+
+### 规则与隐私观察
+
+- Worker 对 `event_source=openclaw_synthetic_pilot` 会要求 `isSyntheticPilotTask()` 完整匹配后才选用固定测试正文；伪造 source、operation、snapshot 或 recipient 会走永久失败 `OPENCLAW_SYNTHETIC_TASK_INVALID`，未发现该正文降级为业务正文的路径。
+- 但上述 P1 表明“完整”封存范围实际不足，且入队/queue-check 没有独立的完整性、外键、关键表零计数和隐私门禁。因此不能把现有代码检查或 Fake Gateway 通过视为受控实况发送前证明。
+
+### 测试阶段文件变化
+
+- 本测试阶段仅更新本报告：[OPENCLAW_INTERNAL_NOTIFICATION_TEST_REPORT.md](/home/yj/xiansuo/docs/03-测试验证/OPENCLAW_INTERNAL_NOTIFICATION_TEST_REPORT.md)。
+- 两个最小复现只使用 `/tmp` 中的临时目录和临时 SQLite，并在命令结束时删除；没有写入 `server/data`、业务源码或真实 Gateway 状态。
+
+### 复验结论
+
+| 分级 | 数量 | 结论 |
+| --- | ---: | --- |
+| P1 | 2 | 临时路径可绕过真实隔离边界；污染/篡改的封存库可被判定 SAFE 并进入投递链路 |
+| P2 | 0 | 无新增 P2 |
+| P3 | 0 | 无新增 P3 |
+
+**不允许进入 `acceptance_optimizer`，不允许真实 Pilot。** 必须先修复两项 P1，并新增完整性/外键、路径链、权限、所有关键表零计数、sealed 字段和污染库拒绝的独立回归；修复后重新执行 Server、Gateway、H5、`git diff --check` 和 `server/data` 哈希核验。真实 Pilot 仍须在通过最终验收后，另行按单条合成消息门禁执行。
+
+---
+
+## P1 修复后的实现侧回归（待 test_verifier 独立复验）
+
+上述两项 P1 事实保留。实现已新增 realpath 边界、精确权限/hardlink 校验及共享 sealed-state 门禁；定向 7 项测试覆盖上级链接、硬链接、DB/WAL/SHM `0600`、各业务表污染、规则启用、任务篡改和外键异常，均通过。实现侧已重新运行 `server npm run build && npm test`（**135/135**）、Gateway build/test（**34/34**）和 H5 build，均通过；未进行真实外呼。该段不是独立测试结论，P1 是否关闭仍由 test_verifier 判定。
+
+### 后续 P1：污染批次的 Worker 全局失败关闭（待独立复验）
+
+独立验证发现：含 synthetic 任务及额外 OpenClaw 任务的污染库会被 Worker 一次领取两项，synthetic 虽拒绝，排序在前的非 synthetic 项仍可调用 Gateway。实现已增加 marker 驱动的 Worker 批次门禁，分别在 claim 前和有任务的 claim 后校验整个 sealed DB。新增回归覆盖额外 `pending`、`retry_wait`、可恢复 `sending` 各自的两种任务排列，并显式覆盖两任务已领取后的门禁；8 项 synthetic 测试均通过且每组 Gateway 调用为 0。此为实现侧结果，独立 verifier 必须重新判定该 P1。
+
+---
+
+## synthetic 隔离 P1 修复后独立复验（2026-08-01）
+
+本节关闭上文历史 P1；历史发现和原始复现证据保留，不被改写。
+
+### 已独立复验通过
+
+- 路径和文件门禁：`assertSyntheticDatabasePath()` 以 `realpath` 后的真实临时根做边界校验，要求请求目录与真实目录完全一致；上级符号链接、仓库内/相对路径、非 `0700` 目录均拒绝。DB、WAL、SHM 必须是非链接、普通、单硬链接且精确 `0600`；定向测试覆盖上级链接、hardlink、非 `0600` DB/WAL/SHM，均通过。
+- sealed-state：创建后、同键重复、queue-check 与 Worker 前/后领取共用 `assertSyntheticDatabaseSafety`。它检查 `integrity_check=ok`、空 `foreign_key_check`、`001–007` checksum、唯一测试 member、完整默认关闭规则、业务/跟进/审计/AI 等非白名单表为零、唯一任务的固定 envelope/快照/尝试/租约/时间/回执阶段字段和快照隐私。
+- 重复语义独立最小复现：`created → pending deduplicated → sent deduplicated`；将任务改为 `failed/OPENCLAW_SEND_RESULT_UNKNOWN` 后重复被拒绝，输出为 `{"first":"created","pending":"deduplicated","sent":"deduplicated","failedRejected":true}`。
+- queue-check 仍使用只读 SQLite：同一封存库连续两次均为 `SAFE`，主 DB 文件 SHA-256 前后相同，输出为 `{"first":"SAFE","second":"SAFE","hashUnchanged":true}`。
+- 重点回归：运行定向 synthetic 测试，额外 `pending`、`retry_wait`、可恢复 `sending` 各两种排序（共六组）均在 claim 前输出 `notification.worker.synthetic_batch_blocked`；每组伪 Gateway 调用均为 **0**。测试还显式领取两任务批次并验证 claim 后 sealed 门禁拒绝，避免排序或 batch size 绕过。
+- 伪 Gateway 正常链路仍验证唯一封存任务只发送一次；请求正文是固定测试文字，不含客户、联系人、手机号、微信号、需求、跟进、Prompt、JWT、Cookie 或 Key。全程拦截 `fetch`，没有真实网络或微信调用。
+
+### 已执行命令
+
+- `cd server && npm run build && npm test`：通过，**135/135**。
+- `cd server && npx tsx --test --test-name-pattern='synthetic 标记库的污染批次' test/openclaw-synthetic-pilot.test.ts`：通过，**1/1**；六种污染/排序组合均阻断 Gateway。
+- `cd poc/ilink-gateway && npm run build && npm test`：通过，**34/34**。
+- `cd app && npm run build:h5`：通过；未构建小程序。
+- `git diff --check`：通过。`server/data` 的所有文件哈希与本轮开始前一致；测试仅在 `/tmp` 创建并清理隔离 SQLite。
+
+### 当前结论
+
+| 分级 | 数量 | 结论 |
+| --- | ---: | --- |
+| P1 | 0 | 路径逃逸、污染 sealed 重复和污染批次外呼均已独立复验关闭 |
+| P2 | 0 | 未发现新增中等级问题 |
+| P3 | 0 | 未发现新增低等级问题 |
+
+**允许进入 `acceptance_optimizer` 最终验收。** 本结论仅覆盖自动化、临时 SQLite 和伪 Gateway；不授权真实 Pilot、扫码、OpenClaw 登录或真实微信发送。真实 Pilot 仍需最终验收确认全部前置条件后，按单条合成消息流程另行受控执行。
+
+---
+
+## 最终验收范围内加固（2026-08-01，非独立测试结论）
+
+`acceptance_optimizer` 在最终顺序审查中复现：Worker 原先在 synthetic sealed 门禁前运行 retention cleanup，额外终态污染若已到保留期会先被删除，存在污染证据被清除后继续投递的可能。验收将 sealed 门禁前移到任何队列维护之前，并新增“额外过期 failed 行”回归，确认污染行不被删除且 Gateway 调用为 0。普通无 synthetic marker 的 Worker 仍执行原 retention 流程。
+
+同时补齐唯一任务的 `lease_recovery_count`、`management_audit_json`、`row_version`、`last_attempt_at`、`sent_at`、`retain_until` 和固定 TTL 封存；新增相应篡改拒绝用例。验收执行结果：Server build 与 **137/137** 测试通过，Gateway build 与 **34/34** 测试通过，H5 build 通过，`git diff --check` 通过，`server/data` 哈希未变化。未登录微信、未发送消息、未调用 DeepSeek。
+
+该加固由最终验收角色完成并复跑全量验证，不追溯改写上面的独立复验事实。修复后最终分级为 P1/P2/P3 = **0/0/0**。

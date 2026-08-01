@@ -1,8 +1,8 @@
 # OpenClaw 内部通知验收报告
 
 日期：2026-08-01
-基线：`feature/openclaw-internal-notifications` / `ab87d3ba450d256e4fa51414a8a8ce5788fc216f` 之后的未提交实现
-结论：**自动化与隔离集成验收通过；真实 Pilot 为 CONDITIONAL GO，不得生产部署或扩大灰度。**
+基线：`feature/openclaw-internal-notifications` / `6e4a1e6823fcc339b17f9cff4a1d509f2b39c706` 之后的一次性 synthetic 隔离增量
+结论：**自动化与隔离集成验收通过；允许按运行手册进入一次受控真实 Pilot（CONDITIONAL GO），不得生产部署或扩大灰度。**
 
 ## 验收结论
 
@@ -19,7 +19,7 @@
 | 验证 | 结果 |
 | --- | --- |
 | `server npm run build` | 通过 |
-| `server npm test` | 128/128 通过 |
+| `server npm test` | 137/137 通过（含 sealed-state、终态污染与元数据篡改回归） |
 | Gateway build/test | 34/34 通过，全部 Fake/本地测试 |
 | `app npm run build:h5` | 通过；未构建小程序 |
 | `git diff --check` | 通过 |
@@ -36,12 +36,14 @@
 
 ## Pilot 放行条件
 
-仅当运行手册的前置检查全部满足时，才允许真实 Pilot：专用已登录账号、固定测试接收人、一个 pilot 系统用户、Gateway 单实例、DeepSeek 与 AI Scheduler 关闭。Pilot 完成后必须立即关闭真实开关并停止进程。
+仅当运行手册的前置检查全部满足时，才允许执行一次真实 Pilot：专用已登录账号、固定测试接收人、一个 pilot 系统用户、全新的 `/tmp` 隔离库、Gateway/Worker 单实例、DeepSeek 与 AI Scheduler 关闭。Pilot 完成后必须立即关闭真实开关并停止进程。
 
-当前仍有一项需要操作者确认的**实况编排门禁**：现有 `gateway:send-synthetic` 能严格发送用户批准的固定合成文本，但它不经过 `notification_logs`/Worker；Worker 仅处理三种批准事件，并会发送对应的三种固定业务提醒模板。为了保持“仅一条真实消息”且不新增第四事件、私有入队接口或直接伪造 outbox，不能在一次实况中同时证明“固定合成正文”和“真实 outbox→Worker”。因此：
-
-1. 若本次只批准渠道实况，运行 `gateway:send-synthetic`，最多一条，并用同键验证 Gateway 去重；
-2. 若要求真实 outbox→Worker 实况，必须另行批准在隔离库触发三种既有事件之一，并接受其对应的最小化业务模板；
-3. 未获得上述选择前，不发送真实消息。
+用户已批准仅限隔离临时库的一次性 synthetic 入队扩展。它不增加第四事件或 schema：严格 envelope 仍是 `daily_report`，仅以受限 `event_source`/operation 区分。只有 `openclaw:enqueue-synthetic-pilot` 成功创建的唯一任务才可让 Worker 使用固定测试正文；空/非新库、仓库内路径、任何第二用户/第二任务及非匹配快照均拒绝。受控实况前必须连续两次运行带同键的 `pilot:queue-check` 并得到 SAFE；任何其他可领取任务继续为 UNSAFE。
 
 自动化验收通过不等于正式生产批准。真实 Pilot 若出现 `result_unknown`、账号限制、重复发送、非测试接收人收到、业务数据库/DeepSeek 访问或任何客户数据，立即停止并判定不通过。
+
+P1 修复以共享的阶段化 sealed-state 校验取代原先的部分 envelope 校验：真实临时路径、权限/链接、`integrity_check`、`foreign_key_check`、迁移 checksum、业务表零记录、规则默认值和任务完整状态必须在创建、重复、queue-check 及 Worker 发送前全部成立。test_verifier 已独立复验 realpath、链接/权限、污染表/规则/任务、两次 SAFE 和污染批次零 Gateway 调用。
+
+最终验收另行复现并修复一项 P1：retention cleanup 原先先于 sealed 门禁，可能删除已到保留期的终态污染证据。现在门禁先于任何队列维护；新增回归证明额外终态行仍保留且 Gateway 调用为 0。验收同时补齐任务 `lease_recovery_count`、`management_audit_json`、`row_version`、尝试/发送/保留时间的严格封存。修复后 Server 137/137、Gateway 34/34、H5 build 与数据哈希复核均通过。
+
+本结论仅放行“一条固定合成消息”的受控实况步骤，不代表渠道生产批准；实况尚未执行，也未发生微信登录、消息发送或 DeepSeek 调用。
