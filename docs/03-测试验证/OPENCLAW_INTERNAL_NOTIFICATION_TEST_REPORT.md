@@ -1,5 +1,7 @@
 # OpenClaw 内部通知独立测试报告
 
+> result_unknown 离线修复（待独立复验）：历史技术结果为 `result_unknown`，人工结果为 `manually_confirmed_not_received`，confirmed count 为 0；未伪造 Provider 回执。实现新增私有 Gateway ledger、append-only confirmation/audit hash chain、legacy key 永久烧毁、线性 generation 和一次性授权消费。超时、abort、断连、非法 JSON、裸 5xx 均为不可自动重试的 `result_unknown`；synthetic `max_attempts=1`，control manifest/稳定 request ID 纳入 sealed 检查。离线控制仅 CLI（live=false、UID 一致、关键进程停止、0600 key 文件或 stdin），无 API/H5。实现侧 Gateway 40/40、Server targeted 15/15 通过，仍未运行 daemon 或发送。
+
 日期：2026-08-01
 验证角色：`test_verifier`（独立验证，未修改业务源码、配置、迁移或依赖）
 结论：**不允许进入验收阶段（NO-GO）**。发现 1 项 P1 和 1 项 P2，均与明确的发送安全边界不符。

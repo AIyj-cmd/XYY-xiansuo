@@ -2,6 +2,8 @@
 
 > H5-only 后续策略说明：本文微信小程序构建步骤是阶段一时的历史记录，已被当前 H5-only 发布策略取代；之后仅构建 H5。
 
+> OpenClaw 补充（2026-08-01）：`result_unknown` 人工闭环的代码与离线测试已通过，但不构成真实发送授权。OpenClaw、Gateway 和 Worker 默认保持关闭；新实况必须使用新隔离 DB、新 key、新 generation 并另行获得单条授权。Gateway audit ledger 必须在仓库外私有目录长期保留。
+
 日期：2026-07-30
 当前状态：仅提供部署步骤，尚未执行生产部署。
 

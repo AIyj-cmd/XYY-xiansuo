@@ -1,5 +1,7 @@
 # OpenClaw 内部通知 Pilot 报告
 
+> result_unknown 历史仍为技术 unknown；人工观察只记录 `manually_confirmed_not_received`，confirmed count=0，不能作为 Provider 回执。本轮离线 ledger 修复不授权重发：旧 key 已设计为永久烧毁，新 generation 必须新 key、新隔离库、稳定 request ID、sealed manifest 和一次性授权。未通过独立复验及新的实况授权前，不得准备、授权、启动或发送。
+
 日期：2026-08-01
 基线：`feature/openclaw-internal-notifications` / `6ff67fb7b24c34029371b32734777395bed54e46`
 状态：**实况 Pilot 未通过（NO-GO）；已按停止条件关闭全部相关进程，不得重试或扩大。**
@@ -58,7 +60,15 @@ Gateway 的终态说明请求可能已提交，但没有取得可解释的最终
 - `server/data` 未被打开或修改；实况前 Git 工作区干净。
 - 未发生 DeepSeek 调用、客户业务操作、第二接收人发送或生产部署。
 
-## 5. 结论与问题分级
+## 5. 接收端人工确认（2026-08-01 补录）
+
+- Gateway 技术结果仍为 `result_unknown / ILINK_SEND_RESULT_UNKNOWN`，不改写为成功或明确失败。
+- 专用测试接收微信的人工结果为 `manually_confirmed_not_received`。
+- 实际人工确认收到条数为 **0**；系统确认成功数仍为 **0**。
+- 人工观察不是 Provider 回执，不能证明请求从未提交，也不消除迟到投递的残余风险。
+- 当前仍禁止重跑、同键重试、换键补发或启动真实进程。
+
+## 6. 结论与问题分级
 
 | 分级 | 数量 | 说明 |
 | --- | ---: | --- |
@@ -78,3 +88,7 @@ Gateway 的终态说明请求可能已提交，但没有取得可解释的最终
 - 将本次结果写成成功、sent 或微信端明确未收到。
 
 只有另行完成 `OPENCLAW_GATEWAY_TIMEOUT / ILINK_SEND_RESULT_UNKNOWN` 根因审计、获得新的用户批准并使用新的隔离环境后，才可讨论新的实况验证。本报告不授权该后续动作。
+
+## 7. 人工闭环修复后状态
+
+离线修复已建立可审计的 legacy unknown 导入、唯一人工终态、旧 key 永久禁用、线性 generation 和一次性授权。这只关闭了代码层 P1，不追溯修改本次实况的 `result_unknown`，也不构成新发送授权。新实况必须另行获得单条授权，并使用新隔离数据库、新幂等 key、新任务代次。

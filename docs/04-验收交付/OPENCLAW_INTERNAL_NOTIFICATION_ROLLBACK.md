@@ -1,5 +1,12 @@
 # OpenClaw 内部通知回滚
 
+## `result_unknown` 人工闭环补充
+
+- 回滚代码时不得删除 Gateway audit ledger、legacy key 或人工确认事实，否则无法保证旧 key 永不复用。
+- 不执行破坏性 down migration，不修改迁移 `007`，不回写历史 `notification_logs`。
+- 若新 generation 尚未消费，必须先用受控 CLI 取消；已消费后的不确定结果按 `result_unknown` 保留，不重发。
+- 回滚后 OpenClaw、Gateway 和 Worker 继续关闭，直到再次验收并另行获得单条实况授权。
+
 ## 渠道停用
 
 立即将 `OPENCLAW_CHANNEL_ENABLED=false` 与 `ILINK_POC_LIVE_ENABLED=false`，先正常停止 notification-worker，再停止 Gateway 和 OpenClaw daemon。确认无残留进程和本地监听。Worker 会保留未领取的 `openclaw` outbox 任务，不会切换到 Mock 或其他渠道；随后由管理员禁用相应规则，使尚未领取的 `pending`/`retry_wait` 任务按现有状态机取消。

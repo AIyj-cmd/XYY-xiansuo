@@ -1,5 +1,7 @@
 # OpenClaw 内部通知验收报告
 
+> result_unknown 离线修复补充（已独立复验）：历史 `result_unknown` 和 `manually_confirmed_not_received`/confirmed count 0 保持为不可覆盖的独立事实。Gateway ledger 将 key 永久占用；只有明确人工 `confirmed_not_received` 可让下一线性 generation 进入 prepared，仍需一次性授权。unknown 永不自动重试；实况继续禁止，直到重新取得单条授权。
+
 日期：2026-08-01
 基线：`feature/openclaw-internal-notifications` / `6e4a1e6823fcc339b17f9cff4a1d509f2b39c706` 之后的一次性 synthetic 隔离增量
 结论：**自动化与隔离集成验收通过；其后一次受控真实 Pilot 命中 result_unknown 停止条件并未通过。当前对继续实况、扩大灰度或生产部署均为 NO-GO。**
@@ -63,3 +65,16 @@ P1 修复以共享的阶段化 sealed-state 校验取代原先的部分 envelope
 已按停止条件关闭 Worker、Gateway 和 OpenClaw；没有第二次尝试、同键重跑、换键补发或真实 deduplicated 验证。隔离库清理前完整性、外键、零业务数据和隐私检查通过，随后精确删除整个临时运行目录；`server/data` 未触碰。
 
 当前综合分级为 P1/P2/P3 = **1/0/0**。P1 是无法确认最终投递且自动重试可能重复发送；这不是对既有自动化测试通过事实的否定，但会阻止任何继续实况、扩大 pilot 和生产启用。未经新的根因审计与用户批准，不得重试。
+
+## `result_unknown` 人工确认与受控重试闭环最终验收
+
+- 历史事实冻结为：技术结果 `result_unknown`，人工结果 `manually_confirmed_not_received`，人工确认收到数 0。人工事实不冒充 Provider 回执。
+- Gateway 私有状态库使用版本化 checksum 迁移，对目录、DB/WAL/SHM 在打开前校验 realpath、owner、`0700/0600`、symlink 和 hardlink。
+- legacy 导入建立 generation 1 的 `result_unknown` attempt；人工确认只能绑定该 unknown attempt 且只能写入一个终态。
+- 所有已登记的 legacy/generation/delivery key 永久禁用；普通请求在 Adapter 前拒绝。新 generation 必须线性、使用新 key、新隔离 DB 和稳定 delivery request ID。
+- 授权在 Adapter 前事务消费；重复或并发请求最多一次 Adapter 调用。timeout、abort、断连、非 JSON 和无结构 5xx 保守为终态 `result_unknown`，Worker 不自动重试。
+- synthetic 库使用 sealed control manifest、`max_attempts=1`，不新增迁移、正式业务事件、HTTP API 或 H5 入口。本地 CLI 仅接受 `0600` key 文件或 stdin，严格拒绝 argv key、未知/重复/缺值参数。
+- 最终验证：Gateway 44/44，Server 138/138，H5 构建通过，`git diff --check` 通过，`server/data` 哈希不变。
+- 本闭环分级：**P1=0、P2=0、P3=0**。代码闭环验收通过；真实重跑仍为 **NO-GO**。
+
+下一次实况前必须单独取得一次“最多一条”授权，并准备新隔离 DB、新 key、新 generation。本轮未创建真实代次，未启动 OpenClaw/Gateway/Worker，未发送微信消息。
