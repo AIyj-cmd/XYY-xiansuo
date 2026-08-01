@@ -1,7 +1,8 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import type { NotificationConfig } from '../config.js';
 
-export type NotificationChannelMessage = { title: string; body?: string; detailPath: string };
+export type PilotControl = { runId: string; generation: number; authorizationId: string; deliveryRequestId: string; previousKeyHash: string | null; manifestHash: string };
+export type NotificationChannelMessage = { title: string; body?: string; detailPath: string; pilotControl?: PilotControl };
 export type ChannelResult = { status: 'sent' | 'deduplicated' | 'retryable_failure' | 'permanent_failure' | 'result_unknown'; providerMessageId?: string; errorCode?: string };
 export interface NotificationChannel {
   send(recipient: { userId: number }, message: NotificationChannelMessage, idempotencyKey: string, signal: AbortSignal): Promise<ChannelResult>;
@@ -39,7 +40,8 @@ export class OpenClawNotificationChannel implements NotificationChannel {
       return { status: 'permanent_failure', errorCode: 'OPENCLAW_CHANNEL_DISABLED' };
     }
     if (recipient.userId !== this.config.openclawPilotUserId) return { status: 'permanent_failure', errorCode: 'OPENCLAW_RECIPIENT_NOT_ALLOWED' };
-    const body = JSON.stringify({ deliveryId: randomUUID(), idempotencyKey, recipientUserId: recipient.userId, title: message.title, body: message.body, detailUrl: message.detailPath });
+    const deliveryId = message.pilotControl?.deliveryRequestId ?? randomUUID();
+    const body = JSON.stringify({ deliveryId, idempotencyKey, recipientUserId: recipient.userId, title: message.title, body: message.body, detailUrl: message.detailPath, ...(message.pilotControl ? { pilotControl: message.pilotControl } : {}) });
     const timestamp = String(Date.now()); const nonce = freshNonce();
     const canonical = canonicalRequest('POST', '/deliveries', timestamp, nonce, sha256(body));
     const controller = new AbortController();
@@ -53,9 +55,11 @@ export class OpenClawNotificationChannel implements NotificationChannel {
       });
       const payload = await response.json().catch(() => null) as { data?: ChannelResult; code?: string } | null;
       if (payload?.data && ['sent','deduplicated','retryable_failure','permanent_failure','result_unknown'].includes(payload.data.status)) return payload.data;
-      return response.status >= 500 ? { status: 'retryable_failure', errorCode: 'OPENCLAW_GATEWAY_UNAVAILABLE' } : { status: 'permanent_failure', errorCode: payload?.code || 'OPENCLAW_GATEWAY_RESPONSE_INVALID' };
+      // A syntactically invalid/bare HTTP reply leaves submission unknowable;
+      // never turn it into a second automatic attempt.
+      return { status: 'result_unknown', errorCode: response.status >= 500 ? 'OPENCLAW_GATEWAY_HTTP_5XX_UNKNOWN' : payload?.code || 'OPENCLAW_GATEWAY_RESPONSE_INVALID' };
     } catch {
-      return controller.signal.aborted ? { status: 'retryable_failure', errorCode: 'OPENCLAW_GATEWAY_TIMEOUT' } : { status: 'retryable_failure', errorCode: 'OPENCLAW_GATEWAY_UNAVAILABLE' };
+      return { status: 'result_unknown', errorCode: controller.signal.aborted ? 'OPENCLAW_GATEWAY_TIMEOUT' : 'OPENCLAW_GATEWAY_CONNECTION_UNKNOWN' };
     } finally { clearTimeout(timer); signal.removeEventListener('abort', onAbort); }
   }
 }

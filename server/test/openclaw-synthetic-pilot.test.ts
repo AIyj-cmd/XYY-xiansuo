@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { chmodSync, linkSync, lstatSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -11,11 +12,13 @@ import { runPilotQueueCheckCli } from '../src/cli/pilot-queue-check.js';
 import { runOnce } from '../src/notification-worker.js';
 import { assertSyntheticWorkerBatchSafety } from '../src/openclaw-synthetic-pilot.js';
 import { claimNotificationTasks } from '../src/services/notification.js';
+import { runOpenClawSyntheticPilotCli } from '../src/cli/openclaw-enqueue-synthetic-pilot.js';
 
 const key = 'openclaw-synthetic-pilot-20260801';
+const generationOneControl = { runId: '11111111-1111-4111-8111-111111111111', generation: 1, authorizationId: '22222222-2222-4222-8222-222222222222', deliveryRequestId: '33333333-3333-4333-8333-333333333333', previousKeyHash: null } as const;
 function privateDirectory(): string { const directory = mkdtempSync(path.join(os.tmpdir(), 'xiansuo-openclaw-synthetic-')); chmodSync(directory, 0o700); return directory; }
 function databasePath(directory: string): string { return path.join(directory, 'openclaw-synthetic-pilot.db'); }
-function input(directory: string, userId = 73) { return { databasePath: databasePath(directory), pilotUserId: userId, idempotencyKey: key }; }
+function input(directory: string, userId = 73) { return { databasePath: databasePath(directory), pilotUserId: userId, idempotencyKey: key, control: generationOneControl }; }
 
 test('synthetic 入队仅接受全新仓库外私有临时数据库与显式固定参数', () => {
   const directory = privateDirectory(); const filename = databasePath(directory);
@@ -54,13 +57,36 @@ test('synthetic 入队迁移001-007并只创建一个用户和一个严格快照
     assert.deepEqual(versions, ['001','002','003','004','005','006','007']);
     assert.equal((database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }).count, 1);
     assert.equal((database.prepare('SELECT COUNT(*) AS count FROM notification_logs').get() as { count: number }).count, 1);
+    assert.equal((database.prepare('SELECT COUNT(*) AS count FROM openclaw_synthetic_pilot_control').get() as { count: number }).count, 1);
     const task = database.prepare(`SELECT event_type,event_source,operation_id,subject_type,subject_id,lead_id,actor_user_id,old_owner_id,new_owner_id,recipient_user_id,dedupe_key,delivery_idempotency_key,channel_order_snapshot_json,channel,message_snapshot_json FROM notification_logs`).get() as any;
     assert.equal(isSyntheticPilotTask(task, 73, key), true);
     assert.deepEqual(JSON.parse(task.message_snapshot_json), syntheticSnapshot(first.businessDate));
     assert.equal(JSON.stringify(task).match(/客户|联系人|手机号|微信号|需求|跟进|prompt|jwt|token|api[_ -]?key/i), null);
+    assert.equal((database.prepare('SELECT generation,previous_key_hash,manifest_hash FROM openclaw_synthetic_pilot_control').get() as { generation: number; previous_key_hash: null; manifest_hash: string }).generation, 1);
     database.close();
     const second = enqueueOpenClawSyntheticPilot(input(directory)); assert.deepEqual({ result: second.result, taskId: second.taskId, businessDate: second.businessDate }, { result: 'deduplicated', taskId: first.taskId, businessDate: first.businessDate });
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('synthetic 新隔离库支持线性新 generation，CLI 的 key 只来自0600文件或stdin', () => {
+  const directory = privateDirectory(); const keyDirectory = privateDirectory(); const keyFile = path.join(keyDirectory, 'new.key'); const generationKey = 'openclaw-new-generation-key-20260801';
+  try {
+    writeFileSync(keyFile, generationKey, { mode: 0o600 }); chmodSync(keyFile, 0o600);
+    const previousKeyHash = createHash('sha256').update(key).digest('hex');
+    const args = ['node','openclaw-enqueue-synthetic-pilot.ts','--db-path',databasePath(directory),'--pilot-user-id','73','--generation','2','--run-id',generationOneControl.runId,'--authorization-id','44444444-4444-4444-8444-444444444444','--delivery-request-id','55555555-5555-4555-8555-555555555555','--previous-key-hash',previousKeyHash,'--key-file',keyFile];
+    const result = runOpenClawSyntheticPilotCli(args) as { generation: number; manifest_hash: string };
+    assert.equal(result.generation, 2); assert.match(result.manifest_hash, /^[a-f0-9]{64}$/);
+    assert.equal(args.includes(generationKey), false, 'idempotency key must never enter argv');
+    const database = new DatabaseSync(databasePath(directory), { readOnly: true });
+    assert.deepEqual({ ...(database.prepare('SELECT generation,previous_key_hash FROM openclaw_synthetic_pilot_control').get() as any) }, { generation: 2, previous_key_hash: previousKeyHash }); database.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); rmSync(keyDirectory, { recursive: true, force: true }); }
+
+  const stdinDirectory = privateDirectory();
+  try {
+    const result = runOpenClawSyntheticPilotCli(['node','openclaw-enqueue-synthetic-pilot.ts','--db-path',databasePath(stdinDirectory),'--pilot-user-id','73','--generation','1','--run-id',generationOneControl.runId,'--authorization-id',generationOneControl.authorizationId,'--delivery-request-id',generationOneControl.deliveryRequestId,'--stdin'], generationKey) as { generation: number };
+    assert.equal(result.generation, 1);
+    assert.throws(() => runOpenClawSyntheticPilotCli(['node','openclaw-enqueue-synthetic-pilot.ts','--db-path',databasePath(stdinDirectory),'--pilot-user-id','73','--generation','1','--run-id',generationOneControl.runId,'--authorization-id',generationOneControl.authorizationId,'--delivery-request-id',generationOneControl.deliveryRequestId,'--idempotency-key',generationKey]), /CLI_USAGE/);
+  } finally { rmSync(stdinDirectory, { recursive: true, force: true }); }
 });
 
 test('synthetic queue-check 连续两次 SAFE，其他可领取任务仍为 UNSAFE', () => {
@@ -91,6 +117,7 @@ test('Worker 从唯一 synthetic outbox 通过 OpenClaw Channel 到伪 Gateway�
     assert.equal(requests.length, 1);
     const message = openClawSyntheticPilotMessage();
     assert.deepEqual({ title: requests[0].title, body: requests[0].body, detailUrl: requests[0].detailUrl }, { title: message.title, body: message.body, detailUrl: message.detailPath });
+    assert.equal(typeof requests[0].pilotControl?.deliveryRequestId, 'string'); assert.equal(requests[0].deliveryId, requests[0].pilotControl?.deliveryRequestId);
     assert.equal(JSON.stringify(requests[0]).match(/客户|联系人|手机号|微信号|需求|跟进|prompt|jwt|token|api[_ -]?key/i), null);
     const database = new DatabaseSync(filename, { readOnly: true }); const task = database.prepare('SELECT status,attempt_count,provider_message_id FROM notification_logs').get() as any;
     assert.deepEqual({ ...task }, { status: 'sent', attempt_count: 1, provider_message_id: 'fake-gateway-receipt' }); database.close();
@@ -186,6 +213,11 @@ test('synthetic 密封门禁拒绝每类业务表污染、规则启用、任务�
     try { enqueueOpenClawSyntheticPilot(input(directory)); const db = new DatabaseSync(databasePath(directory), { enableForeignKeyConstraints: true }); configureConnection(db); db.exec(mutation); db.close(); assert.throws(() => enqueueOpenClawSyntheticPilot(input(directory)), /(?:RULES_UNSAFE|TASK_UNSAFE)/); }
     finally { rmSync(directory, { recursive: true, force: true }); }
   }
+  const controlDirectory = privateDirectory();
+  try {
+    enqueueOpenClawSyntheticPilot(input(controlDirectory)); const db = new DatabaseSync(databasePath(controlDirectory), { enableForeignKeyConstraints: true }); configureConnection(db); db.prepare("UPDATE openclaw_synthetic_pilot_control SET manifest_hash=(CASE WHEN substr(manifest_hash,1,1)='0' THEN '1' ELSE '0' END) || substr(manifest_hash,2)").run(); db.close();
+    assert.throws(() => enqueueOpenClawSyntheticPilot(input(controlDirectory)), /CONTROL_UNSAFE/);
+  } finally { rmSync(controlDirectory, { recursive: true, force: true }); }
   const directory = privateDirectory();
   try {
     enqueueOpenClawSyntheticPilot(input(directory)); const db = new DatabaseSync(databasePath(directory), { enableForeignKeyConstraints: true }); configureConnection(db); db.exec('PRAGMA foreign_keys=OFF'); db.prepare('INSERT INTO favorites(user_id,lead_id) VALUES (73,999999)').run(); assert.throws(() => assertSyntheticDatabaseSafety(db, input(directory), 'queue'), /INTEGRITY_UNSAFE/); db.close();

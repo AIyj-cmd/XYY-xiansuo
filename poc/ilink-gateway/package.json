@@ -13,7 +13,8 @@
     "gateway:prereq-check": "tsx src/cli/prereq-check.ts",
     "gateway:official-session-status": "tsx src/cli/official-session-status.ts",
     "gateway:login": "tsx src/cli/login.ts",
-    "gateway:send-synthetic": "tsx src/cli/send-synthetic.ts"
+    "gateway:send-synthetic": "tsx src/cli/send-synthetic.ts",
+    "gateway:pilot-control": "tsx src/cli/pilot-control.ts"
   },
   "dependencies": { "zod": "^4.4.3" },
   "devDependencies": {

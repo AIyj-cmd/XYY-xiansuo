@@ -5,9 +5,10 @@ import { StateStore } from './state-store.js'
 const recipientHash = (value: string) => createHash('sha256').update(value).digest('hex')
 export class IdempotencyStore {
   constructor(private readonly state: StateStore) {}
-  acquire(key: string, recipientExternalId: string, messageHash: string, now: number): ChannelDeliveryResult | undefined {
-    const acquired = this.state.acquireDelivery(key, recipientHash(recipientExternalId), messageHash, now)
+  acquire(key: string, recipientExternalId: string, messageHash: string, now: number, allowGenerationReservation = false): ChannelDeliveryResult | undefined {
+    const acquired = this.state.acquireDelivery(key, recipientHash(recipientExternalId), messageHash, now, allowGenerationReservation)
     if (acquired.acquired) return undefined
+    if ('blocked' in acquired) return { status: 'permanent_failure', errorCode: 'ILINK_IDEMPOTENCY_KEY_BURNED' }
     const record = acquired.record
     if (record.recipientHash !== recipientHash(recipientExternalId) || record.messageHash !== messageHash) return { status: 'permanent_failure', errorCode: 'ILINK_IDEMPOTENCY_CONFLICT' }
     if (acquired.retryInProgress) return { status: 'retryable_failure', errorCode: 'ILINK_RETRY_IN_PROGRESS' }

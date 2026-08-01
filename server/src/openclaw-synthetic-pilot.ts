@@ -15,10 +15,12 @@ const SYNTHETIC_DATABASE_BASENAME = 'openclaw-synthetic-pilot.db';
 const DETAIL_PATH = '/pages/notify/index';
 const DETAIL_URL = 'https://xs.tomatopia.top/';
 const MESSAGE = { title: '【测试通知】', body: 'XYY-xiansuo普通微信通知通道已连接。\n这是一条内部测试消息。', detailPath: DETAIL_URL } as const;
-const RULE_CONFIG = { schema_version: 1, recipient_mode: 'job_recipient', quiet_hours: { enabled: false, start: '22:00', end: '08:00', timezone: 'Asia/Shanghai' }, max_attempts: 2, ttl_minutes: 60 } as const;
+const RULE_CONFIG = { schema_version: 1, recipient_mode: 'job_recipient', quiet_hours: { enabled: false, start: '22:00', end: '08:00', timezone: 'Asia/Shanghai' }, max_attempts: 1, ttl_minutes: 60 } as const;
 const sha = (value: string) => createHash('sha256').update(value).digest('hex');
 
-export type SyntheticPilotInput = { databasePath: string; pilotUserId: number; idempotencyKey: string };
+export type SyntheticPilotInput = { databasePath: string; pilotUserId: number; idempotencyKey: string; control?: Omit<SyntheticPilotControl, 'manifestHash'> };
+type ValidatedSyntheticPilotInput = SyntheticPilotInput & { control: Omit<SyntheticPilotControl, 'manifestHash'> };
+export type SyntheticPilotControl = { runId: string; generation: number; authorizationId: string; deliveryRequestId: string; previousKeyHash: string | null; manifestHash: string };
 export type SyntheticPilotTask = { id?: number; event_type: string; event_source: string; operation_id: string; subject_type: string; subject_id: number; lead_id: number | null; actor_user_id: number | null; old_owner_id: number | null; new_owner_id: number | null; recipient_user_id: number; dedupe_key: string; delivery_idempotency_key: string; rule_version: number; rule_snapshot_json: string; channel_order_snapshot_json: string; channel: string; message_snapshot_json: string; status: string; attempt_count: number; automatic_attempt_count: number; manual_retry_count: number; max_attempts: number; available_at: string; occurred_at: string; expires_at: string; lease_token: string | null; lease_owner: string | null; lease_until: string | null; lease_recovery_count: number; retry_allowed: number; provider_message_id: string | null; failure_class: string | null; last_error_code: string | null; last_error_message: string | null; suppression_reason: string | null; cancellation_reason: string | null; management_audit_json: string; retain_until: string | null; last_attempt_at: string | null; sent_at: string | null; failed_at: string | null; suppressed_at: string | null; cancelled_at: string | null; row_version: number; created_at: string; updated_at: string };
 export type SyntheticSafetyPhase = 'fresh' | 'repeat' | 'queue' | 'worker';
 type ResolvedSyntheticPath = { requested: string; databasePath: string; directory: string };
@@ -75,9 +77,13 @@ export function assertSyntheticDatabasePath(databasePath: string, create = false
   assertArtifactPermissions(target, false);
   return { requested: databasePath, databasePath: target, directory };
 }
-function validateInput(input: SyntheticPilotInput): SyntheticPilotInput {
+function validateInput(input: SyntheticPilotInput): ValidatedSyntheticPilotInput {
   if (!Number.isSafeInteger(input.pilotUserId) || input.pilotUserId < 1) throw new Error('OPENCLAW_SYNTHETIC_PILOT_USER_ID_INVALID');
-  return { ...input, databasePath: assertSyntheticDatabasePath(input.databasePath, true).databasePath, idempotencyKey: assertSyntheticPilotIdempotencyKey(input.idempotencyKey) };
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const control = input.control;
+  if (!control || !uuid.test(control.runId) || !Number.isSafeInteger(control.generation) || control.generation < 1 || !uuid.test(control.authorizationId) || !uuid.test(control.deliveryRequestId)
+      || (control.generation === 1 ? control.previousKeyHash !== null : typeof control.previousKeyHash !== 'string' || !/^[a-f0-9]{64}$/.test(control.previousKeyHash))) throw new Error('OPENCLAW_SYNTHETIC_CONTROL_INPUT_INVALID');
+  return { ...input, control, databasePath: assertSyntheticDatabasePath(input.databasePath, true).databasePath, idempotencyKey: assertSyntheticPilotIdempotencyKey(input.idempotencyKey) };
 }
 function migrationStateIsCurrent(database: DatabaseSync): boolean {
   const rows = database.prepare('SELECT version,checksum FROM schema_migrations ORDER BY version').all() as Array<{ version: string; checksum: string }>;
@@ -91,9 +97,26 @@ const defaultRules = [
   ['weekly_report', 'reserved', '[]', '{}'], ['inactive_lead', 'reserved', '[]', '{}'],
 ] as const;
 function assertEmptySensitiveTables(database: DatabaseSync): void {
-  const allowed = new Set(['schema_migrations', 'users', 'notification_rules', 'notification_logs', 'sqlite_sequence']);
+  const allowed = new Set(['schema_migrations', 'users', 'notification_rules', 'notification_logs', 'openclaw_synthetic_pilot_control', 'openclaw_synthetic_pilot_audit', 'sqlite_sequence']);
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>;
   for (const { name } of tables) if (!allowed.has(name) && (database.prepare(`SELECT COUNT(*) AS count FROM "${name.replace(/"/g, '""')}"`).get() as { count: number }).count !== 0) fail('OPENCLAW_SYNTHETIC_DATABASE_CONTAMINATED');
+}
+function controlManifest(input: SyntheticPilotInput, task: SyntheticPilotTask, control: Omit<SyntheticPilotControl, 'manifestHash'>): string {
+  return sha(JSON.stringify({ schema: 1, pilotUserId: input.pilotUserId, idempotencyKeyHash: sha(input.idempotencyKey), taskId: task.id, deliveryId: task.delivery_idempotency_key, runId: control.runId, generation: control.generation, authorizationId: control.authorizationId, deliveryRequestId: control.deliveryRequestId, previousKeyHash: control.previousKeyHash }))
+}
+export function readSyntheticPilotControl(database: DatabaseSync, input: SyntheticPilotInput, task: SyntheticPilotTask): SyntheticPilotControl {
+  const rows = database.prepare('SELECT run_id,generation,authorization_id,delivery_request_id,previous_key_hash,manifest_hash FROM openclaw_synthetic_pilot_control').all() as Array<{ run_id: unknown; generation: unknown; authorization_id: unknown; delivery_request_id: unknown; previous_key_hash: unknown; manifest_hash: unknown }>;
+  if (rows.length !== 1) fail('OPENCLAW_SYNTHETIC_CONTROL_UNSAFE')
+  const row = rows[0];
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (typeof row.run_id !== 'string' || !uuid.test(row.run_id) || !Number.isSafeInteger(row.generation) || Number(row.generation) < 1 || typeof row.authorization_id !== 'string' || !uuid.test(row.authorization_id) || typeof row.delivery_request_id !== 'string' || !uuid.test(row.delivery_request_id)
+      || (row.generation === 1 ? row.previous_key_hash !== null : typeof row.previous_key_hash !== 'string' || !/^[a-f0-9]{64}$/.test(row.previous_key_hash)) || typeof row.manifest_hash !== 'string' || !/^[a-f0-9]{64}$/.test(row.manifest_hash)) fail('OPENCLAW_SYNTHETIC_CONTROL_UNSAFE')
+  const control = { runId: row.run_id, generation: row.generation as number, authorizationId: row.authorization_id, deliveryRequestId: row.delivery_request_id, previousKeyHash: row.previous_key_hash as string | null, manifestHash: row.manifest_hash } as const;
+  if (input.control && (control.runId !== input.control.runId || control.generation !== input.control.generation || control.authorizationId !== input.control.authorizationId || control.deliveryRequestId !== input.control.deliveryRequestId || control.previousKeyHash !== input.control.previousKeyHash)) fail('OPENCLAW_SYNTHETIC_CONTROL_UNSAFE')
+  if (controlManifest(input, task, control) !== control.manifestHash) fail('OPENCLAW_SYNTHETIC_CONTROL_UNSAFE')
+  const audit = database.prepare('SELECT event_type,manifest_hash FROM openclaw_synthetic_pilot_audit').all() as Array<{ event_type: unknown; manifest_hash: unknown }>;
+  if (audit.length !== 1 || audit[0].event_type !== 'created' || audit[0].manifest_hash !== control.manifestHash) fail('OPENCLAW_SYNTHETIC_CONTROL_UNSAFE')
+  return control;
 }
 function assertRulesSealed(database: DatabaseSync): void {
   const rows = database.prepare('SELECT event_type,enabled,recipient_strategy,channel_order_json,config_schema_version,config_json,version,updated_by FROM notification_rules ORDER BY event_type').all() as Array<Record<string, unknown>>;
@@ -109,7 +132,7 @@ function assertTaskStage(task: SyntheticPilotTask, phase: SyntheticSafetyPhase):
   const timestamp = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
   const timing = timestamp.test(task.occurred_at) && task.available_at === task.occurred_at && task.expires_at === plusMinutes(task.occurred_at, 60)
     && timestamp.test(task.created_at) && timestamp.test(task.updated_at) && task.updated_at >= task.created_at;
-  const common = task.rule_version === 1 && task.rule_snapshot_json === JSON.stringify({ enabled: true, config: RULE_CONFIG }) && task.max_attempts === 2
+  const common = task.rule_version === 1 && task.rule_snapshot_json === JSON.stringify({ enabled: true, config: RULE_CONFIG }) && task.max_attempts === 1
     && task.manual_retry_count === 0 && task.lease_recovery_count === 0 && task.retry_allowed === 1 && task.management_audit_json === '[]' && timing;
   if (!common) fail('OPENCLAW_SYNTHETIC_TASK_UNSAFE');
   if (phase === 'worker') {
@@ -141,7 +164,7 @@ export function assertSyntheticDatabaseSafety(database: DatabaseSync, input: Syn
   const count = (database.prepare('SELECT COUNT(*) AS count FROM notification_logs').get() as { count: number }).count;
   const task = database.prepare('SELECT * FROM notification_logs').get() as SyntheticPilotTask | undefined;
   if (count !== 1 || !task || !task.id || !isSyntheticPilotTask(task, input.pilotUserId, input.idempotencyKey)) fail('OPENCLAW_SYNTHETIC_TASK_UNSAFE');
-  assertTaskStage(task, phase); assertNoSensitiveSnapshot(task);
+  assertTaskStage(task, phase); assertNoSensitiveSnapshot(task); readSyntheticPilotControl(database, input, task);
   return { id: task.id, businessDate: JSON.parse(task.message_snapshot_json).business_date };
 }
 
@@ -176,31 +199,40 @@ export function isSyntheticPilotTask(task: SyntheticPilotTask, pilotUserId: numb
 }
 
 /** Creates exactly one sealed test user and one OpenClaw outbox task, or verifies the same key's existing result. */
-export function enqueueOpenClawSyntheticPilot(input: SyntheticPilotInput): { result: 'created' | 'deduplicated'; taskId: number; businessDate: string; databasePathHash: string } {
+export function enqueueOpenClawSyntheticPilot(input: SyntheticPilotInput): { result: 'created' | 'deduplicated'; taskId: number; businessDate: string; databasePathHash: string; generation: number; manifestHash: string } {
   const validated = validateInput(input); const existed = existsSync(validated.databasePath);
   if (!existed && (existsSync(`${validated.databasePath}-wal`) || existsSync(`${validated.databasePath}-shm`) || readdirSync(path.dirname(validated.databasePath)).length !== 0)) throw new Error('OPENCLAW_SYNTHETIC_DATABASE_NOT_FRESH');
   const database = new DatabaseSync(validated.databasePath, { readOnly: existed, enableForeignKeyConstraints: true });
   try {
     if (existed) {
       const repeat = assertSyntheticDatabaseSafety(database, validated, 'repeat');
-      return { result: 'deduplicated', taskId: repeat.id, businessDate: repeat.businessDate, databasePathHash: sha(validated.databasePath).slice(0, 16) };
+      const task = database.prepare('SELECT * FROM notification_logs').get() as SyntheticPilotTask;
+      const control = readSyntheticPilotControl(database, validated, task);
+      return { result: 'deduplicated', taskId: repeat.id, businessDate: repeat.businessDate, databasePathHash: sha(validated.databasePath).slice(0, 16), generation: control.generation, manifestHash: control.manifestHash };
     }
     configureConnection(database);
     assertArtifactPermissions(validated.databasePath, true);
     runMigrations(database, MIGRATIONS, { log() {} });
     const now = nowDatetime(); const businessDate = now.slice(0, 10); const snapshot = syntheticSnapshot(businessDate);
+    database.exec(`CREATE TABLE openclaw_synthetic_pilot_control (singleton INTEGER PRIMARY KEY CHECK(singleton=1),run_id TEXT NOT NULL,generation INTEGER NOT NULL CHECK(generation>=1),authorization_id TEXT NOT NULL,delivery_request_id TEXT NOT NULL,previous_key_hash TEXT,manifest_hash TEXT NOT NULL);
+      CREATE TABLE openclaw_synthetic_pilot_audit (id INTEGER PRIMARY KEY CHECK(id=1),event_type TEXT NOT NULL,manifest_hash TEXT NOT NULL);`);
     database.exec('BEGIN IMMEDIATE;');
     try {
       database.prepare('INSERT INTO users(id,username,name,password_hash,role,is_active) VALUES (?,?,?,?,?,1)').run(validated.pilotUserId, `openclaw-synthetic-pilot-${validated.pilotUserId}`, 'OpenClaw 隔离测试用户', 'synthetic-no-login', 'member');
       const result = database.prepare(`INSERT INTO notification_logs(event_type,event_source,operation_id,subject_type,subject_id,lead_id,actor_user_id,old_owner_id,new_owner_id,recipient_user_id,occurred_at,dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,expires_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         SYNTHETIC_PILOT_EVENT_TYPE, SYNTHETIC_PILOT_EVENT_SOURCE, syntheticOperationId(validated.idempotencyKey), 'recipient_digest', validated.pilotUserId, null, null, null, null, validated.pilotUserId, now,
-        syntheticDedupeKey(validated.idempotencyKey, validated.pilotUserId, businessDate), validated.idempotencyKey, 1, JSON.stringify({ enabled: true, config: RULE_CONFIG }), '["openclaw"]', 'openclaw', JSON.stringify(snapshot), 'pending', 2, now, plusMinutes(now, 60),
+        syntheticDedupeKey(validated.idempotencyKey, validated.pilotUserId, businessDate), validated.idempotencyKey, 1, JSON.stringify({ enabled: true, config: RULE_CONFIG }), '["openclaw"]', 'openclaw', JSON.stringify(snapshot), 'pending', 1, now, plusMinutes(now, 60),
       );
+      const task = database.prepare('SELECT * FROM notification_logs').get() as SyntheticPilotTask;
+      const controlBase = validated.control;
+      const manifestHash = controlManifest(validated, task, controlBase);
+      database.prepare('INSERT INTO openclaw_synthetic_pilot_control(singleton,run_id,generation,authorization_id,delivery_request_id,previous_key_hash,manifest_hash) VALUES (1,?,?,?,?,?,?)').run(controlBase.runId, controlBase.generation, controlBase.authorizationId, controlBase.deliveryRequestId, controlBase.previousKeyHash, manifestHash);
+      database.prepare("INSERT INTO openclaw_synthetic_pilot_audit(id,event_type,manifest_hash) VALUES (1,'created',?)").run(manifestHash);
       database.exec('COMMIT;');
       assertArtifactPermissions(validated.databasePath, true);
       const sealed = assertSyntheticDatabaseSafety(database, validated, 'fresh');
-      return { result: 'created', taskId: sealed.id, businessDate: sealed.businessDate, databasePathHash: sha(validated.databasePath).slice(0, 16) };
+      return { result: 'created', taskId: sealed.id, businessDate: sealed.businessDate, databasePathHash: sha(validated.databasePath).slice(0, 16), generation: controlBase.generation, manifestHash };
     } catch (error) { try { database.exec('ROLLBACK;'); } catch {} throw error; }
   } finally { database.close(); }
 }

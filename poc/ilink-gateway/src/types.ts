@@ -1,12 +1,22 @@
 import { z } from 'zod'
 
+export const pilotControlSchema = z.object({
+  runId: z.string().uuid(),
+  generation: z.number().int().positive(),
+  authorizationId: z.string().uuid(),
+  deliveryRequestId: z.string().uuid(),
+  previousKeyHash: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  manifestHash: z.string().regex(/^[a-f0-9]{64}$/)
+}).strict()
+
 export const deliveryRequestSchema = z.object({
   deliveryId: z.string().uuid(),
   idempotencyKey: z.string().min(16).max(200),
   recipientUserId: z.number().int().positive(),
   title: z.string().min(1).max(40),
   body: z.string().min(1).max(500),
-  detailUrl: z.literal('https://xs.tomatopia.top/')
+  detailUrl: z.literal('https://xs.tomatopia.top/'),
+  pilotControl: pilotControlSchema.optional()
 }).strict()
 
 export type ChannelDeliveryRequest = z.infer<typeof deliveryRequestSchema>
