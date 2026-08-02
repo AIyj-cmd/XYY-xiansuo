@@ -1,6 +1,6 @@
 # 项目文档索引
 
-当前状态：**阶段一“安全与数据库基线”、阶段二“业务一致性基线”和阶段三“通知基础设施”均已完成本地代码验收，尚未生产部署；生产发布、真实环境核验和备份恢复演练门禁仍有效。** 2026-08-01 用户决定暂停所有真实外部消息渠道：OpenClaw daemon 与 Direct iLink 为 No-Go，企业微信自建应用取消且不属于后续候选，Hook/RPA/逆向/Windows 自动化继续禁止。现行正式通知仅为 H5 站内通知，Mock 仅用于测试/灰度；阶段三通知基础设施与阶段四 DeepSeek/AI 调度、日报等能力保留，但不向外部渠道发送。迁移 `007`、`notification_deliveries`、`notification_channel_bindings` 暂缓。
+当前状态：**阶段一“安全与数据库基线”、阶段二“业务一致性基线”和阶段三“通知基础设施”均已完成本地代码验收，尚未生产部署；生产发布、真实环境核验和备份恢复演练门禁仍有效。** 2026-08-01 的“暂停所有真实外部消息渠道、迁移 `007` 暂缓”是历史决策，已被后续单账号 OpenClaw 发布候选的真实验证结论取代：该候选保持**默认关闭**并仍受生产门禁约束；当前代码迁移为 `001`–`007`。仅 OpenClaw 多人绑定与 Direct iLink 仍为 **RESEARCH ONLY / NO-GO**。企业微信自建应用、Hook/RPA/逆向/Windows 自动化继续禁止；DeepSeek/AI Scheduler 默认关闭。服务号是尚未合入的独立候选分支，不属于当前制品。
 
 技术债整改的当前配置口径、H5 运行测试和 Vite 兼容风险见[TECH_DEBT_REMEDIATION_REPORT.md](03-测试验证/TECH_DEBT_REMEDIATION_REPORT.md)。
 
