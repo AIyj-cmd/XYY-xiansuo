@@ -1,12 +1,14 @@
 # OpenClaw 普通微信内部通知实现
 
-本实现为实验性内部渠道，不是客户消息或大规模生产渠道。用户已接受专用账号长轮询、人工扫码、会话失效及账号风控风险；系统仍禁止 Hook、RPA、逆向协议、自动换号、批量发送、客户自动回复和任何入站业务接口。
+本实现为实验性内部渠道，不是客户消息或大规模生产渠道。用户已接受专用账号长轮询、人工扫码、会话失效及账号风控风险；系统仍禁止 RPA、逆向协议、自动换号、批量发送、客户自动回复和任何入站业务接口。唯一例外是仓库内可审计的官方 OpenClaw `before_agent_reply` Hook：它仅让 `openclaw-weixin` 入站回合静默结束，不能读取后续业务系统、不能发回复、不能调用模型。
 
 链路为业务 outbox → 单实例 notification-worker → 回环 iLink Gateway → 静态批准的内部接收人。Gateway 不访问业务数据库；API、AI Scheduler、H5 不读取微信会话或 Gateway Secret。Secret 与可选 `OPENCLAW_RECIPIENT_MAP_FILE` 均仅从仓库外精确 0600 文件读取；映射为最多 50 项的严格 JSON 对象，键仅允许规范正整数系统用户 ID（如 `"12"`），值为 `{ "target": "<接收人>@im.wechat", "enabled": true|false }`，且仅在 Gateway 启动时加载。未绑定返回 `OPENCLAW_RECIPIENT_NOT_BOUND`、禁用返回 `OPENCLAW_RECIPIENT_DISABLED`，均不会调用 Adapter；旧单接收人路径继续使用 `OPENCLAW_RECIPIENT_NOT_ALLOWED`。Gateway 使用规范 `OPENCLAW_STATE_DIR` 作为官方会话状态目录，旧 `ILINK_POC_SESSION_DIR` 仅兼容别名且不可并存。
 
 迁移 `007` 在单事务内重建 `notification_logs`，保持字段、数据、索引和外键，再将 `channel` 限制扩展为 `NULL`、`mock`、`openclaw`。不改 `001` 至 `006`，不回填、不补发、不启用规则。
 
-OpenClaw 支持由静态映射批准的正整数内部用户，以及 `owner_changed`、`scheduled_follow_overdue`、`daily_report` 三个事件的单一 `openclaw` 规则。映射模式优先于旧单 pilot 配置；旧配置仅兼容并产生脱敏弃用警告。消息使用固定隐私模板和 `https://xs.tomatopia.top/`，不携带客户数据、AI 输出或登录凭证。`result_unknown` 记录为不可重试 `failed`，不自动重发。
+OpenClaw 支持由静态映射批准的正整数内部用户，以及 `owner_changed`、`scheduled_follow_overdue`、`daily_report` 三个事件的单一 `openclaw` 规则。映射模式优先于旧单 pilot 配置；旧配置仅兼容并产生脱敏弃用警告。`owner_changed` 在 outbox 捕获时读取真实线索字段并写入不可变快照：标题固定为 `【新线索已分配】`，字段按客户、联系人、联系方式、来源、需求、跟进要求排序，手机号只保留掩码；联系人、手机号可缺省，缺失跟进时间固定降级为“请尽快联系”，合法 `next_follow_at` 日期显示为 `YYYY-MM-DD前`、datetime 显示为 `YYYY-MM-DD HH:mm前`，不虚构 `00:00`。服务端将 Unicode `Cc`/`Cf`/`Zl`/`Zp`（含换行、零宽和双向控制字符）、`微信：`、微信号/ID、`wxid`、带分隔符的 wechat/weixin/vx/v信 标识和凭证标记排除或归一，不影响合法来源“微信咨询”；Gateway 除模板结构换行外对这些 Unicode 类别失败关闭，并拒绝任意字段的未脱敏大陆手机号或标识泄露。Worker 不重新读取线索，从而避免发送数据漂移。Gateway 仅接受该精确结构；OpenClaw 出站无论 snapshot 中的相对详情路径为何，统一使用无 token 的 `https://xs.tomatopia.top/`，Mock 仍保留其相对 `detailPath`。AI 事件仍使用固定文本模板。`result_unknown` 记录为不可重试 `failed`，不自动重发。
+
+入站静默插件位于 `poc/ilink-gateway/openclaw-plugins/xiansuo-no-reply/`，以官方原生插件 manifest 和 `before_agent_reply` 契约实现。它只匹配 `messageProvider === "openclaw-weixin"`，返回无 `reply` 的 `{handled:true}`，因此在 Provider 前短路且不产生外发内容；其他渠道不拦截。它默认不安装、不写 `OPENCLAW_CONFIG_PATH`；受控安装必须使用受支持的 `openclaw plugins install --link <绝对路径>`（不得加 `--force`），再用 `config set` 显式启用插件与 `allowConversationAccess=true`，并通过 runtime inspect 的 `hookCount=1`、`before_agent_reply` 和零 diagnostics 验证，详见插件 README。
 
 Gateway 对同一幂等键持久保存投递状态和原子发送锁。只有明确 `retryable_failure` 才能在 Worker 的两次尝试上限内重新获取发送权；重启后仍可重试。同键的并发请求不能重复调用 Adapter；`sent`、`permanent_failure`、`result_unknown` 均失败关闭。`deduplicated` 必须返回已持久化的原本地回执，否则安全失败。OpenClaw 超时完全由 `OPENCLAW_GATEWAY_TIMEOUT_MS` 控制；Worker 的旧 10 秒保护只保留给 Mock。
 

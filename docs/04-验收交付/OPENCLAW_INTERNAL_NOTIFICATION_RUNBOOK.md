@@ -2,7 +2,7 @@
 
 ## 默认边界
 
-默认所有开关关闭。Gateway 只监听 `127.0.0.1`，不配置 `DB_PATH` 或 DeepSeek Key。业务 API、AI Scheduler 和 H5 不读取 OpenClaw 会话或 Gateway Secret。不得使用日常主账号、客户账号、Hook、RPA、逆向协议、自动换号、批量发送或入站业务指令。
+默认所有开关关闭。Gateway 只监听 `127.0.0.1`，不配置 `DB_PATH` 或 DeepSeek Key。业务 API、AI Scheduler 和 H5 不读取 OpenClaw 会话或 Gateway Secret。不得使用日常主账号、客户账号、RPA、逆向协议、自动换号、批量发送或入站业务指令。唯一允许的 Hook 是仓库内 `xiansuo-openclaw-no-reply` 官方插件：它只对 `openclaw-weixin` 返回无 reply 的 `{handled:true}`，用于在模型调用前静默结束入站回合。
 
 配置 `OPENCLAW_CHANNEL_ENABLED`、回环 `OPENCLAW_GATEWAY_URL` 和仓库外精确 0600 `OPENCLAW_GATEWAY_SECRET_FILE`。推荐 Gateway 使用仓库外精确 0600 的 `OPENCLAW_RECIPIENT_MAP_FILE`：其 JSON 根必须为对象，最多 50 项，键必须是规范正整数系统用户 ID，值严格为 `{"target": "<接收人>@im.wechat", "enabled": true|false}`，例如 `{"12":{"target":"<接收人>@im.wechat","enabled":true}}`。文件只在 Gateway 启动时读取，不热更新；映射优先于旧单接收人配置。Gateway 使用同一 Secret 文件、规范 `OPENCLAW_STATE_DIR`（仓库外 0700 官方会话状态目录）和 `OPENCLAW_CONFIG_PATH`。旧 `ILINK_POC_SESSION_DIR` 仅为兼容别名，不得与规范项同时设置。会话失效只能由人工使用专用账号重新登录。
 
@@ -17,6 +17,7 @@
 5. OpenClaw 官方前置检查和会话状态明确就绪；如需重新扫码，必须由专用账号人工完成。
 6. API、AI Scheduler、DeepSeek、Mock、其他 Worker 和其他队列写入来源均停止；Gateway/Worker 必须为单实例。
 7. 记录隔离数据库、Gateway 状态库和 `server/data` 的安全哈希；不得输出客户数据、接收人标识或 Secret。
+8. 如需启用入站静默，先停止专用 daemon，备份仓库外 `OPENCLAW_CONFIG_PATH` 并保持 `0600`；仅按 `poc/ilink-gateway/openclaw-plugins/xiansuo-no-reply/README.md` 执行受支持的 `openclaw plugins install --link <绝对路径>`（不得加 `--force`），随后依次执行 `config set plugins.entries.xiansuo-openclaw-no-reply.enabled true` 和 `config set plugins.entries.xiansuo-openclaw-no-reply.hooks.allowConversationAccess true`。只用官方 `plugins inspect --runtime --json` 验证注册：必须有 `hookCount=1`、`typedHooks` 中的 `before_agent_reply` 且没有 diagnostics；不得以真实微信消息、Provider 或业务 API 验证。默认不安装且本轮未修改仓库外配置。
 
 ## 首次真实 Pilot 的隔离 synthetic 门禁
 

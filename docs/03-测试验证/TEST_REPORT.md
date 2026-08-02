@@ -271,3 +271,205 @@
 - 按本轮边界，未启动真实 OpenClaw、Gateway、Worker 或微信，不访问外网、DeepSeek 或业务数据库；因此不把本结论解释为真实发送或 Pilot 验证。
 - **P1=0、P2=0、P3=0。允许提交并进入后续代码验收。**
 - 本测试阶段新增的工作区变化仅为本报告第 14、15 节；实现、测试、文档和配置改动均为测试开始前已存在的待验证差异。
+
+## 16. OpenClaw owner_changed 详细脱敏通知与 no-reply 插件：测试计划（2026-08-02）
+
+本节先记录本次独立验证计划。测试仅使用现有自动化测试、离线假运行时、临时目录和临时数据库；不启动真实 OpenClaw/微信/Gateway/Worker，不访问外网、DeepSeek 或业务数据库。
+
+- 服务端：核对真实 `leads` 字段来源，验证 owner_changed 快照在入队时脱敏、Worker 仅使用快照不重读可变线索数据；覆盖字段缺失、长度、换行/控制字符、手机号、微信号、凭证和固定消息顺序。
+- Gateway：验证详细消息白名单与结构拒绝，包含标题、顺序、重复/额外字段、长度、全手机号和结构/控制字符注入；复核 Fake Adapter 恰好一次、HMAC、幂等、sent/messageId 与 `result_unknown`。
+- 插件：核对 manifest、受控安装说明、官方 `before_agent_reply` 钩子与版本化入站顺序证据；以离线 Provider 验证微信渠道的“已收到”、绑定文本和普通文本均 `handled=true`、无回复、Provider 调用为零，其他渠道透传且不读取正文。
+- 回归与范围：运行 Server/Gateway 构建和测试、`git diff --check`；检查无迁移、依赖、H5 或业务数据库文件变更，并在报告中记录结果、遗留范围和严重级别。
+
+## 17. OpenClaw owner_changed 详细脱敏通知与 no-reply 插件：独立验证结果（2026-08-02，NO-GO）
+
+### 基线与范围
+
+- 开始前未提交实现差异位于 Server 通知快照/Worker/OpenClaw channel 及其测试、Gateway message policy/测试、仓库内 no-reply 插件和相关实现/运行文档。未见迁移、依赖清单、锁文件、`app/` 或 `server/data` 差异。
+- 本阶段只新增本报告第 16、17 节；未恢复、覆盖或清理实现方已有改动。自动化测试创建的均为临时数据库/目录，未访问业务数据库。
+
+### 已执行命令与结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `cd server && npm run build && npm test` | 构建通过，140/140 测试通过；仅使用测试临时库。|
+| `cd poc/ilink-gateway && npm run build && npm test` | 构建通过，49/49 测试通过；未执行真实 CLI。|
+| 离线最小复现：owner 快照和 Gateway policy | 发现 P1/P2，详见下文。|
+| 本机已安装源码静态核验 | 确认为 OpenClaw `2026.7.1-2`、`@tencent-weixin/openclaw-weixin` `2.4.6`；未执行其二进制。|
+
+### 已通过项
+
+- `captureOwnerChanged()` 查询实际 `leads.company_name/contact_name/phone/source/demand_note/next_follow_at`，在入队时形成 `message_snapshot_json`；Worker 对 owner_changed 只解析此快照生成消息，不重新查询这些可变业务字段。现有回归还验证入队后更改公司/电话不会改变已存快照。
+- 正常字段的固定标题、顺序、尾句、长度（客户 30、联系人 20、来源 20、需求 80）、控制字符/换行清理、手机号掩码和缺少跟进时间时“请尽快联系”均存在。Gateway 正常结构还校验固定标题、字段顺序、重复/额外字段、非法 detail URL、控制字符、结构注入和联系方式掩码；Fake Adapter 正常路径恰好调用一次。
+- HMAC、重放、幂等、`sent/messageId`、`result_unknown` 和旧多接收人映射回归均随 Gateway 49 项测试通过。
+- no-reply 插件只读取 `context.messageProvider`，仅精确匹配 `openclaw-weixin`，返回无 `reply` 的 `{handled:true}`；其他渠道返回 `undefined`。离线 Hook 矩阵对“已收到”、绑定文本和普通文字均无回复。插件 manifest 为本地原生插件，无新增依赖；仓库和文档只提供受控 `--link` 安装步骤，默认不安装，也未改动上游源码。
+- 安装的微信插件 `process-message.ts` 显示 `recordInboundSession` 后调用 `setContextToken`，其后才 `dispatchReplyFromConfig`；安装的 OpenClaw host 在 dispatch 内先执行 `before_agent_reply`，`handled` 时返回 `NO_REPLY`，位于模型调用前。版本化夹具顺序与源码一致：`recordInboundSession → setContextToken → dispatch → before_agent_reply → model_call`。
+
+### 失败项
+
+#### P1：敏感微信标识和完整手机号仍可绕过出站保护
+
+- 最小复现 1：调用 `ownerChangedMessageSnapshot()`，使可选需求文本包含“微信：<标识>”。实际生成的 body 仍包含该微信字段标记；原因是服务端 `ownerDetailForbidden` 只匹配“微信号”或 `wxid`，不匹配常见“微信：”。这会写入 outbox 快照并可发送至微信。
+- 最小复现 2：对 Gateway `assertMessagePolicy()` 提交结构合法的 owner_changed body，但在“客户”“来源”或“需求”行放置完整 11 位手机号；实际均被接受。当前 Gateway 只为“联系方式”行校验掩码，未对其他字段拒绝完整手机号。
+- 预期：任何微信号标签/标识和完整手机号均不得进入 outbox 快照或 Gateway 投递契约。
+- 建议：服务端与 Gateway 统一采用更宽的微信字段/标识拒绝策略，并对每个可见字段扫描完整手机号；补齐服务端快照与 Gateway policy 的双重回归断言。修复前不得提交或进入验收。
+
+#### P2：缺失联系人未按要求省略，反而中断负责人变更通知捕获
+
+- 最小复现：调用 `ownerChangedMessageSnapshot()`，将 `contact_name` 设为空字符串、其他必需业务值合法。
+- 实际：抛出 `OWNER_CHANGED_CONTACT_INVALID`。
+- 预期：按本轮明确要求，缺少联系人、手机号或跟进时间时应省略可选字段（跟进时间降级为“请尽快联系”），不应因联系人缺失而生成失败。
+- 建议：将联系人与其他展示字段按已批准的缺项策略处理，并补空联系人、空手机号、空跟进时间的 outbox/Worker/Gateway 断言。
+
+### 结论与未覆盖范围
+
+- **P1=1、P2=1、P3=0；不允许提交，不允许进入验收或真实 Pilot。** 自动化测试全绿不能覆盖上述可复现的敏感数据和降级语义缺口。
+- 本轮未启动真实 OpenClaw、Gateway、Worker 或微信；未访问网络、DeepSeek 或业务数据库。因此 no-reply 结论为安装源码与离线 Hook 合约验证，不构成真实会话验证。
+
+## 18. OpenClaw owner_changed 详细脱敏通知与 no-reply 插件：修复后独立复测（2026-08-02）
+
+### P1/P2 复测闭环
+
+- 原“微信：”标识复现已关闭：服务端快照和 Gateway policy 现共同拒绝/省略微信号、微信 ID、`wxid`、`wechat`、`weixin`、`vx`、`v信` 等带值标识；离线复测确认这些值不进入快照，Gateway 也拒绝结构合法但含该值的正文。
+- 原“非联系方式字段完整手机号”复现已关闭：服务端对展示字段内的中国大陆手机号先掩码，Gateway 对客户、联系人、来源、需求和联系方式逐字段扫描未掩码号码。离线复测覆盖纯数字、`+86`、空格/连字符变体，均未保留完整手机号或被 Gateway 拒绝。
+- 原“缺联系人”复现已关闭：`contact_name=null` 或空白时不再抛错；缺联系人、手机号、`next_follow_at` 时生成仅含合法来源、固定跟进降级和固定尾句的快照。合法来源“微信咨询”被保留，未被过度过滤。
+- 独立结构矩阵覆盖控制字符、CR/LF 注入、字段超长、重复字段、乱序、额外字段和错误标题，Gateway 均拒绝；最小合法详情仍通过，Fake Adapter 仍恰好一次。
+
+### 回归和 Hook 证据
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `cd server && npm run build && npm test` | 通过，140/140；仅使用测试临时库。|
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，49/49；无真实 OpenClaw 调用。|
+| 独立 no-reply 处理器 Proxy 测试 | 通过：三个微信文本均返回无 reply 的 handled 结果，事件正文 Proxy 零次读取，其他渠道透传；版本夹具顺序不变。|
+| `git diff --check` | 通过。|
+
+### 最终结论
+
+- 第 17 节 P1/P2 为保留的首次失败历史，均已由本节独立复测关闭：**P1=0、P2=0、P3=0。允许提交并进入后续代码验收。**
+- 未发现迁移、依赖、H5 或业务数据库文件变化；本测试阶段除本报告第 16 至 18 节外没有修改工作区文件。
+- 未启动真实 OpenClaw、Gateway、Worker 或微信，未访问网络、DeepSeek 或业务数据库；本结论不构成真实 Pilot 放行。
+
+## 19. Unicode 与受控插件安装增量复核：测试计划（2026-08-02）
+
+- 服务端：以 Cc、Cf、Zl、Zp 代表字符验证 owner_changed 展示字段被规范化，且不会保留不可见/双向控制字符。
+- Gateway：对同一四类 Unicode 字符的详情正文验证失败关闭；正常 LF 模板结构仍可通过。
+- 文档与安装边界：检查仓库内插件 README 与运行手册不含 `--force`，并明确 `allowConversationAccess` 后，官方 runtime inspect 必须返回 `hookCount=1`、`before_agent_reply` 与零 diagnostics。
+- 回归：运行受影响 Server/Gateway 构建和测试及 `git diff --check`；不启动 daemon 或真实渠道。
+
+## 20. Unicode 与受控插件安装增量复核：最终补充（2026-08-02）
+
+### 增量结果
+
+- 独立 Unicode 矩阵覆盖 `Cc`、`Cf`、`Zl`、`Zp` 的代表字符。服务端 owner_changed 快照将四类字符规范化为空白并折叠，产物不保留该四类字符；Gateway 对同类输入正文全部失败关闭。合法的固定 LF 分行模板仍可通过。
+- 插件 README 与运行手册中的两条实际 `openclaw plugins install --link ...` 命令均不含 `--force`；文本同时明确禁止该参数。两份文档都要求先启用 `allowConversationAccess`，再用官方 runtime inspect 验证 `hookCount=1`、`typedHooks` 含 `before_agent_reply` 且 diagnostics 为零。
+- 主代理已在临时隔离 OpenClaw state/config 上完成上述受控安装流程的实测且未启动 daemon；本测试代理未重复该实况操作。本代理仅完成文档和离线契约复核。
+
+### 命令与结论
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| Unicode 独立 Node/TS 断言 | 通过。|
+| 安装文档命令结构化检查 | 通过。|
+| `cd server && npm run build && npm test` | 通过，140/140。|
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，49/49。|
+| `git diff --check` | 通过。|
+
+- **P1=0、P2=0、P3=0；允许提交并进入后续代码验收。**
+- 本节未引入业务代码改动；未启动 daemon、真实 OpenClaw/Gateway/Worker 或微信，未访问网络、DeepSeek 或业务数据库。第 17 节失败保持为历史记录，已由第 18、20 节复测关闭。
+
+## 21. owner_changed astral emoji/body 上限：测试计划（2026-08-02）
+
+- 验证 owner snapshot body schema 上限与 Gateway 实际可达上限对齐为 500 UTF-16 code units，单字段 code-point 限制不变。
+- 用 80 个 astral emoji 需求字段验证服务端截断、快照解析和 Gateway 投递 policy 均接受；用 81 个验证 Gateway 拒绝。
+- 回归执行 Server、Gateway 构建/测试及 `git diff --check`；不启动真实服务或渠道。
+
+## 22. owner_changed astral emoji/body 上限：最终复测（2026-08-02）
+
+### 边界验证结果
+
+- `owner_changed` 快照 schema 的 `body` 上限已为 500 个 UTF-16 code units；Gateway 的 `body` policy 同为 500。客户、联系人、来源和需求四个单字段的既有 code-point 上限仍分别为 30、20、20、80，未放宽。
+- 独立 TypeScript 断言以 80 个 astral emoji（`😀`）作为需求字段输入：服务端生成快照的需求行恰为 80 code points，整体正文不超过 500 UTF-16 code units；`parseNotificationSnapshot()` 可解析，Gateway `assertMessagePolicy()` 可接受。
+- 同一结构将需求替换为 81 个 astral emoji 后，Gateway 以 `ILINK_MESSAGE_POLICY_REJECTED` 拒绝。该验证覆盖了服务端快照、快照解析与 Gateway 发送前 policy 的共同可达边界。
+
+### 已执行命令与结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| 独立 TypeScript astral 边界断言 | 通过：80 emoji 快照解析及 Gateway 接受；81 emoji Gateway 拒绝。|
+| `cd server && npm run build && npm test` | 通过，141/141；仅使用测试临时库。|
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，49/49；未执行真实 OpenClaw CLI 或网络调用。|
+| `git diff --check` | 通过。|
+
+### 最终结论
+
+- **P1=0、P2=0、P3=0。** owner_changed 的 astral emoji 正常边界与超限拒绝均符合本轮要求，允许提交并进入后续代码验收。
+- 本轮不构成真实 Pilot 放行：未启动 daemon、真实 OpenClaw/Gateway/Worker 或微信，未访问网络、DeepSeek 或业务数据库。
+- 本测试阶段新增的工作区变化仅为本报告第 21、22 节；其余未提交实现和文档差异均为测试开始前已存在的基线差异。
+
+## 23. OpenClaw detail URL 与 next_follow_at 格式：测试计划（2026-08-02）
+
+- 验证 OpenClaw Channel 将 owner_changed 的相对快照路径转换为固定、无 token 的 H5 URL；Mock 保持使用自己的相对 `detailPath` 路径。
+- 验证真实 API 写入 `YYYY-MM-DD` 的 `next_follow_at` 后，负责人变更 outbox 正文输出 `YYYY-MM-DD前`，不得虚构 `00:00`；带秒 datetime 输出到分钟。
+- 验证 Gateway 仅接受日期前缀或精确到分钟的跟进格式，并拒绝秒、非法时分及非日历日期等绕过输入。
+- 回归运行 Server、Gateway 构建和测试，以及 `git diff --check`；全程不启动 daemon、真实 Gateway/Worker 或微信。
+
+## 24. OpenClaw detail URL 与 next_follow_at 格式：最终独立复核（2026-08-02）
+
+### 通过项
+
+- OpenClaw Channel 的离线 `fetch` 截获测试实际调用 `send()`，输入 owner_changed 相对路径 `/pages/leads/detail`，断言 Gateway 请求中的 `detailUrl` 为固定 `https://xs.tomatopia.top/`。该 URL 无 token；Worker 的 Mock 分支仍单独将原始快照 `detailPath` 传给 `MockNotificationChannel`，未被此映射改写。
+- API 日期输入覆盖真实 `PATCH /api/leads/:id` 写入 `next_follow_at='2026-08-04'`，再执行负责人变更并读取 outbox。断言正文为 `跟进要求：2026-08-04前`，且不含虚构的 `00:00`。datetime 输入 `2026-08-02 09:30:45` 的快照断言输出为 `2026-08-02 09:30前`，秒被安全省略。
+- Gateway 现有 policy 测试覆盖并拒绝带秒（`2026-08-02 09:30:00前`）和非法时分（`2026-08-02 29:30前`）；两种正常形态 `YYYY-MM-DD前` 与 `YYYY-MM-DD HH:mm前` 均有接受断言。
+
+### 失败项
+
+#### P2：Gateway 对不存在的日历日期未 fail-closed
+
+- 最小复现（离线、无真实网络）：在 `poc/ilink-gateway` 运行 `npx tsx -e`，向 `assertMessagePolicy()` 提交合法 owner_changed 固定结构，仅分别使用 `跟进要求：2026-99-99前` 和 `跟进要求：2026-02-30 09:30前`。
+- 预期：Gateway 只允许业务系统可能生成的有效日历日期或精确到分钟的有效 datetime，以上两项均应抛出 `ILINK_MESSAGE_POLICY_REJECTED`。
+- 实际：两项都被接受；当前正则只约束位数和时分范围，未验证月份、日期以及月份天数。
+- 影响：尽管 Server 的 `safeFollowAt()` 会拒绝这些值，Gateway 作为隔离边界仍可被已签名但结构异常的请求绕过“仅系统生成结构”约束，未满足 fail-closed 要求。
+- 建议修复：Gateway 对日期/分钟 datetime 使用不归一化的日历校验（解析后与原年/月/日/时/分逐项一致），并增加四组拒绝断言：月 00/13、日 00/32、非闰年 2 月 29、2 月 30；修复后重跑本节命令。
+
+### 命令与结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| Gateway 日期最小复现 | 正常日期/分钟形态通过；秒和非法时分拒绝；`2026-99-99前`、`2026-02-30 09:30前` 被错误接受。|
+| `cd server && npm run build && npm test` | 通过，143/143；测试只使用临时数据库。|
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，49/49；未执行真实 OpenClaw CLI 或网络调用。|
+| `git diff --check` | 通过。|
+
+### 结论
+
+- **P1=0、P2=1、P3=0；不允许以“Gateway 严格只允许系统生成的两种跟进格式”为由进入无条件验收或真实 Pilot。** 需先关闭本节 P2 并独立复测。
+- 本轮仅新增本报告第 23、24 节；未修改业务实现。未启动 daemon、真实 OpenClaw/Gateway/Worker 或微信，未访问网络、DeepSeek 或业务数据库。
+
+## 25. Gateway 日历 fail-closed 与 no-reply fake pipeline：测试计划（2026-08-02）
+
+- 直接验证 Gateway 拒绝不存在月份、日期、非闰年 2 月 29，接受闰年 2 月 29；确认 UTC 组件回检未引入时区归一化绕过。
+- 验证 no-reply 的非真空 fake pipeline：Hook 前会话/target 已保存，微信入站被 `handled` 后不进入 provider/reply，Hook 不读取入站正文；其他渠道则透传到 provider。
+- 运行 Server、Gateway 构建和全部离线测试以及 `git diff --check`；不进行任何真实 OpenClaw/微信操作。
+
+## 26. Gateway 日历 fail-closed 与 no-reply fake pipeline：最终独立复验（2026-08-02）
+
+### P2 闭环与 no-reply 验证
+
+- 第 24 节 P2 已关闭：Gateway 以 UTC 年/月/日/时/分组件逐项回检日期，避免 `Date` 溢出归一化和本机时区造成放行。独立断言确认 `2026-99-99前`、`2026-02-30 09:30前`、`2027-02-29前` 和带秒 datetime 均拒绝；`2028-02-29前`、`2028-02-29 09:30前` 均接受。
+- Gateway 回归测试同时覆盖上述非法月份/日期、非闰年 2 月 29 拒绝和闰年 2 月 29 接受。正常的日期和精确到分钟 datetime 形态维持允许。
+- no-reply 测试已改为非真空 fake pipeline：在调用 Hook 前先保存 session/target；微信事件回调接收正文读取即抛错的 Proxy，仍返回 `{ handled: true }`，证明插件不读取入站正文；此时 provider/reply 计数保持 0。Telegram 事件保留同样已保存的 session/target、Hook 透传且 provider/reply 计数递增。版本化边界夹具仍为 `recordInboundSession → setContextToken → dispatch → before_agent_reply → model_call`。
+
+### 命令与结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| 独立 TypeScript 日期 + fake pipeline 断言 | 通过：所有不存在日期拒绝，闰年日期接受；微信不读取正文且不触发 provider/reply，Telegram 透传。|
+| `cd server && npm run build && npm test` | 通过，143/143；仅使用测试临时数据库。|
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，49/49；仅 Fake Adapter/离线 CLI fixtures，无真实 OpenClaw CLI 或网络调用。|
+| `git diff --check` | 通过。|
+
+### 最终结论
+
+- **P1=0、P2=0、P3=0。** 第 24 节 P2 已被本节独立复验关闭，允许提交并进入后续代码验收。
+- 本测试阶段新增的工作区内容仅为本报告第 25、26 节；其余差异为本轮测试开始前已有的实现、文档和插件文件。未启动 daemon、真实 OpenClaw/Gateway/Worker 或微信，未访问网络、DeepSeek 或业务数据库；此结论不构成真实 Pilot 执行。

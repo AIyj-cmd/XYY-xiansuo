@@ -50,4 +50,30 @@ test('Mock 开启后 pending 可被领取，旧 lease token 不能覆盖发送�
   assert.equal((db.prepare('SELECT status FROM notification_logs WHERE id=?').get(tasks[0].id) as any).status, 'sent');
 });
 
+test('负责人变更在 outbox 捕获真实线索字段的脱敏快照，后续线索修改不会改变待发内容', () => {
+  const id = lead('默认联系人');
+  db.prepare("UPDATE leads SET company_name=?,contact_name=?,phone=?,source=?,demand_note=?,next_follow_at=? WHERE id=?").run(
+    '星际企业', '李负责人', '13812345678', '官网', '需要\n采购服务', '2026-08-03 10:20:00', id,
+  );
+  transferLeadOwner(db, { leadId: id, newOwnerId: users.p3target, actorUserId: users.p3admin, source: 'single_edit', operationId: 'detail-snapshot-operation', updatedAt: '2026-07-30 10:00:00' });
+  const task = db.prepare('SELECT message_snapshot_json FROM notification_logs WHERE lead_id=?').get(id) as { message_snapshot_json: string };
+  assert.deepEqual(JSON.parse(task.message_snapshot_json), {
+    title: '【新线索已分配】',
+    body: '客户：星际企业\n联系人：李负责人\n联系方式：138****5678\n来源：官网\n需求：需要 采购服务\n跟进要求：2026-08-03 10:20前\n请登录线索系统查看完整资料。',
+    detail_path: '/pages/leads/detail',
+  });
+  db.prepare("UPDATE leads SET company_name='变更后企业',phone='13900000000' WHERE id=?").run(id);
+  assert.equal((db.prepare('SELECT message_snapshot_json FROM notification_logs WHERE lead_id=?').get(id) as { message_snapshot_json: string }).message_snapshot_json, task.message_snapshot_json);
+});
+
+test('线索 API 的合法 next_follow_at 日期会原样进入负责人提醒，且不虚构时间', async () => {
+  const id = lead('日期跟进');
+  const updated = await app.inject({ method: 'PATCH', url: `/api/leads/${id}`, headers: { authorization: `Bearer ${token}` }, payload: { next_follow_at: '2026-08-04' } });
+  assert.equal(updated.statusCode, 200);
+  transferLeadOwner(db, { leadId: id, newOwnerId: users.p3target, actorUserId: users.p3admin, source: 'single_edit', operationId: 'date-only-owner-snapshot', updatedAt: '2026-07-30 10:00:00' });
+  const task = db.prepare('SELECT message_snapshot_json FROM notification_logs WHERE lead_id=?').get(id) as { message_snapshot_json: string };
+  assert.match(JSON.parse(task.message_snapshot_json).body, /跟进要求：2026-08-04前/);
+  assert.doesNotMatch(JSON.parse(task.message_snapshot_json).body, /00:00/);
+});
+
 test.after(async () => { await app.close(); closeDb(); rmSync(directory, { recursive: true, force: true }); });

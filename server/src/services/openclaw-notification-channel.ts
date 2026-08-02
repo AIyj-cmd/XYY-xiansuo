@@ -15,15 +15,14 @@ const freshNonce = () => randomBytes(24).toString('base64url');
 const canonicalRequest = (method: string, path: string, timestamp: string, nonce: string, bodySha256: string) => [method.toUpperCase(), path, timestamp, nonce, bodySha256].join('\n');
 const sign = (secret: string, canonical: string) => createHmac('sha256', secret).update(canonical).digest('hex');
 const templates: Record<string, { title: string; body: string }> = {
-  owner_changed: { title: '【线索负责人提醒】', body: '你有1条新分配的线索。\n请登录线索系统查看详情。' },
   scheduled_follow_overdue: { title: '【到期跟进提醒】', body: '你今天有待跟进的线索。\n请登录线索系统查看详情并安排处理。' },
   daily_report: { title: '【今日工作摘要】', body: '今日工作摘要已生成。\n请登录线索系统查看详情。' },
 };
 export function openClawTimeoutMs(config: NotificationConfig): number { return config.openclawGatewayTimeoutMs; }
 
 /**
- * The worker deliberately discards business snapshots here.  The loopback
- * Gateway receives only a fixed internal reminder and no lead/AI content.
+ * AI scheduler notifications remain fixed reminders. Owner-change content is
+ * generated as a sanitized immutable outbox snapshot and passed separately.
  */
 export function openClawMessage(eventType: string): NotificationChannelMessage {
   const template = templates[eventType];
@@ -41,7 +40,9 @@ export class OpenClawNotificationChannel implements NotificationChannel {
     }
     if (recipient.userId !== this.config.openclawPilotUserId) return { status: 'permanent_failure', errorCode: 'OPENCLAW_RECIPIENT_NOT_ALLOWED' };
     const deliveryId = message.pilotControl?.deliveryRequestId ?? randomUUID();
-    const body = JSON.stringify({ deliveryId, idempotencyKey, recipientUserId: recipient.userId, title: message.title, body: message.body, detailUrl: message.detailPath, ...(message.pilotControl ? { pilotControl: message.pilotControl } : {}) });
+    // OpenClaw Gateway accepts only the fixed no-token H5 entry URL. Mock
+    // retains the relative snapshot detailPath through its separate channel.
+    const body = JSON.stringify({ deliveryId, idempotencyKey, recipientUserId: recipient.userId, title: message.title, body: message.body, detailUrl: DETAIL_URL, ...(message.pilotControl ? { pilotControl: message.pilotControl } : {}) });
     const timestamp = String(Date.now()); const nonce = freshNonce();
     const canonical = canonicalRequest('POST', '/deliveries', timestamp, nonce, sha256(body));
     const controller = new AbortController();

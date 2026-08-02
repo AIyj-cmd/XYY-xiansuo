@@ -1,0 +1,6 @@
+{
+  "openclaw_version": "2026.7.1-2",
+  "channel_plugin": "@tencent-weixin/openclaw-weixin@2.4.6",
+  "source_contract": "process-message records inbound session and context token before dispatch; before_agent_reply runs before model dispatch",
+  "ordered_boundaries": ["recordInboundSession", "setContextToken", "dispatch", "before_agent_reply", "model_call"]
+}

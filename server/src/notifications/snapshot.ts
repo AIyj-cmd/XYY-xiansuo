@@ -2,7 +2,9 @@ import { z } from 'zod';
 import { dailyReportOutputSchema, scheduledFollowOutputSchema } from '../ai/output-schemas.js';
 const path = z.string().regex(/^\/pages\/[A-Za-z0-9_/?=&-]+$/);
 const ids = z.array(z.number().int().positive()).max(10).refine((value) => new Set(value).size === value.length, 'subject_lead_ids 不能重复');
-const ownerSnapshot = z.object({ title: z.string().min(1).max(100), detail_path: path }).strict();
+// Gateway accepts a 500 UTF-16-code-unit owner_changed body. Individual detail
+// fields remain bounded separately by code point when the snapshot is created.
+const ownerSnapshot = z.object({ title: z.literal('【新线索已分配】'), body: z.string().min(1).max(500), detail_path: path }).strict();
 export const scheduledSnapshotSchema = scheduledFollowOutputSchema.extend({ schema_version: z.literal(1), subject_lead_ids: ids, business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), fallback_used: z.boolean(), detail_path: z.literal('/pages/notify/index') }).strict();
 export const dailySnapshotSchema = dailyReportOutputSchema.extend({ schema_version: z.literal(1), metrics: z.object({ today_new_count: z.number().int().nonnegative(), today_follow_up_count: z.number().int().nonnegative(), overdue_count: z.number().int().nonnegative(), next_day_count: z.number().int().nonnegative() }).strict(), subject_lead_ids: ids, business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), scope: z.enum(['self','team']), fallback_used: z.boolean(), detail_path: z.literal('/pages/notify/index') }).strict();
 export type NotificationSnapshot = z.infer<typeof ownerSnapshot> | z.infer<typeof scheduledSnapshotSchema> | z.infer<typeof dailySnapshotSchema>;
@@ -14,6 +16,7 @@ export function parseNotificationSnapshot(eventType: string, json: string): Noti
 export type NotificationMessage = { title: string; body?: string; detailPath: string };
 export function toChannelMessage(eventType: string, snapshot: NotificationSnapshot): NotificationMessage {
   let body: string | undefined;
+  if (eventType === 'owner_changed') body = (snapshot as z.infer<typeof ownerSnapshot>).body;
   if (eventType === 'scheduled_follow_overdue') { const s = snapshot as z.infer<typeof scheduledSnapshotSchema>; body = [s.summary, ...s.items.map((item) => `• ${item.reason} ${item.suggested_focus}`), s.closing].join('\n'); }
   if (eventType === 'daily_report') { const s = snapshot as z.infer<typeof dailySnapshotSchema>; body = [s.summary, `新增 ${s.metrics.today_new_count}｜跟进 ${s.metrics.today_follow_up_count}｜逾期 ${s.metrics.overdue_count}｜次日 ${s.metrics.next_day_count}`, ...s.highlights, ...s.actions, s.closing].join('\n'); }
   if (body && body.length > 2000) body = body.slice(0, 2000);

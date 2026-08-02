@@ -6,9 +6,10 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { resolveNotificationConfig } from '../src/config.js';
 import { configureConnection, MIGRATIONS, runMigrations } from '../src/db.js';
-import { openClawMessage, openClawTimeoutMs } from '../src/services/openclaw-notification-channel.js';
+import { OpenClawNotificationChannel, openClawMessage, openClawTimeoutMs } from '../src/services/openclaw-notification-channel.js';
 import { mapChannelResult, workerAbortTimeoutMs } from '../src/notification-worker.js';
-import { claimNotificationTasks, finishNotificationTask } from '../src/services/notification.js';
+import { parseNotificationSnapshot } from '../src/notifications/snapshot.js';
+import { claimNotificationTasks, finishNotificationTask, ownerChangedMessageSnapshot } from '../src/services/notification.js';
 
 function db(): DatabaseSync { const database = new DatabaseSync(':memory:'); configureConnection(database); return database; }
 function insertTask(database: DatabaseSync, channel: 'mock' | 'openclaw', status = 'pending'): Record<string, unknown> {
@@ -84,13 +85,62 @@ test('OpenClaw maps every permanent outcome to a non-retryable failure and prese
   assert.deepEqual(mapChannelResult(task, { status: 'deduplicated' }), { kind: 'permanent', code: 'OPENCLAW_DEDUPLICATED_RECEIPT_MISSING', retryAllowed: 0 });
 });
 
-test('OpenClaw text templates contain no business snapshot or credential fields', () => {
-  for (const event of ['owner_changed', 'scheduled_follow_overdue', 'daily_report']) {
+test('owner_changed outbox snapshot uses fixed field order, masks phone and removes unsafe optional values', () => {
+  const snapshot = ownerChangedMessageSnapshot({
+    company_name: '星际\n企业'.repeat(20), contact_name: '王小明', phone: '+86 138-1234-5678', source: '官网\u0000表单',
+    demand_note: '需要服务\n联系电话 13912345678；微信号：wxid_private', next_follow_at: '2026-08-02 09:30:45',
+  });
+  assert.deepEqual(snapshot, {
+    title: '【新线索已分配】',
+    body: `客户：${Array.from('星际 企业'.repeat(20)).slice(0, 30).join('')}\n联系人：王小明\n联系方式：138****5678\n来源：官网 表单\n跟进要求：2026-08-02 09:30前\n请登录线索系统查看完整资料。`,
+    detail_path: '/pages/leads/detail',
+  });
+  const minimal = ownerChangedMessageSnapshot({ company_name: null, contact_name: ' \n ', phone: null, source: '微信咨询', demand_note: null, next_follow_at: null });
+  assert.equal(minimal.body, '来源：微信咨询\n跟进要求：请尽快联系\n请登录线索系统查看完整资料。');
+  assert.equal(ownerChangedMessageSnapshot({ company_name: null, contact_name: null, phone: null, source: '微信咨询', demand_note: null, next_follow_at: null }).body, minimal.body);
+  assert.match(ownerChangedMessageSnapshot({ company_name: null, contact_name: null, phone: null, source: '微信咨询', demand_note: null, next_follow_at: '2026-08-03' }).body, /跟进要求：2026-08-03前/);
+  for (const identifier of ['微信：abc123', '微信号：abc123', '微信ID：abc123', 'wxid_private', 'wechat: abc123', 'weixin：abc123', 'vx: abc123', 'v信：abc123']) {
+    const sanitized = ownerChangedMessageSnapshot({ company_name: identifier, contact_name: null, phone: null, source: '微信咨询', demand_note: identifier, next_follow_at: null });
+    assert.equal(sanitized.body.includes(identifier), false);
+  }
+  const phoneSanitized = ownerChangedMessageSnapshot({ company_name: '客户 +86 138 1234 5678', contact_name: null, phone: null, source: '微信咨询', demand_note: '请联系 139-0000-0000', next_follow_at: null });
+  assert.match(phoneSanitized.body, /138\*\*\*\*5678/); assert.match(phoneSanitized.body, /139\*\*\*\*0000/);
+  const unicodeSanitized = ownerChangedMessageSnapshot({ company_name: '星际\u202E企业', contact_name: '王\u200B小明', phone: null, source: '官网\u202E表单', demand_note: '需要\u200B服务', next_follow_at: null });
+  assert.equal(unicodeSanitized.body, '客户：星际 企业\n联系人：王 小明\n来源：官网 表单\n需求：需要 服务\n跟进要求：请尽快联系\n请登录线索系统查看完整资料。');
+  assert.throws(() => ownerChangedMessageSnapshot({ company_name: null, contact_name: null, phone: null, source: '微信：abc123', demand_note: null, next_follow_at: null }), /OWNER_CHANGED_SOURCE_INVALID/);
+});
+
+test('owner_changed snapshot accepts a legal 80-code-point astral demand within the Gateway body limit', () => {
+  const message = ownerChangedMessageSnapshot({
+    company_name: '😀'.repeat(30), contact_name: '😀'.repeat(20), phone: '13812345678', source: '😀'.repeat(20), demand_note: '😀'.repeat(80), next_follow_at: '2026-08-02 09:30:00',
+  });
+  assert.ok(message.body.length > 256);
+  assert.ok(message.body.length <= 500);
+  assert.equal(Array.from(message.body.match(/^需求：(.*)$/m)?.[1] ?? '').length, 80);
+  assert.doesNotThrow(() => parseNotificationSnapshot('owner_changed', JSON.stringify(message)));
+});
+
+test('OpenClaw fixed AI templates contain no business snapshot or credential fields', () => {
+  for (const event of ['scheduled_follow_overdue', 'daily_report']) {
     const message = openClawMessage(event); const visible = `${message.title}\n${message.body}\n${message.detailPath}`;
     assert.equal(message.detailPath, 'https://xs.tomatopia.top/');
     assert.equal(/客户|联系人|手机号|微信号|需求正文|跟进正文|prompt|jwt|token|api[_ -]?key/i.test(visible), false);
   }
+  assert.throws(() => openClawMessage('owner_changed'), /事件未实现/);
   assert.throws(() => openClawMessage('weekly_report'), /事件未实现/);
+});
+
+test('OpenClaw Channel maps owner_changed relative detailPath to the fixed no-token H5 URL before Gateway delivery', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'xiansuo-openclaw-detail-url-')); const secret = path.join(directory, 'gateway.secret'); const originalFetch = globalThis.fetch;
+  try {
+    writeFileSync(secret, 's'.repeat(40)); chmodSync(secret, 0o600);
+    const config = resolveNotificationConfig({ OPENCLAW_CHANNEL_ENABLED: 'true', OPENCLAW_PILOT_USER_ID: '7', OPENCLAW_GATEWAY_URL: 'http://127.0.0.1:38115', OPENCLAW_GATEWAY_SECRET_FILE: secret }, { requireOpenClawSecret: true });
+    let request: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_url, init) => { request = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ data: { status: 'sent', providerMessageId: 'gateway-receipt' } }), { headers: { 'content-type': 'application/json' } }); }) as typeof fetch;
+    const result = await new OpenClawNotificationChannel(config).send({ userId: 7 }, { title: '【新线索已分配】', body: '来源：官网\n跟进要求：请尽快联系\n请登录线索系统查看完整资料。', detailPath: '/pages/leads/detail' }, 'owner-detail-url-key', new AbortController().signal);
+    assert.deepEqual(result, { status: 'sent', providerMessageId: 'gateway-receipt' });
+    assert.equal(request?.detailUrl, 'https://xs.tomatopia.top/');
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('OpenClaw owns its configured gateway timeout while Mock keeps the legacy Worker timeout', () => {

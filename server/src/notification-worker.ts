@@ -62,7 +62,10 @@ async function processTask(db: ReturnType<typeof getDb>, channels: { mock: MockN
       const receipt = await channels.mock.send({ userId: task.recipient_user_id }, toChannelMessage(task.event_type, snapshot), task.delivery_idempotency_key, controller.signal);
       result = { status: 'sent', providerMessageId: receipt.providerMessageId };
     } else if (task.channel === 'openclaw' && channels.openclaw) {
-      result = await channels.openclaw.send({ userId: task.recipient_user_id }, controlledSyntheticMessage ?? openClawMessage(task.event_type), task.delivery_idempotency_key, controller.signal);
+      const ownerMessage = task.event_type === 'owner_changed'
+        ? toChannelMessage(task.event_type, parseNotificationSnapshot(task.event_type, task.message_snapshot_json))
+        : undefined;
+      result = await channels.openclaw.send({ userId: task.recipient_user_id }, controlledSyntheticMessage ?? ownerMessage ?? openClawMessage(task.event_type), task.delivery_idempotency_key, controller.signal);
     } else throw Object.assign(new Error('渠道任务不允许领取'), { code: 'CHANNEL_NOT_ALLOWED', permanent: true });
     const outcome = mapChannelResult(task as { channel: string; delivery_idempotency_key: string }, result);
     const updated = finishNotificationTask(db, task, outcome, nowDatetime());

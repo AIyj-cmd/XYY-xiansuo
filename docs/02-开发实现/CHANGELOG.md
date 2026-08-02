@@ -1,5 +1,7 @@
 # 变更日志
 
+> OpenClaw 负责人详情提醒与入站静默：负责人变更在同一业务事务内读取 `leads` 的 `company_name`、`contact_name`、`phone`、`source`、`demand_note`、`next_follow_at`，生成不可变的清洗快照；手机号仅保留 `138****1234` 形式，Unicode `Cc`/`Cf`/`Zl`/`Zp`（含换行、零宽与双向控制字符）被归一为空格。`微信：`、微信号/ID、`wxid`、以及带分隔符的 wechat/weixin/vx/v信 标识和凭证标记不会进入可选字段，但合法来源 `微信咨询` 保留；联系人、手机号和跟进时间缺失时分别省略、省略和降级为“请尽快联系”。Gateway 除模板结构换行外拒绝这些 Unicode 类别，并以同一规则拒绝任意字段中的未脱敏大陆手机号和标识泄露，仅接受标题 `【新线索已分配】`、严格字段顺序和固定尾句。新增无网络、无存储的官方 `before_agent_reply` 本地插件，只对 `openclaw-weixin` 静默返回 `{handled:true}`，不调用模型或回复；受控安装使用 `plugins install --link` 后的显式 `config set` 和 runtime inspect，默认未安装、未启用且未修改仓库外会话配置。
+
 > OpenClaw 轻量级多人内部通知：Gateway 新增启动时一次性加载的仓库外 `OPENCLAW_RECIPIENT_MAP_FILE`。文件必须为精确 `0600` 的严格 JSON 对象（最多 50 个规范正整数系统用户 ID 键，值为 `@im.wechat` target 和 boolean enabled）；映射模式优先，未绑定返回 `OPENCLAW_RECIPIENT_NOT_BOUND`、禁用返回 `OPENCLAW_RECIPIENT_DISABLED`，均不调用 Adapter。旧单接收人配置继续兼容并保留 `OPENCLAW_RECIPIENT_NOT_ALLOWED`，且只输出不含用户或接收人标识的弃用警告；未修改业务数据库、Worker、H5 或真实发送边界。
 
 > 最终闭环（2026-08-01）：legacy import 会登记 generation 1 的 `result_unknown` attempt，人工确认只能写入一个终态；新 synthetic generation 必须使用新隔离 DB、新 key 和 sealed control manifest。私有 key 仅从 `0600` 文件或 stdin 读取，CLI 拒绝 argv key 和未知/重复/缺值参数。最终回归为 Gateway 44/44、Server 138/138、H5 构建通过；本轮未发送消息，仍禁止真实重跑。

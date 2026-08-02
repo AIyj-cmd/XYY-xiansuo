@@ -18,7 +18,8 @@ import { requiredIdempotencyKey } from '../src/cli/arguments.js'
 import { runLogin } from '../src/cli/login.js'
 import { publicPrereq } from '../src/cli/prereq-check.js'
 import { publicSession } from '../src/cli/official-session-status.js'
-import { SYNTHETIC_MESSAGE } from '../src/message-policy.js'
+import { SYNTHETIC_MESSAGE, assertMessagePolicy } from '../src/message-policy.js'
+import noReplyPlugin from '../openclaw-plugins/xiansuo-no-reply/index.mjs'
 
 function directory(): string { const value = mkdtempSync(join(tmpdir(), 'xiansuo-ilink-')); chmodSync(value, 0o700); return value }
 function secretFile(dir: string): string { const file = join(dir, 'gateway.secret'); writeFileSync(file, 'a'.repeat(48), { mode: 0o600 }); chmodSync(file, 0o600); return file }
@@ -32,6 +33,7 @@ function adapterRequest() { return { recipientExternalId: 'test-recipient-1', id
 function result(stdout = '', exitCode = 0): CommandResult { return { stdout, stderr: '', exitCode } }
 const openClawMessageSendSuccessFixture = readFileSync(new URL('./fixtures/openclaw-2026.7.1-message-send-success.json', import.meta.url), 'utf8').trim()
 const openClawUnknownTargetFixture = readFileSync(new URL('./fixtures/openclaw-2026.7.1-unknown-target.stderr.txt', import.meta.url), 'utf8')
+const openClawInboundOrderFixture = JSON.parse(readFileSync(new URL('./fixtures/openclaw-2026.7.1-2-inbound-order.json', import.meta.url), 'utf8')) as { ordered_boundaries: string[] }
 function runner(responses: Record<string, CommandResult>, interactiveExit = 0): OfficialCommandRunner {
   const key = (args: readonly string[]) => args.join(' ')
   return { run: async (_command, args) => responses[key(args)] ?? result('', 1), interactive: async () => interactiveExit }
@@ -49,6 +51,78 @@ function currentChannelStatus(account: Record<string, unknown> = {}, channel = '
 test('HMAC canonical signature remains deterministic', () => {
   const canonical = canonicalRequest('POST', '/deliveries', '1700000000000', freshNonce(), sha256('body'))
   assert.equal(sign('a'.repeat(48), canonical).length, 64)
+})
+
+test('owner_changed policy accepts only the generated fixed detail structure', () => {
+  const accepted = {
+    ...request(), title: '【新线索已分配】', body: '客户：星际企业\n联系人：王小明\n联系方式：138****1234\n来源：官网\n需求：需要采购服务\n跟进要求：2026-08-02 09:30前\n请登录线索系统查看完整资料。'
+  }
+  assert.doesNotThrow(() => assertMessagePolicy(accepted))
+  assert.doesNotThrow(() => assertMessagePolicy({ ...accepted, body: accepted.body.replace('客户：星际企业\n', '').replace('联系方式：138****1234\n', '').replace('需求：需要采购服务\n', '').replace('2026-08-02 09:30前', '请尽快联系') }))
+  assert.doesNotThrow(() => assertMessagePolicy({ ...accepted, body: '来源：微信咨询\n跟进要求：请尽快联系\n请登录线索系统查看完整资料。' }))
+  assert.doesNotThrow(() => assertMessagePolicy({ ...accepted, body: accepted.body.replace('2026-08-02 09:30前', '2026-08-02前') }))
+  assert.doesNotThrow(() => assertMessagePolicy({ ...accepted, body: accepted.body.replace('2026-08-02 09:30前', '2028-02-29前') }))
+  for (const body of [
+    accepted.body.replace('联系人：王小明\n', '来源：官网\n联系人：王小明\n'),
+    accepted.body.replace('138****1234', '13812341234'),
+    accepted.body.replace('需求：需要采购服务\n', '需求：一\n需求：二\n'),
+    accepted.body.replace('请登录线索系统查看完整资料。', '额外字段：x\n请登录线索系统查看完整资料。'),
+    accepted.body.replace('需求：需要采购服务', '需求：wxid_private'),
+    accepted.body.replace('需求：需要采购服务', '需求：微信：abc123'),
+    accepted.body.replace('需求：需要采购服务', '需求：wechat: abc123'),
+    accepted.body.replace('客户：星际企业', '客户：+86 138 1234 5678'),
+    accepted.body.replace('来源：官网', '来源：139-0000-0000'),
+    accepted.body.replace('需求：需要采购服务', '需求：请联系13812345678'),
+    accepted.body.replace('需求：需要采购服务', `需求：${'😀'.repeat(81)}`),
+    accepted.body.replace('2026-08-02 09:30前', '2026-08-02 29:30前'),
+    accepted.body.replace('2026-08-02 09:30前', '2026-08-02 00:00:00前'),
+    accepted.body.replace('2026-08-02 09:30前', '2026-99-99前'),
+    accepted.body.replace('2026-08-02 09:30前', '2026-02-30 09:30前'),
+    accepted.body.replace('2026-08-02 09:30前', '2027-02-29前'),
+    accepted.body.replace('王小明', '王\n来源：伪造'),
+    accepted.body.replace('星际企业', '星际\u202E企业'),
+    accepted.body.replace('需要采购服务', '需要\u200B采购服务'),
+  ]) assert.throws(() => assertMessagePolicy({ ...accepted, body }), /ILINK_MESSAGE_POLICY_REJECTED/)
+  assert.throws(() => assertMessagePolicy({ ...accepted, title: '【其他标题】' }), /ILINK_MESSAGE_POLICY_REJECTED/)
+})
+
+test('accepted owner_changed detail reaches the Fake Adapter exactly once', async () => {
+  const dir = directory(); try {
+    const state = new StateStore(dir); let calls = 0
+    const adapter = { name: 'fake' as const, health: async () => ({ status: 'healthy' as const }), send: async () => { calls += 1; return { status: 'sent' as const, providerMessageId: 'owner-detail-receipt' } } }
+    const service = new GatewayService(config(dir), adapter, new IdempotencyStore(state))
+    const result = await service.deliver({ ...request(), title: '【新线索已分配】', body: '联系人：王小明\n来源：官网\n跟进要求：请尽快联系\n请登录线索系统查看完整资料。' })
+    assert.deepEqual(result, { status: 'sent', providerMessageId: 'owner-detail-receipt' }); assert.equal(calls, 1)
+    state.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('OpenClaw WeChat no-reply hook handles all inbound text before any provider reply while other channels pass', () => {
+  let registered: ((event: unknown, context: { messageProvider?: string }) => unknown) | undefined
+  let providerCalls = 0; let replyCount = 0
+  const sessions = new Map<string, { target: string }>()
+  noReplyPlugin.register({ on: (name: string, handler: typeof registered) => { assert.equal(name, 'before_agent_reply'); registered = handler } })
+  assert.ok(registered)
+  const runInbound = (messageProvider: string, inboundBody: string) => {
+    // The fake channel has already preserved routing state before the Hook runs.
+    const sessionId = `session:${messageProvider}:${sessions.size + 1}`; const target = `target:${sessions.size + 1}`
+    sessions.set(sessionId, { target })
+    const event = new Proxy({ cleanedBody: inboundBody }, { get() { throw new Error('Hook must not read inbound body') } })
+    const decision = registered!(event, { messageProvider }) as { handled?: boolean; reply?: unknown } | undefined
+    if (!decision?.handled) { providerCalls += 1; replyCount += 1 }
+    return { decision, sessionId, target }
+  }
+  for (const message of ['已收到', '绑定 XYY-12', '普通文字']) {
+    const inbound = runInbound('openclaw-weixin', message)
+    assert.deepEqual(inbound.decision, { handled: true, reason: 'xiansuo_openclaw_weixin_inbound_disabled' })
+    assert.deepEqual(sessions.get(inbound.sessionId), { target: inbound.target })
+    assert.equal(providerCalls, 0); assert.equal(replyCount, 0)
+  }
+  const forwarded = runInbound('telegram', '普通文字')
+  assert.equal(forwarded.decision, undefined)
+  assert.deepEqual(sessions.get(forwarded.sessionId), { target: forwarded.target })
+  assert.equal(providerCalls, 1); assert.equal(replyCount, 1)
+  assert.deepEqual(openClawInboundOrderFixture.ordered_boundaries, ['recordInboundSession', 'setContextToken', 'dispatch', 'before_agent_reply', 'model_call'])
 })
 
 test('runtime prereq reports OpenClaw missing without running a real command', async () => {

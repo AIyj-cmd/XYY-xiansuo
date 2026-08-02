@@ -92,6 +92,53 @@ function isoPlusMinutes(now: string, minutes: number): string {
   return new Date(date.getTime() + minutes * 60_000).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace('T', ' ');
 }
 
+type OwnerChangedLead = { company_name: string | null; contact_name: string | null; phone: string | null; source: string; demand_note: string | null; next_follow_at: string | null };
+const ownerDetailForbidden = /(?:微信\s*(?:号|ID)|wxid[_-]?\S*|(?:\b(?:wechat|weixin|vx)\b|v信)\s*[:：]\s*\S+|微信\s*[:：]\s*\S+|\b(?:jwt|bearer|api[_ -]?key|token)\b)/i;
+// Normalize invisible/bidi controls as well as conventional line breaks before
+// owner detail fields are committed to the immutable outbox snapshot.
+const unsafeOwnerDetailUnicode = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+function truncateText(value: string, limit: number): string { return Array.from(value).slice(0, limit).join(''); }
+function redactEmbeddedPhones(value: string): string {
+  return value.replace(/(?<!\d)(?:\+?86[\s-]*)?(1[3-9]\d)[\s-]*(\d{4})[\s-]*(\d{4})(?!\d)/g, '$1****$3');
+}
+function cleanOwnerDetail(value: string | null | undefined, limit: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const cleaned = redactEmbeddedPhones(value.replace(unsafeOwnerDetailUnicode, ' ').replace(/\s+/g, ' ').trim());
+  if (!cleaned || ownerDetailForbidden.test(cleaned)) return undefined;
+  return truncateText(cleaned, limit);
+}
+function maskPhone(value: string | null): string | undefined {
+  if (!value) return undefined;
+  const digits = value.replace(/\D/g, '');
+  const mobile = digits.length === 13 && digits.startsWith('86') ? digits.slice(2) : digits;
+  return /^1\d{10}$/.test(mobile) ? `${mobile.slice(0, 3)}****${mobile.slice(-4)}` : undefined;
+}
+function safeFollowAt(value: string | null): string | undefined {
+  if (!value) return undefined;
+  const dateOnly = value.match(/^(\d{4}-\d{2}-\d{2})$/);
+  if (dateOnly) {
+    const parsed = new Date(`${dateOnly[1]}T00:00:00+08:00`);
+    if (!Number.isNaN(parsed.getTime()) && parsed.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false }).slice(0, 10) === dateOnly[1]) return `${dateOnly[1]}前`;
+    return undefined;
+  }
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})[ T]((?:[01]\d|2[0-3]):[0-5]\d)(?::[0-5]\d)?$/);
+  if (!match) return undefined;
+  const safe = `${match[1]} ${match[2]}`;
+  const parsed = new Date(`${safe.replace(' ', 'T')}:00+08:00`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false }).replace('T', ' ').slice(0, 16) !== safe) return undefined;
+  return `${safe}前`;
+}
+export function ownerChangedMessageSnapshot(lead: OwnerChangedLead): { title: '【新线索已分配】'; body: string; detail_path: string } {
+  const fields: string[] = [];
+  const company = cleanOwnerDetail(lead.company_name, 30); if (company) fields.push(`客户：${company}`);
+  const contact = cleanOwnerDetail(lead.contact_name, 20); if (contact) fields.push(`联系人：${contact}`);
+  const phone = maskPhone(lead.phone); if (phone) fields.push(`联系方式：${phone}`);
+  const source = cleanOwnerDetail(lead.source, 20); if (!source) throw new Error('OWNER_CHANGED_SOURCE_INVALID'); else fields.push(`来源：${source}`);
+  const demand = cleanOwnerDetail(lead.demand_note, 80); if (demand) fields.push(`需求：${demand}`);
+  fields.push(`跟进要求：${safeFollowAt(lead.next_follow_at) ?? '请尽快联系'}`);
+  return { title: '【新线索已分配】', body: [...fields, '请登录线索系统查看完整资料。'].join('\n'), detail_path: '/pages/leads/detail' };
+}
+
 /** 已处于负责人事务内调用；任何写入失败必须冒泡，由调用方回滚。 */
 export function captureOwnerChanged(database: DatabaseSync, event: OwnerChangedEvent): void {
   const config = resolveNotificationConfig();
@@ -110,6 +157,9 @@ export function captureOwnerChanged(database: DatabaseSync, event: OwnerChangedE
   const rawChannels = JSON.parse(rule.channel_order_json) as SupportedNotificationChannel[];
   const channel = rawChannels.length === 1 ? rawChannels[0] : undefined;
   const recipient = database.prepare('SELECT id, is_active FROM users WHERE id = ?').get(event.newOwnerId) as { id: number; is_active: number } | undefined;
+  const lead = database.prepare('SELECT company_name,contact_name,phone,source,demand_note,next_follow_at FROM leads WHERE id=? AND is_deleted=0').get(event.leadId) as OwnerChangedLead | undefined;
+  if (!lead) throw new Error('线索不存在，拒绝创建负责人通知');
+  const messageSnapshot = ownerChangedMessageSnapshot(lead);
   const canonical = `v1|owner_changed|operation_id=${event.operationId}|lead_id=${event.leadId}|new_owner_id=${event.newOwnerId}|recipient_user_id=${event.newOwnerId}`;
   const dedupeKey = hash(canonical);
   const deliveryKey = hash(`v1|channel=${channel ?? 'none'}|event=${dedupeKey}`);
@@ -128,7 +178,7 @@ export function captureOwnerChanged(database: DatabaseSync, event: OwnerChangedE
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       'owner_changed', event.source, event.operationId, 'lead', event.leadId, event.leadId, event.actorUserId, event.oldOwnerId, event.newOwnerId, event.newOwnerId, now,
       dedupeKey, deliveryKey, rule.version, JSON.stringify({ enabled: Boolean(rule.enabled), config: ruleConfig }), rule.channel_order_json, status === 'pending' ? channel! : null,
-      JSON.stringify({ title: '负责人已变更', detail_path: `/pages/leads/detail?id=${event.leadId}` }), status, channel === 'openclaw' ? config.openclawMaxAttempts : ruleConfig.max_attempts, availableAt,
+      JSON.stringify(messageSnapshot), status, channel === 'openclaw' ? config.openclawMaxAttempts : ruleConfig.max_attempts, availableAt,
       suppression, terminalAt, terminalAt ? isoPlusMinutes(terminalAt, 180 * 24 * 60) : null, isoPlusMinutes(now, ruleConfig.ttl_minutes),
     );
     console.log(JSON.stringify({ event: status === 'suppressed' ? 'notification.task.suppressed' : 'notification.task.created', dedupe_key: dedupeKey }));
