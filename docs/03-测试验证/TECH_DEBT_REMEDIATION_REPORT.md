@@ -196,3 +196,15 @@
 - 安装仍提示 deprecated/allow-scripts 待审项；本轮未擅自批准脚本或新增生产依赖。
 - 信息项 `I-1`：5 个基线既有 Server 测试文件使用 `mkdtempSync` 后没有自动删除目录，本次运行生成 7 个目录并已由验收阶段精确清理；这些测试文件相对 `b4a28c4` 无差异，不是本轮回归，也不影响运行制品，故不增加 P3，但后续独立测试卫生任务应补上 `after`/`finally` 清理。
 - **Hermes 适合在本稳定基线合并冻结后启动独立的只读审计与技术设计，不适合直接在当前整改分支开始实现、接入或部署。** 开始条件是单独明确业务目标、数据/权限/外部通信边界、退出条件和回滚方案；不得把 Hermes 与本轮验收捆绑上线。
+
+---
+
+## 发布分支合并独立验证（`c838ea8`，2026-08-03）
+
+**PASS：允许进入后续验收，不构成生产部署或外部渠道启用授权。** P1 = 0，P2 = 0，P3 = 0；`R-1` 仍为未修复的 Vite `1 high`，不得记为已修复。
+
+- 起止工作区均干净；`c838ea8` 是以 `b4a28c4`、`b15cc6a` 为双父的 `--no-ff` 合并，整改链 `070223b` 至 `b15cc6a` 完整保留。相对 `b4a28c4` 恰 17 个批准文件；服务号提交 `51c1e3d`/`a9da20f`、多人归档 `20f4e5e` 均非 HEAD 祖先，且 Worker、Gateway、认证、通知、迁移、`server/src/db.ts`、部署和脚本无差异。
+- `server/src/db.ts` 基线/HEAD SHA-256 均为 `903767a7daaa99877cba85d4ee13ef0ec4e1480814c2584a0b8cb96fc666ba19`；001–007 与 checksum 未变，Server 迁移矩阵测试通过。`server/data` 的 8 个现存文件 SHA-256 前后一致。
+- 实测：Server `npm ci && npm run build && npm test` 为 **146/146**，生产审计 0 漏洞；Gateway 同流程为 **53/53**，生产审计 0 漏洞；H5 `npm ci && npm run build:h5 && npm run test:h5 && npm run test:e2e` 通过，Playwright **8/8**（深链、admin/member、401/403、负责人变更、公海关闭）。
+- H5 普通 `npm audit --omit=dev` 如预期报 **1 high**（退出 1）；临时 critical 门禁退出 0 且仍输出同一 high。`git diff --check b4a28c4..HEAD` 与工作区检查均通过。
+- 本次未启动 OpenClaw、DeepSeek、AI Scheduler、微信或生产 DB；进程检查仅见测试开始前已存在的本机 DeepSeek/litellm。测试产生的安装/构建产物均被忽略；唯一受控变更为本报告本节。
