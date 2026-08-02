@@ -1,11 +1,11 @@
-# 阶段一部署说明：安全与数据库基线
+# 当前版本部署手册
 
-> H5-only 后续策略说明：本文微信小程序构建步骤是阶段一时的历史记录，已被当前 H5-only 发布策略取代；之后仅构建 H5。
+日期：2026-08-02
+当前状态：仓库内离线收尾完成；本手册不授权任何生产操作。
 
-> OpenClaw 补充（2026-08-01）：`result_unknown` 人工闭环的代码与离线测试已通过，但不构成真实发送授权。OpenClaw、Gateway 和 Worker 默认保持关闭；新实况必须使用新隔离 DB、新 key、新 generation 并另行获得单条授权。Gateway audit ledger 必须在仓库外私有目录长期保留。
+当前运行范围仅为 `xiansuo-api`、`xiansuo-notification-worker`、专用 OpenClaw 和 `xiansuo-ilink-gateway`。API 与 Worker 的 PM2 cwd 分别只从仓库外 `XIANSUO_SERVER_DIR` 读取，Gateway 只从 `XIANSUO_ILINK_GATEWAY_DIR` 读取；模板不保存服务器目录。Nginx 模板中的域名、证书路径均为占位符。
 
-日期：2026-07-30
-当前状态：仅提供部署步骤，尚未执行生产部署。
+默认关闭：`DEEPSEEK_ENABLED`、AI Scheduler、AI 日报/到期汇总、`NOTIFICATION_CAPTURE_ENABLED`、`NOTIFICATION_WORKER_ENABLED`、`NOTIFICATION_MOCK_ENABLED`、`NOTIFICATION_SCHEDULER_ENABLED`、`OPENCLAW_CHANNEL_ENABLED` 和所有通知规则。不得将这些开关通过 API、环境默认值或 PM2 配置悄然打开。
 
 ## 1. 上线前硬门禁
 
@@ -18,7 +18,7 @@
    - 空库首次部署时设置至少 12 位 `ADMIN_INITIAL_PASSWORD`
    - 可选 `ADMIN_INITIAL_USERNAME`、`ADMIN_INITIAL_NAME`
 4. `.env` 权限设为 `600`，不得进入 Git、部署包、普通日志或前端产物。
-5. 使用 SQLite `.backup` 或 `scripts/backup.sh` 备份实际 `DB_PATH`；同时备份上传目录。校验备份文件可打开，并在隔离副本完成恢复演练。
+5. 使用 SQLite `.backup` 或 `scripts/backup.sh` 备份实际 `DB_PATH`；同时备份上传目录。校验备份文件可打开，并在隔离副本完成恢复演练。此步需要正式部署门禁授权。
 6. 先在生产数据库副本执行同一发布制品，确认迁移、记录数、索引、`integrity_check` 和 `foreign_key_check` 全部通过。
 
 ## 2. 推荐部署顺序
@@ -35,22 +35,36 @@
    npm test
    ```
 
-5. 构建前端并确认产物：
+5. 构建前端 H5 并确认产物：
 
    ```bash
    cd app
-   npm ci --legacy-peer-deps
+   npm ci
    npm run build:h5
-   npm run build:mp-weixin
    ```
 
-6. 加载受控生产环境变量，启动一次服务。启动顺序为连接数据库、启用 WAL/外键、运行迁移和检查、初始化空库管理员、注册并监听 HTTP。
-7. 检查标准日志中每个迁移版本都有：
+   Vite 只参与构建，不进入发布制品，也不得在生产机启动 `dev:h5`。当前固定工具链的 audit 告警主要针对开发服务器；另一个 DOM clobbering 条目只影响 `cjs`/`iife`/`umd` 输出，而本项目 H5 的入口为 `type="module"`。这不取消后续 uni-app/Vite 兼容升级任务，但不把静态 H5 发布误判为正在运行有漏洞的 Vite 服务。
+
+6. 建立仓库外私有运行目录：`.env`、Gateway Secret 文件、多人映射 JSON 文件均为精确 `0600`；Gateway state 与 OpenClaw state/config 父目录均为 `0700`。映射和 Secret 不得进入部署包、日志、PM2 配置或 Git。
+7. 若本版明确批准启用内部通知，安装依赖并以单实例依次启动：OpenClaw（仅人工登录/官方会话检查）→ `xiansuo-ilink-gateway` → `xiansuo-api` → `xiansuo-notification-worker`。API 会先连接数据库、启用 WAL/外键、运行迁移和检查，再监听 HTTP。Worker 最后启动，避免 Gateway 未就绪时领取任务。
+8. 配置 PM2 日志轮转（首次一次）：`pm2 install pm2-logrotate`，建议受控值为 `max_size=20M`、`retain=14`、`compress=true`、`dateFormat=YYYY-MM-DD_HH-mm-ss`；执行前仍需生产授权。不得将通知正文、target、Secret 或会话凭证写入日志。PM2 配置均为单实例并使用 `merge_logs`。
+9. 仅在上述进程停止且渠道关闭时，应用可按 API 单独启动；不得自动启动 `ecosystem.phase4.config.cjs` 的 AI Scheduler。
+10. 检查标准日志中每个迁移版本都有：
    - 首次执行：`result=applied`
    - 已执行且 checksum 匹配：`result=skipped`
    - 不得出现：`result=failed`
-8. 确认启动日志中的数据库路径为预期绝对路径，且没有密码、哈希、客户数据或 SQL 参数。
-9. 完成冒烟后再恢复流量和写入。
+11. 确认启动日志中的数据库路径为预期绝对路径，且没有密码、哈希、客户数据或 SQL 参数。
+12. 完成冒烟后再恢复流量和写入。
+
+## 内部通知的独立门禁
+
+OpenClaw 的安装、会话检查和入站静默插件只按 [运行手册](OPENCLAW_INTERNAL_NOTIFICATION_RUNBOOK.md) 的官方命令执行。多人映射变更后必须重启 Gateway；当前已冻结的业务 Worker 仍只允许 `OPENCLAW_PILOT_USER_ID` 这一名接收人，映射中的启用项必须与它一致，其他条目可保留为禁用的预配置。Gateway 构建后可仅离线运行 `npm run gateway:recipient-map-check`，它执行已编译的 `dist/cli/recipient-map-check.js`，只读取 `OPENCLAW_RECIPIENT_MAP_FILE` 并输出总数/启用数/停用数，不读取 Gateway Secret、不连接 OpenClaw/微信、也不输出用户 ID 或 target。每次新的真实微信发送仍须先取得单独授权，并明确接收人、消息类型、数量与是否使用生产数据。
+
+生产路径、备份和启动授权齐备后，OpenClaw 必须在注入同一组仓库外 `OPENCLAW_STATE_DIR`、`OPENCLAW_CONFIG_PATH` 的专用服务环境中运行官方前台入口 `openclaw gateway run --bind loopback`；不得使用 `--force`、`--allow-unconfigured`、`lan` 或公网监听。由所选系统服务管理器托管该前台进程，并用 `openclaw gateway status` 做只读检查。随后依次加载 `ecosystem.openclaw-gateway.config.cjs` 和 `ecosystem.phase3.config.cjs`；这些 PM2 模板会在 cwd 缺失或不是绝对路径时拒绝加载。仓库脚本只会更新 API，不会自动启动真实渠道进程。
+
+## 停止顺序
+
+先把 `OPENCLAW_CHANNEL_ENABLED=false` 和相关通知规则关闭，再停止 notification-worker、Gateway、OpenClaw，最后按维护需要停止 API。不得直接杀掉进程来跳过正在进行的可审计投递；不要删除会话、映射、Secret 或 Gateway state。
 
 ## 3. 上线后验证
 

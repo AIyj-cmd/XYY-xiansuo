@@ -529,3 +529,48 @@
 | `server/data` SHA-256 前后比较 | 一致；`app.db=8b8bc326…061d5f2`。|
 
 **修复后结论：P1=0、P2=0、P3=0，允许提交；本离线结论不构成真实微信发送授权。** 本轮未修改业务实现、迁移或数据库，未启动真实 OpenClaw/微信、DeepSeek、AI Scheduler 或生产服务。
+
+## 28. 当前版本离线收尾独立验证（2026-08-02）
+
+### 基线、计划与隔离
+
+- 测试开始基线为 `8db1f278adaa539028cea22a7565342f6d8fafc9`；开始时已有本次收尾实施改动，范围为 H5 锁文件、部署模板、Gateway 离线映射检查、迁移测试和交付文档。未恢复、覆盖或暂存这些实施改动。
+- 计划：在两个全新临时副本验证 H5 的普通安装与构建；完整回归 Server/Gateway；独立核验当前全部迁移 `001`–`007` 的 checksum、空库/重复执行、006 升级、冲突/失败回滚、完整性和默认规则；静态核验部署与同事绑定流程；核验离线映射检查不泄露 target；最后比较 `server/data`。
+- 未启动真实 OpenClaw、Gateway、Worker、AI Scheduler 或 DeepSeek；未调用微信、未访问生产数据库、未产生小程序构建产物。临时 SQLite 仅位于 `/tmp`，并在测试结束时删除。
+- `server/data` 目录聚合 SHA-256：测试前后均为 `ec00bd8eace280958d82e3cd012dc020b194767ad8d7c55137aa99c74b4e6a05`。
+
+### 执行结果
+
+| 范围 | 独立结果 |
+| --- | --- |
+| H5 可复现安装 | 两个全新临时副本均执行 `npm ci && npm run build:h5` 成功；根目录 `app` 再次执行同一命令成功。`app/package.json` 没有变更，未使用 `--force`、`--legacy-peer-deps`，也未构建小程序。|
+| Server 回归 | `cd server && npm ci && npm run build && npm test` 通过，`146/146`。|
+| Gateway 回归 | `cd poc/ilink-gateway && npm ci && npm run build && npm test` 通过，`52/52`。|
+| 当前迁移 | 独立临时 DB 顺序应用 `001`–`007`、再执行一次均通过；版本和 checksum 与 `MIGRATIONS` 完全相同，`integrity_check=ok`、`foreign_key_check=[]`、启用规则数为 `0`。Server 迁移测试另覆盖旧 006 DB 升级后通知历史保持、checksum 冲突阻断和故意失败迁移事务回滚。|
+| 迁移 checksum | `001 c10d4871…0e57a0`、`002 db94974c…12b0d9`、`003 e774d920…8f51704`、`004 61ab37ae…af47f75`、`005 8636bf27…1a6346`、`006 b6b27bc9…6603026a`、`007 c09175e8…1f5242da`。|
+| 映射检查 | 使用临时精确 `0600` 的虚构 `@im.wechat` 映射运行 CLI；仅输出 `SAFE` 与 recipients/enabled/disabled 三项聚合数，不输出 target、不读取 Secret，未连接 OpenClaw/微信。|
+| 部署静态检查 | `bash -n deploy/deploy.sh`、`bash -n deploy/setup.sh` 及四份 PM2 CJS `node --check` 均通过。模板只使用仓库外运行目录/占位符；Gateway 无 `DB_PATH`/DeepSeek，默认通知与 AI 开关为关闭；部署、停止/回滚、日志轮转及人工绑定清单均已覆盖。|
+| 差异检查 | `git diff --check` 通过；本测试阶段只新增本报告本节。|
+
+### 依赖审计与残余风险
+
+- `server` 与 `poc/ilink-gateway` 的 `npm audit --omit=dev` 均为 `0` vulnerabilities。
+- `app` 的普通 `npm audit` 报告 1 moderate（`@dcloudio/vite-plugin-uni`）和 1 high（直接 devDependency `vite@^5.2.8`）；`npm audit --omit=dev` 仍报告 Vite 相关 1 high。现有 H5 发布为静态产物、不会启动 Vite 开发服务器，且本轮未获准升级直接依赖，因此没有执行 `npm audit fix` 或依赖升级。
+- 该项是 **P2：需在后续获得直接依赖升级授权后处理**。在静态 H5 发布及开发服务器仅本机监听的当前边界下不影响本轮构建可复现性，但不满足“无未解决 P1/P2/P3”的无条件生产放行标准。
+
+### 结论
+
+- **P1=0，P2=1，P3=0；允许进入验收进行范围内文档与配置收口，但不建议无条件生产部署。**
+- 生产部署仍需用户集中提供生产路径、备份/恢复授权、维护窗口和回滚负责人；任何同事绑定、真实微信发送或生产进程启动仍需单独人工授权。
+
+### 验收部署收口增量复验（2026-08-02）
+
+- PM2：四份模板均通过 `node --check`；未设置或设为相对路径的 `XIANSUO_SERVER_DIR` / `XIANSUO_ILINK_GATEWAY_DIR` 均会在加载时拒绝，绝对临时路径才可得到对应 cwd。`deploy/.env.example` 的 `NODE_ENV=production`。
+- 脚本：`bash -n deploy/deploy.sh`、`bash -n deploy/setup.sh` 通过。部署包包含 Gateway 源码与锁文件、在服务器端构建并 `npm prune --omit=dev`，但脚本只 `startOrReload` API，明确不自动启动 Worker、Gateway 或 OpenClaw。
+- 生产裁剪 CLI：在全新 Gateway 临时副本执行 `npm ci`、build、`npm prune --omit=dev` 后，虚构精确 `0600` 映射的 `gateway:recipient-map-check` 仍成功，只输出聚合计数；不含 target、未连接网络/微信。
+- Nginx：以虚构安全域名离线渲染模板后，所有域名和证书占位符均被替换为对应 Let's Encrypt 路径；未调用 `nginx reload` 或读取实际配置。
+- OpenClaw：启动说明使用官方前台 `gateway run --bind loopback` 和只读 status，明确禁止公网/lan/tailnet/custom 绑定及强制启动；日志与回滚文档保留关闭渠道、停止顺序和仓库外敏感状态边界。
+- Vite audit 复判：`vite@5.2.8` 的 audit 告警仍存在，但实际 H5 为 `type="module"` 静态制品，`vite.config.ts` 把开发服务限制为 `127.0.0.1`、关闭 CORS，生产不会运行 Vite。该告警保留为后续 uni-app/Vite 兼容升级门禁，不构成当前静态 H5 运行的未解决 P2。
+- 增量复验后 `git diff --check` 通过，`server/data` 聚合 SHA-256 仍为 `ec00bd8eace280958d82e3cd012dc020b194767ad8d7c55137aa99c74b4e6a05`。
+
+**最终测试结论：P1=0、P2=0、P3=0；允许进入本地提交与验收收口。** 正式部署仍需生产路径/备份/维护窗口/回滚负责人以及单独的进程或真实消息授权。

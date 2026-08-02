@@ -1,9 +1,9 @@
-# 阶段一回滚计划：安全与数据库基线
+# 当前版本回滚手册
 
-日期：2026-07-30
+日期：2026-08-02
 原则：先停写、保全数据和证据，再按故障类型回退；不得手工篡改 `schema_migrations` 绕过失败。
 
-OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已烧毁 key。已消费授权的不确定结果必须保持 `result_unknown`，不自动重试；回滚后真实渠道保持关闭。
+OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已烧毁 key。已消费授权的不确定结果必须保持 `result_unknown`，不自动重试；回滚后真实渠道保持关闭。停止顺序固定为：先关闭规则和 `OPENCLAW_CHANNEL_ENABLED`，再停止 notification-worker、Gateway、OpenClaw，最后按需要停止 API；禁止清理仓库外 Secret、映射或会话目录作为“回滚”。
 
 ## 1. 回滚准备
 
@@ -47,6 +47,8 @@ OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已�
 ## 4. 配置回滚
 
 - 恢复上一份受控 `.env`，但继续要求绝对 `DB_PATH`、至少 32 字节 `JWT_SECRET` 和生产空库安全初始密码。
+- 恢复上一份受批准的 PM2/Nginx 模板时，仍必须使用仓库外绝对 cwd；不得为让旧模板启动而恢复隐式工作目录、占位域名或仓库内 Secret/映射/会话路径。
+- 若仅 Gateway 或 OpenClaw 故障，先关闭 OpenClaw 通知规则与 Worker，回退 Gateway 制品和配置后仅做离线健康/映射检查；未取得新的真实发送授权时不用微信消息作回滚冒烟。
 - 若 JWT secret 被错误暴露，立即轮换；现有 token 将失效，需要通知用户重新登录。
 - 不恢复固定默认管理员密码，不关闭实时角色查询，不关闭 SQLite 外键。
 

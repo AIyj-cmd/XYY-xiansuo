@@ -20,6 +20,7 @@
 6. API、AI Scheduler、DeepSeek、Mock、其他 Worker 和其他队列写入来源均停止；Gateway/Worker 必须为单实例。
 7. 记录隔离数据库、Gateway 状态库和 `server/data` 的安全哈希；不得输出客户数据、接收人标识或 Secret。
 8. 如需启用入站静默，先停止专用 daemon，备份仓库外 `OPENCLAW_CONFIG_PATH` 并保持 `0600`；仅按 `poc/ilink-gateway/openclaw-plugins/xiansuo-no-reply/README.md` 执行受支持的 `openclaw plugins install --link <绝对路径>`（不得加 `--force`），随后依次执行 `config set plugins.entries.xiansuo-openclaw-no-reply.enabled true` 和 `config set plugins.entries.xiansuo-openclaw-no-reply.hooks.allowConversationAccess true`。只用官方 `plugins inspect --runtime --json` 验证注册：必须有 `hookCount=1`、`typedHooks` 中的 `before_agent_reply` 且没有 diagnostics；不得以真实微信消息、Provider 或业务 API 验证。默认不安装且本轮未修改仓库外配置。
+9. 取得正式启动授权后，在只注入同一组仓库外 `OPENCLAW_STATE_DIR`/`OPENCLAW_CONFIG_PATH` 的专用服务环境中执行官方前台入口 `openclaw gateway run --bind loopback`，再用 `openclaw gateway status` 只读核对。禁止 `--force`、`--allow-unconfigured`、`lan`/`tailnet`/`custom` 绑定和公网暴露；本手册不授权执行该命令。
 
 ## 首次真实 Pilot 的隔离 synthetic 门禁
 

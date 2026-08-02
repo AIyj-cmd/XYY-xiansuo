@@ -41,7 +41,7 @@ npm run dev        # 开发模式（热重载）
 
 ```bash
 cd app
-npm install --legacy-peer-deps
+npm ci
 npm run dev:h5     # 开发服务器（默认 5173 端口）
 ```
 
@@ -92,7 +92,7 @@ cd server && npm run start
 
 ## 生产部署（Nginx HTTPS 反代）
 
-首次部署前，将 `deploy/.env.example` 复制为服务器上的 `/opt/xiansuo/.env`，填写至少 32 字节的 `JWT_SECRET`，设置生产数据库的绝对 `DB_PATH`，并将权限设为 `600`。首次部署到空数据库还必须设置至少 12 位的 `ADMIN_INITIAL_PASSWORD`。密钥文件只保留在服务器，不进入 Git 仓库和部署包。
+首次部署前，将 `deploy/.env.example` 复制为服务器仓库外私有运行目录中的 `.env`，填写至少 32 字节的 `JWT_SECRET`，设置生产数据库的绝对 `DB_PATH`，并将权限设为 `600`。首次部署到空数据库还必须设置至少 12 位的 `ADMIN_INITIAL_PASSWORD`。密钥文件只保留在服务器，不进入 Git 仓库和部署包。
 
 ```nginx
 server {
@@ -132,7 +132,7 @@ bash scripts/backup.sh
 
 ## H5-only 发布边界
 
-前端当前只构建、发布和验收 H5，产物为 `app/dist/build/h5/`。不再保留微信小程序依赖、构建脚本或发布流程；这不影响业务数据中的微信号、公众号来源、跟进方式“微信”。2026-08-01 起，所有真实外部消息渠道暂停：OpenClaw daemon 与 Direct iLink 为 No-Go，企业微信自建应用取消且不属于后续候选，Hook/RPA/逆向/Windows 自动化继续禁止。现行通知只使用 H5 站内展示，Mock 只用于测试/灰度；不规划普通微信或企业微信通知接入。
+前端当前只构建、发布和验收 H5，产物为 `app/dist/build/h5/`。不再保留微信小程序依赖、构建脚本或发布流程；这不影响业务数据中的微信号、公众号来源、跟进方式“微信”。普通安装口径是 `npm ci`，不使用 `--legacy-peer-deps`。首版的内部 OpenClaw 通知进程虽然有受控部署模板，但所有通知/AI 开关仍默认关闭；任何新的真实微信发送都必须单独取得明确授权。Hook、RPA、逆向协议和 Windows 自动化继续禁止。
 
 ## 环境变量
 
