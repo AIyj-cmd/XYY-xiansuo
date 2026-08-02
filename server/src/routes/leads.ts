@@ -5,8 +5,8 @@ import { authenticate } from '../middleware/auth.js';
 import { nowDatetime } from '../utils/datetime.js';
 import { resolveNotificationConfig, resolvePoolIdleDays } from '../config.js';
 import { randomUUID } from 'node:crypto';
-import { assertActiveOwner, OwnerTransferError, transferLeadOwner } from '../services/lead-assignment-service.js';
-import { recomputeFollowUpDerived } from '../services/lead-follow-derived-service.js';
+import { assertActiveOwner, OwnerTransferError, transferLeadOwner } from '../services/lead-owner.js';
+import { recomputeFollowUpDerived } from '../services/follow-up-derived.js';
 import { getLeadDetail, listLeads } from '../services/lead-query-service.js';
 
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
