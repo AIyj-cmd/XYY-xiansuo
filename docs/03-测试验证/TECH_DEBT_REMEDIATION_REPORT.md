@@ -1,14 +1,14 @@
 # 技术债整改记录
 
-日期：2026-08-02。范围仅为代码健康整改与隔离验证；**不构成生产发布授权**。
+日期：2026-08-02，发布合并冻结更新于 2026-08-03。范围仅为代码健康整改与隔离验证；**不构成生产发布授权**。
 
 ## 当前口径
 
 | 范围 | 状态 | 口径 |
 | --- | --- | --- |
-| H5 | CURRENT | 唯一构建、发布和验收目标；深链刷新由后端 SPA fallback 托管。 |
-| 单账号 OpenClaw | CURRENT RELEASE CANDIDATE，默认关闭 | 已完成真实验证；发布前仍须逐项通过既有生产门禁，不得自行启用。 |
-| OpenClaw 多人绑定 / Direct iLink | NO-GO / RESEARCH ONLY | 仅失败 fork 与历史门禁研究；真实试点、发送和发布均未授权。 |
+| `release/single-account-openclaw-v1` | CURRENT | 当前冻结来源为合并后的本地 release 分支；双父合并 `c838ea8` 保留完整整改历史，其后仅追加合并验证记录。 |
+| H5 + 单账号 OpenClaw | CURRENT RELEASE CANDIDATE（OpenClaw 默认关闭） | H5 是唯一前端构建、发布和验收目标；单账号 OpenClaw 已完成真实验证，启用前仍须逐项通过既有生产门禁。 |
+| OpenClaw 多人 fork / Direct iLink | NO-GO / RESEARCH ONLY | 仅失败 fork 与历史门禁研究；真实试点、发送和发布均未授权。 |
 | DeepSeek / AI Scheduler | CANDIDATE，默认关闭 | 代码和离线配置存在，不得在无单独授权时启用或发送外部消息。 |
 | 服务号候选 | CANDIDATE，未合入 | 独立候选分支，不属于当前制品；不含实现、凭据、二维码或发送授权。 |
 | 企业微信、Hook、RPA、逆向、Windows 自动化 | NO-GO | 已取消或明确禁止，不是后续实现路径。 |

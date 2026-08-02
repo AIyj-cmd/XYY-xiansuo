@@ -1,6 +1,6 @@
 # 项目文档索引
 
-当前状态：**阶段一“安全与数据库基线”、阶段二“业务一致性基线”和阶段三“通知基础设施”均已完成本地代码验收，尚未生产部署；生产发布、真实环境核验和备份恢复演练门禁仍有效。** 2026-08-01 的“暂停所有真实外部消息渠道、迁移 `007` 暂缓”是历史决策，已被后续单账号 OpenClaw 发布候选的真实验证结论取代：该候选保持**默认关闭**并仍受生产门禁约束；当前代码迁移为 `001`–`007`。仅 OpenClaw 多人绑定与 Direct iLink 仍为 **RESEARCH ONLY / NO-GO**。企业微信自建应用、Hook/RPA/逆向/Windows 自动化继续禁止；DeepSeek/AI Scheduler 默认关闭。服务号是尚未合入的独立候选分支，不属于当前制品。
+当前冻结来源（**CURRENT**）是合并后的本地分支 `release/single-account-openclaw-v1`；其发布候选（**CURRENT RELEASE CANDIDATE**）为 H5 与单账号 OpenClaw，OpenClaw 保持**默认关闭**。阶段一“安全与数据库基线”、阶段二“业务一致性基线”和阶段三“通知基础设施”均已完成本地代码验收，尚未生产部署；生产发布、真实环境核验和备份恢复演练门禁仍有效。2026-08-01 的“暂停所有真实外部消息渠道、迁移 `007` 暂缓”是历史决策，已被后续单账号 OpenClaw 发布候选的真实验证结论取代；当前代码迁移为 `001`–`007`。服务号是 **CANDIDATE / 未合入**的独立分支；OpenClaw 多人 fork 与 Direct iLink 仍为 **NO-GO / RESEARCH ONLY**；Hermes 为 **NOT STARTED**。企业微信自建应用、Hook/RPA、逆向和 Windows 自动化继续禁止，DeepSeek/AI Scheduler 默认关闭。Vite `5.2.8` 的 `1 high` 以残余风险 `R-1` 保持可见，不得记为已修复。
 
 技术债整改的当前配置口径、H5 运行测试和 Vite 兼容风险见[TECH_DEBT_REMEDIATION_REPORT.md](03-测试验证/TECH_DEBT_REMEDIATION_REPORT.md)。
 
