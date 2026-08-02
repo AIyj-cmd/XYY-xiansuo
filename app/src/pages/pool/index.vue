@@ -4,6 +4,8 @@ import { onShow } from '@dcloudio/uni-app';
 import { get, post, del } from '../../utils/request';
 import { useUserStore } from '../../store/user';
 import CustomTabBar from '../../components/CustomTabBar.vue';
+import { useLeadListState } from '../../composables/useLeadListState';
+import { intentHeadColor, intentLabel, overdueDays, overdueTagClass, relativeTime, today } from '../../utils/lead-display';
 
 const store = useUserStore();
 // 构建期开关只控制 UI；服务端 LEAD_POOL_CLAIM_ENABLED 才是安全边界。
@@ -34,11 +36,11 @@ const viewMode = ref<'all' | 'public'>('all');
 const poolDays = ref(0);
 const minimumPoolDays = ref(7);
 const claimingId = ref<number | null>(null);
-const list = ref<Lead[]>([]);
-const loading = ref(false);
-const refreshing = ref(false);
-const page = ref(1);
-const total = ref(0);
+const {
+  items: list, loading, refreshing, page, total, keyword, showFilter,
+  sortMode, filterDate, filterStatus, filterSource, filterIndustry, filterIntent,
+  resetPagination, resetFilters,
+} = useLeadListState<Lead>();
 const hasMore = computed(() => viewMode.value === 'all' && list.value.length < total.value);
 const poolDayOptions = computed(() => Array.from(new Set([
   minimumPoolDays.value,
@@ -46,17 +48,9 @@ const poolDayOptions = computed(() => Array.from(new Set([
   Math.max(minimumPoolDays.value, 30),
 ])));
 
-const keyword = ref('');
-const showFilter = ref(false);
-const sortMode = ref<'last_follow' | 'next_follow' | 'created_new'>('last_follow');
-const filterDate = ref('');
 const favoriteOnly = ref(false);
 
-const filterStatus = ref<string[]>([]);
-const filterSource = ref('');
 const filterOwner = ref('');
-const filterIntent = ref('');
-const filterIndustry = ref('');
 
 const users = ref<{ id: number; name: string }[]>([]);
 
@@ -73,13 +67,6 @@ const STATUS_COLORS: Record<string, string> = {
   '已成交': '#2f855a', '已流失': '#718096', '暂搁置': '#a0aec0', '停止跟进': '#c05621',
 };
 
-function intentHeadColor(level: string): string {
-  const map: Record<string, string> = { '高': '#E53E3E', '中': '#B7791F', '低': '#2F855A' };
-  return map[level] || '#eef1f5';
-}
-function intentLabel(level: string): string {
-  return level && level !== '未知' ? `${level}意向` : '未知';
-}
 
 const activeFilterCount = computed(() => {
   let n = filterStatus.value.length;
@@ -97,31 +84,6 @@ function isMine(lead: Lead) {
   return lead.owner_id === store.userInfo?.id;
 }
 
-function today() {
-  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-}
-
-function relativeTime(dateStr: string | null): string {
-  if (!dateStr) return '';
-  const nowDate = new Date(today());
-  const d = new Date(dateStr.slice(0, 10));
-  const diff = Math.floor((nowDate.getTime() - d.getTime()) / 86400000);
-  if (diff === 0) return '今天';
-  if (diff === 1) return '昨天';
-  if (diff < 7) return `${diff}天前`;
-  if (diff < 30) return `${Math.floor(diff / 7)}周前`;
-  return `${Math.floor(diff / 30)}月前`;
-}
-
-function overdueDays(d: string): number {
-  return Math.floor((new Date(today()).getTime() - new Date(d).getTime()) / 86400000);
-}
-
-function overdueTagClass(days: number): string {
-  if (days >= 8) return 'overdue-critical';
-  if (days >= 4) return 'overdue-high';
-  return 'overdue-warn';
-}
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 function onKeywordInput() {
@@ -190,11 +152,8 @@ function applyFilter() {
 }
 
 function resetFilter() {
-  filterStatus.value = [];
-  filterSource.value = '';
+  resetFilters();
   filterOwner.value = '';
-  filterIntent.value = '';
-  filterIndustry.value = '';
   showFilter.value = false;
   loadList(true);
 }
@@ -226,7 +185,7 @@ async function claimLead(item: Lead) {
 }
 
 async function loadList(reset = false) {
-  if (reset) { page.value = 1; list.value = []; }
+  if (reset) resetPagination();
   if (loading.value && !reset) return;
   loading.value = true;
   try {
