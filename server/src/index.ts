@@ -87,7 +87,9 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   const h5Path = path.join(__dirname, '..', '..', 'app', 'dist', 'build', 'h5');
   try {
-    await app.register(staticFiles, { root: h5Path, prefix: '/' });
+    // 静态文件显式注册为路由，让不存在的 H5 路径继续进入下方 SPA fallback。
+    // wildcard=true 会抢先匹配深链并直接返回静态 404，导致刷新详情页失败。
+    await app.register(staticFiles, { root: h5Path, prefix: '/', wildcard: false });
     // SPA fallback: 非API路由返回index.html
     app.setNotFoundHandler(async (request, reply) => {
       if (request.url.startsWith('/api/')) {

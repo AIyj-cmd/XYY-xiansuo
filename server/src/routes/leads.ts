@@ -2,11 +2,12 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { getDb } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
-import { nowDatetime, todayDate } from '../utils/datetime.js';
+import { nowDatetime } from '../utils/datetime.js';
 import { resolveNotificationConfig, resolvePoolIdleDays } from '../config.js';
 import { randomUUID } from 'node:crypto';
 import { assertActiveOwner, OwnerTransferError, transferLeadOwner } from '../services/lead-owner.js';
 import { recomputeFollowUpDerived } from '../services/follow-up-derived.js';
+import { getLeadDetail, listLeads } from '../services/lead-query-service.js';
 
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
@@ -112,75 +113,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       return reply.code(400).send({ code: 1, msg: parsed.error.issues[0].message, data: null });
     }
-    const q = parsed.data;
-    const page = q.page;
-    const pageSize = q.pageSize;
-    const offset = (page - 1) * pageSize;
-
-    const conditions: string[] = ['l.is_deleted = 0'];
-    const params: SQLInputValue[] = [];
-
-    if (q.keyword) {
-      conditions.push('(l.company_name LIKE ? OR l.contact_name LIKE ? OR l.phone LIKE ?)');
-      const kw = `%${q.keyword}%`;
-      params.push(kw, kw, kw);
-    }
-    if (q.status) {
-      const statuses = q.status.split(',').map(s => s.trim()).filter(Boolean);
-      if (statuses.length) {
-        conditions.push(`l.status IN (${statuses.map(() => '?').join(',')})`);
-        params.push(...statuses);
-      }
-    }
-    if (q.source) { conditions.push('l.source = ?'); params.push(q.source); }
-    if (q.owner_id) { conditions.push('l.owner_id = ?'); params.push(Number(q.owner_id)); }
-    if (q.industry) { conditions.push('l.industry = ?'); params.push(q.industry); }
-    if (q.intent) { conditions.push('l.intent_level = ?'); params.push(q.intent); }
-    if (q.tag_id) {
-      conditions.push('EXISTS (SELECT 1 FROM lead_tags lt WHERE lt.lead_id=l.id AND lt.tag_id=?)');
-      params.push(Number(q.tag_id));
-    }
-    if (q.date) { conditions.push('l.lead_date = ?'); params.push(q.date); }
-    // "今日新增"：按创建时间筛今天、最新的排前面，跟其它排序方式不是一回事，单独处理
-    if (q.sort === 'created_new') {
-      conditions.push('DATE(l.created_at) = ?');
-      params.push(todayDate());
-    }
-    if (q.favorite_only === '1') {
-      conditions.push('EXISTS (SELECT 1 FROM favorites f WHERE f.lead_id = l.id AND f.user_id = ?)');
-      params.push(request.user.id);
-    }
-
-    const sortMap: Record<string, string> = {
-      last_follow: 'l.last_follow_at',
-      lead_date: 'l.lead_date',
-      next_follow: 'l.next_follow_at',
-      created_new: 'l.created_at',
-    };
-    const sortCol = sortMap[q.sort || ''] || 'l.last_follow_at';
-    const order = q.order === 'asc' ? 'ASC' : 'DESC';
-
-    const where = conditions.join(' AND ');
-    const db = getDb();
-
-    const totalRow = db.prepare(
-      `SELECT COUNT(*) AS cnt FROM leads l WHERE ${where}`
-    ).get(...params) as any;
-    const total = totalRow.cnt;
-
-    const leads = db.prepare(`
-      SELECT l.*,
-        u.name AS owner_name,
-        (SELECT content FROM follow_ups WHERE lead_id = l.id ORDER BY created_at DESC, id DESC LIMIT 1) AS last_follow_content,
-        EXISTS(SELECT 1 FROM favorites f WHERE f.lead_id = l.id AND f.user_id = ?) AS is_favorited
-      FROM leads l
-      LEFT JOIN users u ON l.owner_id = u.id
-      WHERE ${where}
-      ORDER BY ${sortCol} ${order} NULLS LAST
-      LIMIT ? OFFSET ?
-    `).all(request.user.id, ...params, pageSize, offset);
-
-    return reply.send({ code: 0, msg: 'ok', data: { total, page, pageSize, list: leads } });
+    return reply.send({ code: 0, msg: 'ok', data: listLeads(getDb(), parsed.data, request.user.id) });
   });
 
   // 新增线索
@@ -242,15 +175,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
   // 线索详情
   app.get('/api/leads/:id', { preHandler: authenticate }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const db = getDb();
-    const lead = db.prepare(`
-      SELECT l.*, u.name AS owner_name, c.name AS creator_name,
-        EXISTS(SELECT 1 FROM favorites f WHERE f.lead_id = l.id AND f.user_id = ?) AS is_favorited
-      FROM leads l
-      LEFT JOIN users u ON l.owner_id = u.id
-      LEFT JOIN users c ON l.created_by = c.id
-      WHERE l.id = ? AND l.is_deleted = 0
-    `).get(request.user.id, Number(id)) as any;
+    const lead = getLeadDetail(getDb(), Number(id), request.user.id) as any;
 
     if (!lead) return reply.code(404).send({ code: 1, msg: '线索不存在', data: null });
     return reply.send({ code: 0, msg: 'ok', data: lead });

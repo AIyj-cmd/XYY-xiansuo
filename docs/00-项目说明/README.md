@@ -68,11 +68,12 @@ npm test
 
 cd ../app
 npm run build:h5
+npm run test:h5
 ```
 
 GitHub Actions 会在推送和 Pull Request 时执行同样的后端构建、测试和 H5 构建。
 
-当前 uni-app 插件严格要求 Vite `5.2.8`。该版本的开发服务器存在已公开安全公告，因此开发服务器被限制为仅监听 `127.0.0.1`，禁止暴露到局域网或公网；H5 生产包不包含 Vite 开发服务器。CI 使用 `npm audit --omit=dev` 确保前后端生产依赖保持无已知漏洞。
+当前 uni-app 插件严格要求 Vite `5.2.8`。该版本的开发服务器存在已公开安全公告，因此开发服务器被限制为仅监听 `127.0.0.1`，禁止暴露到局域网或公网；H5 生产包不包含 Vite 开发服务器。依赖审计目前仍报告该受精确 peer 约束的 Vite 风险；不得使用 force、legacy peer deps 或跨大版本升级绕过，详见[技术债整改记录](../03-测试验证/TECH_DEBT_REMEDIATION_REPORT.md)。
 
 ## H5 构建
 

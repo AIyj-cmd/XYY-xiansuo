@@ -5,6 +5,8 @@ import { get, post } from '../../utils/request';
 import { useUserStore } from '../../store/user';
 import CustomTabBar from '../../components/CustomTabBar.vue';
 import { prefetchTabPages } from '../../utils/prefetch';
+import { useLeadListState } from '../../composables/useLeadListState';
+import { intentHeadColor, intentLabel, overdueDays, overdueTagClass, relativeTime, today } from '../../utils/lead-display';
 
 const store = useUserStore();
 
@@ -23,19 +25,14 @@ interface Lead {
   intent_level: string;
 }
 
-const leads = ref<Lead[]>([]);
-const loading = ref(false);
-const refreshing = ref(false);
-const page = ref(1);
-const total = ref(0);
-const hasMore = computed(() => leads.value.length < total.value);
+const {
+  items: leads, loading, refreshing, page, total, hasMore, keyword, showFilter,
+  sortMode, filterDate, filterStatus, filterSource, filterIndustry, filterIntent,
+  resetPagination, resetFilters,
+} = useLeadListState<Lead>();
 
 // 搜索 & 筛选
-const keyword = ref('');
 const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null);
-const showFilter = ref(false);
-const sortMode = ref<'last_follow' | 'next_follow' | 'created_new'>('last_follow');
-const filterDate = ref('');
 
 // 批量操作
 const batchMode = ref(false);
@@ -93,10 +90,6 @@ async function submitBatch() {
   } catch {}
 }
 
-const filterStatus = ref<string[]>([]);
-const filterSource = ref('');
-const filterIndustry = ref('');
-const filterIntent = ref('');
 
 const STATUS_LIST = ['新线索', '跟进中', '已报价', '已成交', '已流失', '暂搁置', '停止跟进'];
 const SOURCE_LIST = ['小红书', '抖音', '视频号', '知乎', '微信公众号', 'B站', '百度', '官网', '转介绍', '其他'];
@@ -127,43 +120,6 @@ const activeFilterCount = computed(() => {
 
 const memberList = ref<{ id: number; name: string }[]>([]);
 
-function today() {
-  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-}
-
-function overdueDays(d: string): number {
-  const diff = new Date(today()).getTime() - new Date(d).getTime();
-  return Math.floor(diff / 86400000);
-}
-
-// ── Module 1: 意向等级 · 卡片头部色块 ──
-function intentHeadColor(level: string): string {
-  const map: Record<string, string> = { '高': '#E53E3E', '中': '#B7791F', '低': '#2F855A' };
-  return map[level] || '#eef1f5';
-}
-function intentLabel(level: string): string {
-  return level && level !== '未知' ? `${level}意向` : '未知';
-}
-
-// ── Module 2: 相对时间 ──
-function relativeTime(dateStr: string | null): string {
-  if (!dateStr) return '';
-  const nowDate = new Date(today());
-  const d = new Date(dateStr.slice(0, 10));
-  const diffDays = Math.floor((nowDate.getTime() - d.getTime()) / 86400000);
-  if (diffDays === 0) return '今天';
-  if (diffDays === 1) return '昨天';
-  if (diffDays < 7) return `${diffDays}天前`;
-  if (diffDays < 30) return `${Math.floor(diffDays / 7)}周前`;
-  return `${Math.floor(diffDays / 30)}月前`;
-}
-
-// ── Module 3: 逾期颜色三档 ──
-function overdueTagClass(days: number): string {
-  if (days >= 8) return 'overdue-critical';
-  if (days >= 4) return 'overdue-high';
-  return 'overdue-warn';
-}
 
 // ── Module 4: 一键拨打 ──
 function callPhone(phone: string) {
@@ -225,8 +181,7 @@ const anyModalOpen = computed(() => showFilter.value || showBatchPanel.value || 
 
 async function loadLeads(reset = false) {
   if (reset) {
-    page.value = 1;
-    leads.value = [];
+    resetPagination();
   }
   if (loading.value) return;
   loading.value = true;
@@ -287,10 +242,7 @@ function toggleStatusChip(s: string) {
 }
 
 function resetFilter() {
-  filterStatus.value = [];
-  filterSource.value = '';
-  filterIndustry.value = '';
-  filterIntent.value = '';
+  resetFilters();
 }
 
 function applyFilter() {
