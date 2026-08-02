@@ -18,6 +18,7 @@ OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已�
 - 登录、实时角色校验或核心线索 API 出现阻断性回归。
 - 发现错误 `DB_PATH`、数据记录数异常或索引/外键关系损坏。
 - 发现 secret、密码、哈希或客户数据进入迁移日志。
+- 离线映射检查为 `UNSAFE`、live Gateway 因零个/多个 `enabled=true` 拒绝启动，或发现账号 B/其他接收人被误启用。
 
 ## 3. 回滚步骤
 
@@ -49,6 +50,7 @@ OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已�
 - 恢复上一份受控 `.env`，但继续要求绝对 `DB_PATH`、至少 32 字节 `JWT_SECRET` 和生产空库安全初始密码。
 - 恢复上一份受批准的 PM2/Nginx 模板时，仍必须使用仓库外绝对 cwd；不得为让旧模板启动而恢复隐式工作目录、占位域名或仓库内 Secret/映射/会话路径。
 - 若仅 Gateway 或 OpenClaw 故障，先关闭 OpenClaw 通知规则与 Worker，回退 Gateway 制品和配置后仅做离线健康/映射检查；未取得新的真实发送授权时不用微信消息作回滚冒烟。
+- 映射门禁失败时保持 `OPENCLAW_CHANNEL_ENABLED=false`，停止 Worker/Gateway，保留原映射、账号 B 凭据和会话目录，不做删除式“修复”；仅在仓库外将唯一批准接收人设为 `enabled=true`、其余保持 `false`，再重跑离线检查。
 - 若 JWT secret 被错误暴露，立即轮换；现有 token 将失效，需要通知用户重新登录。
 - 不恢复固定默认管理员密码，不关闭实时角色查询，不关闭 SQLite 外键。
 
@@ -60,4 +62,5 @@ OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已�
 - 用户、线索、跟进记录数和抽样关系正确。
 - 登录、当前用户、admin/member 权限、线索创建/列表、跟进创建通过。
 - 日志无迁移 `failed` 重试循环和敏感信息。
+- 若保留内部通知能力，离线映射检查必须为 `SAFE` 且 `enabled=1`；DeepSeek 与 AI Scheduler 继续关闭，回滚验证不发送真实消息。
 - 记录回滚原因、时间、制品、备份、数据影响和后续修复负责人。

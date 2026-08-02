@@ -84,6 +84,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
   const hasLegacyRecipientConfig = parsed.data.OPENCLAW_PILOT_USER_ID !== undefined || parsed.data.ILINK_POC_RECIPIENT_EXTERNAL_ID !== undefined
   if (!recipientMap && (parsed.data.OPENCLAW_PILOT_USER_ID === undefined || parsed.data.ILINK_POC_RECIPIENT_EXTERNAL_ID === undefined)) throw new Error('iLink Gateway 配置无效：未配置 OPENCLAW_RECIPIENT_MAP_FILE 时必须同时设置旧单接收人配置')
   if (hasLegacyRecipientConfig) warnings.push(recipientMap ? '旧单接收人配置已废弃且被 OPENCLAW_RECIPIENT_MAP_FILE 忽略；未输出用户或接收人标识' : '旧单接收人配置已废弃；请迁移至 OPENCLAW_RECIPIENT_MAP_FILE，未输出用户或接收人标识')
+  // Keep parsing and live=false Fake/compatibility coverage for the existing
+  // mapping shape, but freeze an actual live Gateway to one approved recipient.
+  if (parsed.data.ILINK_POC_LIVE_ENABLED && recipientMap && enabledRecipientCount(recipientMap) !== 1) {
+    throw new Error('iLink Gateway 配置无效：OPENCLAW_RECIPIENT_MAP_FILE 在 live 模式必须恰好一个 enabled=true')
+  }
   if (parsed.data.ILINK_POC_LIVE_ENABLED && !openclawStateDir) throw new Error('iLink Gateway 配置无效：live 模式需要 OPENCLAW_STATE_DIR')
   return { ...parsed.data, stateDir, openclawStateDir, openclawConfigPath, gatewaySecret, recipientMap, deprecatedWarnings: warnings }
 }
@@ -130,9 +135,14 @@ function readRecipientMapFile(path: string): ReadonlyMap<number, { target: strin
  */
 export function inspectRecipientMapFile(path: string): { recipients: number; enabled: number; disabled: number } {
   const recipientMap = readRecipientMapFile(path)
+  const enabled = enabledRecipientCount(recipientMap)
+  return { recipients: recipientMap.size, enabled, disabled: recipientMap.size - enabled }
+}
+
+function enabledRecipientCount(recipientMap: ReadonlyMap<number, { target: string; enabled: boolean }>): number {
   let enabled = 0
   for (const recipient of recipientMap.values()) if (recipient.enabled) enabled += 1
-  return { recipients: recipientMap.size, enabled, disabled: recipientMap.size - enabled }
+  return enabled
 }
 
 export function ensurePrivateDirectory(path: string, variable: string): void {

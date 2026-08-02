@@ -574,3 +574,57 @@
 - 增量复验后 `git diff --check` 通过，`server/data` 聚合 SHA-256 仍为 `ec00bd8eace280958d82e3cd012dc020b194767ad8d7c55137aa99c74b4e6a05`。
 
 **最终测试结论：P1=0、P2=0、P3=0；允许进入本地提交与验收收口。** 正式部署仍需生产路径/备份/维护窗口/回滚负责人以及单独的进程或真实消息授权。
+
+## 29. 单账号 OpenClaw 发布冻结：独立验证计划（2026-08-02）
+
+### 测试前基线与隔离
+
+- 分支：`release/single-account-openclaw-v1`；HEAD：`75f29bc89078bed3ea0095a0802940c653eb16d0`。开始时已有 9 个未提交实现/交付差异：`docs/00-项目说明/README.md`、`docs/02-开发实现/CHANGELOG.md`、`docs/04-验收交付/ACCEPTANCE_REPORT.md`、`docs/04-验收交付/DEPLOYMENT_NOTES.md`、`docs/04-验收交付/OPENCLAW_INTERNAL_NOTIFICATION_RUNBOOK.md`、`poc/ilink-gateway/.env.example`、`poc/ilink-gateway/src/cli/recipient-map-check.ts`、`poc/ilink-gateway/src/config.ts`、`poc/ilink-gateway/test/gateway.test.ts`。这些均视为测试前已有改动，绝不恢复、覆盖、清理或归因给测试阶段。
+- 测试前 `git diff --check` 通过；三套 `package.json` 与锁文件均无未提交差异。`server/data` 的确定性聚合 SHA-256 为 `ec00bd8eace280958d82e3cd012dc020b194767ad8d7c55137aa99c74b4e6a05`（按路径排序的逐文件 SHA-256 清单再哈希）；逐文件清单已在测试记录中保留。
+- 全程只使用现有离线依赖缓存、Fake Adapter、伪造 HTTP 响应和系统临时目录；不得启动真实 OpenClaw、Gateway、Worker 或 DeepSeek，不得发送网络请求，不得连接或写入 `server/data`/生产数据库，也不构建微信小程序。
+
+### 计划与验收矩阵
+
+| 范围 | 计划 |
+| --- | --- |
+| 离线回归 | 分别在 `server`、`poc/ilink-gateway`、`app` 执行 `npm ci --offline`，再运行指定 build/test；执行 `git diff --check`。|
+| 数据库迁移 | 以现有 `server/test/migrations.test.ts`、`server/test/openclaw-synthetic-pilot.test.ts` 和全量后端测试核验 `001`–`007` 的空库、旧版升级、重复执行、checksum 冲突、故意失败回滚、`integrity_check`、`foreign_key_check`、历史通知数据和默认规则关闭。|
+| 单账号门禁 | 以 Gateway 离线测试核验 live 模式恰好一个 enabled 才能构造；零/多个 enabled 的 CLI 非零并只输出脱敏 `UNSAFE`；一个 enabled 输出聚合 `SAFE`；`live=false` 保留多映射兼容；旧单用户配置可用；未绑定/禁用用户不回退且 Adapter 零调用。|
+| 通知与安全回归 | 由全量 Server/Gateway 测试核验 `owner_changed` 详情、手机号脱敏、入站静默、跨进程超时协调、`providerMessageId` 解析、幂等与异常/未知结果处理。|
+| 收尾核对 | 复核依赖/锁文件未变化，测试后重新记录 Git 状态、差异和 `server/data` 聚合 SHA-256；只追加本报告的最终结果。|
+
+### 已执行命令及结果
+
+| 命令 | 结果 |
+| --- | --- |
+| `cd server && npm ci --offline && npm run build && npm test` | 通过；`npm ci` 从离线缓存恢复 179 包，build 通过，Node 测试 **146/146** 通过。测试仅创建并清理 `/tmp/xiansuo-*` 临时数据库。|
+| `cd poc/ilink-gateway && npm ci --offline && npm run build && npm test` | 通过；`npm ci` 从离线缓存恢复 7 包，build 通过，Node 测试 **53/53** 通过，全部为 Fake Adapter/离线 CLI fixture。|
+| `cd app && npm ci --offline && npm run build:h5` | 通过；`npm ci` 从离线缓存恢复 465 包，H5 构建完成。仅有未设置 uni Appid 的统计提示；**未执行**任何微信小程序构建。|
+| `git diff --check`（测试前、测试后） | 两次均通过。|
+| 包与锁文件差异核对 | `server`、`poc/ilink-gateway`、`app` 的 `package.json`/lockfile 均没有未提交差异；因此不需要另行进行“依赖发生变化”的生产依赖审计。|
+| `server/data` SHA-256 前后比较 | 通过；聚合值均为 `ec00bd8eace280958d82e3cd012dc020b194767ad8d7c55137aa99c74b4e6a05`，所有 8 个逐文件 SHA-256 也完全一致。|
+
+### 通过项与可复现证据
+
+| 验收项 | 结果 | 证据路径 |
+| --- | --- | --- |
+| 迁移 `001`–`007` 空库、外键、重复启动 | 通过：全版本顺序应用、第二次 `skipped`；`PRAGMA foreign_keys=1`，非法外键写入拒绝。 | `server/test/migrations.test.ts`：`空库创建完整版本化 schema，并强制外键`、`旧结构可迁移…并可重复执行`；后端全量 146/146。|
+| 旧库/历史数据升级与规则默认关闭 | 通过：遗留 users/leads/follow_ups 记录、主键和关系保留；006 升级到当前版本后历史 notification log 保留，启用规则数为 0。 | `server/test/migrations.test.ts`：`旧结构可迁移…`、`006 旧版本升级…历史且所有规则关闭`。|
+| checksum 冲突、失败回滚、完整性 | 通过：已记录 checksum 被篡改即拒绝；故意失败 migration 未写入完成记录；`integrity_check=ok`、`foreign_key_check=[]`。 | `server/test/migrations.test.ts`：`迁移校验和冲突或迁移失败…`；`server/test/openclaw-synthetic-pilot.test.ts`：`synthetic 入队迁移001-007…`。|
+| live Gateway 单账号映射 | 通过：仅恰好一个 `enabled=true` 的映射可构造 live Gateway 且离线检查输出 `{conclusion:'SAFE', recipients, enabled, disabled}`。零个或多个启用项均被 config 和 CLI 拒绝，CLI 返回非零并仅输出 `{conclusion:'UNSAFE', code:'OPENCLAW_RECIPIENT_MAP_CHECK_FAILED'}`，不泄露 target 或 key。 | `poc/ilink-gateway/test/gateway.test.ts`：`single-account release gate requires exactly one enabled map entry without exposing map identifiers`。|
+| 兼容与不回退 | 通过：`live=false` 仍保留多人静态映射解析；映射优先旧单用户配置；旧单用户模式可用；未绑定/禁用用户分别在 Adapter 前返回 `OPENCLAW_RECIPIENT_NOT_BOUND` / `OPENCLAW_RECIPIENT_DISABLED`，无发送回退。 | `poc/ilink-gateway/test/gateway.test.ts`：`recipient map keeps live=false…`、`recipient map file…`、`idempotency…`。|
+| owner_changed、脱敏与入站静默 | 通过：固定详情结构、可选字段降级、完整手机号/微信标识拒绝或掩码、astral 边界与安全 detail URL 均回归；`openclaw-weixin` 入站 hook 在读取正文或调用 provider/reply 前返回 handled，其他渠道透传。 | `server/test/openclaw-notifications.test.ts` 的 owner_changed/channel 用例；`poc/ilink-gateway/test/gateway.test.ts`：`owner_changed policy…`、`OpenClaw WeChat no-reply hook…`。|
+| 超时协调、异常与幂等 | 通过：Worker `30s send / 40s wait` 与 Gateway 实际 30s 契约相符；Gateway 60s 错配在 Adapter 前拒绝；超时只形成一次 `result_unknown`，无自动二发。并发/终态请求不会二次调用 Adapter。 | `server/test/openclaw-synthetic-pilot.test.ts`：两条 Worker timeout 用例；`poc/ilink-gateway/test/gateway.test.ts`：`Gateway rejects a Worker…`、`concurrent and terminal idempotency…`。|
+| `providerMessageId` 解析与脱敏回执 | 通过：`ret=0` 即为 sent；无 provider id 生成稳定本地 SHA-256 回执，有 provider id 仅保留 `ilink-provider:<hash>`，重复请求返回原持久化回执。 | `poc/ilink-gateway/test/gateway.test.ts`：`ret=0 means sent…`、`deduplicated delivery must return…`。|
+
+### 失败项、未覆盖范围与建议
+
+- **失败项：无。P1=0、P2=0、P3=0。** 因此没有需要交付实现代理的最小复现。
+- 未覆盖且不应误判为通过：真实 OpenClaw/Gateway/Worker/DeepSeek 生命周期、微信登录/扫码/发送、生产 DB 迁移、副本恢复演练、生产进程和网络路径；均被本次授权明确禁止。离线通过不构成真实发送或部署授权。
+- 仅出现 npm 安装期的 deprecated/`allow-scripts` 提示与 H5 未配置 Appid 的统计提示；没有构建或测试失败，也不改变锁文件或业务功能结论。
+
+### 测试阶段文件变化与最终门禁
+
+- 测试后 Git 状态相对开始时仅新增/修改本报告 `docs/03-测试验证/TEST_REPORT.md` 的第 29 节；开始时的 9 个实现/文档差异仍在，且未被修改、恢复、暂存或清理。`node_modules` 与 H5 构建产物未形成新的受跟踪工作区差异。
+- 复现证据为本报告表中列出的测试文件及以上完整命令输出；任何重新验证均应继续使用离线缓存和临时目录，并在完成后比较 `server/data` 聚合哈希。
+- **结论：允许进入验收阶段（离线发布冻结范围）。** 条件是验收阶段不得扩大为生产 DB 操作、真实 OpenClaw/Gateway/Worker/DeepSeek 启动或真实消息发送；这些操作仍须分别获得用户授权、生产副本备份/恢复门禁和后续实况验证。

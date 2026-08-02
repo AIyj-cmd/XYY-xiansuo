@@ -2,12 +2,15 @@
 
 ## Unreleased — 当前版本离线收尾（2026-08-02）
 
+- 单账号发布冻结：保留既有多人映射解析和旧单用户兼容，但 `ILINK_POC_LIVE_ENABLED=true` 的映射模式与离线 `gateway:recipient-map-check` 均要求恰好一个 `enabled=true`；零个或多个启用项失败，检查输出只保留安全结论和聚合计数，绝不输出用户 ID 或 target。未绑定仍为 `OPENCLAW_RECIPIENT_NOT_BOUND`，不回退。
+- 发布口径为单账号/单接收人 GO、多账号定向发送 NO-GO；账号 B 仅 `experimental/disabled`、不删除凭据且不生产使用，其他同事使用 H5。DeepSeek、AI Scheduler 默认关闭；`owner_changed` 固定详情/脱敏与 OpenClaw 入站静默保持已验证边界。
 - 修复 H5 `package-lock.json` 的 npm v11 peer 解析记录；未改 `package.json`、直接依赖或小程序依赖。普通 `npm ci && npm run build:h5` 已作为唯一 H5 安装/构建口径。
 - 增加只读离线的 `gateway:recipient-map-check`：仅校验仓库外 `0600` 多人映射并输出聚合计数，不读取 Gateway Secret、不连接 OpenClaw/微信，也不输出 target 或用户 ID。
 - 部署模板的 API PM2 名称统一为 `xiansuo-api`，三项首版进程均为单实例/合并日志；运行目录、Nginx 域名和证书位置改为仓库外变量或占位符。补充当前部署、停止/回滚和同事绑定实测文档。
 - 验收收紧 PM2 cwd 为必填绝对路径，修正生产 `NODE_ENV`，让 `setup.sh` 在切换前安全渲染 Nginx 域名/证书路径；部署包现包含并构建 Gateway，同步 Worker/Gateway PM2 模板，但仍不自动启动真实渠道。
 - 映射检查命令改为执行已编译的 `dist/cli/recipient-map-check.js`，使生产裁剪 devDependencies 后仍可离线验证。Vite audit 保留为后续 uni-app 工具链升级门禁；生产不运行 dev server，当前 H5 为 ES module 静态制品。
 - 默认继续关闭 DeepSeek、AI Scheduler、AI 日报、到期汇总及所有其他通知规则；本次未发送真实消息、未启动后台进程、未操作生产数据库或生成小程序产物。
+- 最终离线验收复跑：Server build 与 `146/146`、Gateway build 与 `53/53`、H5 build 均通过；未发现真实账号 ID、target、Secret/会话凭据或完整手机号进入本次发布文档。
 
 > OpenClaw 负责人详情提醒与入站静默：负责人变更在同一业务事务内读取 `leads` 的 `company_name`、`contact_name`、`phone`、`source`、`demand_note`、`next_follow_at`，生成不可变的清洗快照；手机号仅保留 `138****1234` 形式，Unicode `Cc`/`Cf`/`Zl`/`Zp`（含换行、零宽与双向控制字符）被归一为空格。`微信：`、微信号/ID、`wxid`、以及带分隔符的 wechat/weixin/vx/v信 标识和凭证标记不会进入可选字段，但合法来源 `微信咨询` 保留；联系人、手机号和跟进时间缺失时分别省略、省略和降级为“请尽快联系”。Gateway 除模板结构换行外拒绝这些 Unicode 类别，并以同一规则拒绝任意字段中的未脱敏大陆手机号和标识泄露，仅接受标题 `【新线索已分配】`、严格字段顺序和固定尾句。新增无网络、无存储的官方 `before_agent_reply` 本地插件，只对 `openclaw-weixin` 静默返回 `{handled:true}`，不调用模型或回复；受控安装使用 `plugins install --link` 后的显式 `config set` 和 runtime inspect，默认未安装、未启用且未修改仓库外会话配置。
 

@@ -16,6 +16,7 @@ import { createGateway } from '../src/server.js'
 import { deliveryRequestSchema } from '../src/types.js'
 import { requiredIdempotencyKey } from '../src/cli/arguments.js'
 import { runLogin } from '../src/cli/login.js'
+import { runRecipientMapCheck, runRecipientMapCheckProgram } from '../src/cli/recipient-map-check.js'
 import { publicPrereq } from '../src/cli/prereq-check.js'
 import { publicSession } from '../src/cli/official-session-status.js'
 import { SYNTHETIC_MESSAGE, assertMessagePolicy } from '../src/message-policy.js'
@@ -405,7 +406,7 @@ test('Gateway Secret must be an exact 0600 regular file', () => {
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('recipient map is a static private startup configuration and takes precedence over the legacy single recipient', async () => {
+test('recipient map keeps live=false multi-recipient resolution and takes precedence over the legacy single recipient', async () => {
   const dir = directory(); try {
     const mapFile = recipientMapFile(dir, {
       '1': { target: 'first-user@im.wechat', enabled: true },
@@ -464,6 +465,34 @@ test('offline recipient map inspection exposes aggregate counts only', () => {
     })
     assert.deepEqual(inspectRecipientMapFile(mapFile), { recipients: 2, enabled: 1, disabled: 1 })
     assert.ok(!JSON.stringify(inspectRecipientMapFile(mapFile)).includes('@im.wechat'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('single-account release gate requires exactly one enabled map entry without exposing map identifiers', () => {
+  const dir = directory(); try {
+    const oneEnabled = recipientMapFile(dir, {
+      '7': { target: 'private-seven@im.wechat', enabled: true },
+      '9': { target: 'private-nine@im.wechat', enabled: false },
+    })
+    const safe = runRecipientMapCheck(oneEnabled)
+    assert.deepEqual(safe, { conclusion: 'SAFE', recipients: 2, enabled: 1, disabled: 1 })
+    assert.ok(!JSON.stringify(safe).includes('@im.wechat'))
+    const liveGateway = createGateway(config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: oneEnabled, ILINK_POC_LIVE_ENABLED: 'true' }))
+    liveGateway.close()
+
+    for (const mapping of [
+      { '7': { target: 'private-seven@im.wechat', enabled: true }, '9': { target: 'private-nine@im.wechat', enabled: true } },
+      { '7': { target: 'private-seven@im.wechat', enabled: false } },
+    ]) {
+      const mapFile = recipientMapFile(dir, mapping)
+      assert.throws(() => runRecipientMapCheck(mapFile), /必须恰好一个 enabled=true/)
+      assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: mapFile, ILINK_POC_LIVE_ENABLED: 'true' }), /必须恰好一个 enabled=true/)
+      const output: string[] = []
+      assert.equal(runRecipientMapCheckProgram(mapFile, (line) => output.push(line)), 2)
+      assert.deepEqual(output.map((line) => JSON.parse(line)), [{ conclusion: 'UNSAFE', code: 'OPENCLAW_RECIPIENT_MAP_CHECK_FAILED' }])
+      assert.ok(!output.join('').includes('@im.wechat'))
+      assert.ok(!output.join('').includes('private-seven'))
+    }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
