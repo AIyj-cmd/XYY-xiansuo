@@ -107,3 +107,40 @@
 - 结束前 `git status --short` 与 `git diff --name-only` 仍为空（在本报告写入前）；`server/data` 无当前或受跟踪数据库文件，故无可比数据哈希。`node_modules`、`dist` 等安装/构建产物均被忽略且未形成 Git 差异。
 - 本阶段唯一受控写入为本报告补充；未改动 `app/src`、`server/src`、`scripts` 或 `deploy` 的业务/部署实现。
 - 后续验收应复测 CI 的 critical 风险门禁与 `git diff --check`；不得将已接受的 Vite high 写成无风险或永久豁免。
+
+---
+
+## 修复复测结论（提交 `9b05663`，2026-08-02）
+
+### 最终判定
+
+**PASS（可带已接受残余风险进入验收；不构成生产发布授权）。**
+
+严重级别：**P1 = 0，未关闭 P2 = 0，P3 = 0**。残余风险 `R-1`：Vite `<=6.4.2` 的 1 个 high 仍存在，已由本次明确的临时 critical 门禁保持可见，不能称为已修复或无风险。
+
+### 复测基线与范围
+
+- 复测对象：`9b0566318dc4a80b6b3e36e4cb91744edc2654ab`，分支 `chore/project-health-remediation-v1`；复测开始前 worktree 干净。
+- 该提交仅改动 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)、[docs/README.md](../README.md) 和本报告；`server/src`、`server/test`、Gateway 源码/测试/锁文件及 H5 源码/测试/锁文件相对 `a6a38a3` 均无差异。`server/src/db.ts` 相对 `a6a38a3` 及 `b4a28c4` 仍为字节一致。
+
+### CI 门禁复测
+
+| 检查 | 实际结果 | 判定 |
+| --- | --- | --- |
+| `npm audit --omit=dev` | 输出 Vite `<=6.4.2` 的 **1 high**，退出码 **1**。 | high 未被伪装消失。 |
+| `npm audit --omit=dev --audit-level=critical` | 再次输出同一 high，退出码 **0**（当前无 critical）。 | CI 会阻断 future critical，同时保留 high 审计输出；与 YAML 的两段式临时门禁一致。 |
+| CI YAML | 仍采用普通 `npm ci`，覆盖 Server 构建/测试、Gateway 构建/测试、H5 构建/E2E；新增末尾 `git diff --check`。 | PASS；原 P2-2 已关闭。 |
+| `git diff --check b4a28c4..HEAD` 与 worktree `git diff --check` | 均退出 0。 | PASS。 |
+
+`|| true` 只位于第一条“完整展示 audit”命令；第二条 critical 门禁未忽略退出码。因此网络/registry 等导致第二条审计失败仍会使 CI 失败，且 high 同时出现在两次日志中。
+
+### H5 复测与未改范围确认
+
+- 在 `app` 重新执行 `npm ci && npm run build:h5 && npm run test:h5 && npm run test:e2e`，命令成功；独立复跑 `npm run test:e2e` 为 **3/3** 通过（登录/列表/详情深链/负责人变更、member 403 与会话保留/公海关闭、401 清会话）。测试临时 SQLite/服务进程已清理。
+- Server 与 Gateway 未改动，沿用前次同字节对象的全量结果：Server **146/146**、Gateway **53/53**；本次以源码、测试及锁文件无差异和 `db.ts` 双基线字节一致复核，未做无必要重复执行。
+- 文档口径与代码核对通过：迁移为 001–007；单账号 OpenClaw 为默认关闭的 release candidate；多人绑定/Direct iLink 仍为 RESEARCH ONLY/NO-GO；DeepSeek/AI Scheduler 默认关闭；服务号候选未合入当前制品；Hermes 未开始。`vite.config.ts` 继续仅监听 `127.0.0.1`，生产由后端托管 H5 静态制品。
+
+### 进入验收的条件与本阶段变更
+
+- 验收可在保留 `R-1` 的前提下继续：不得公网暴露 Vite dev server；兼容的 uni-app/Vite 升级获批后必须移除该临时豁免并再次运行完整 audit/CI。
+- 本次复测写入前后，除本报告外无 Git 变更；未修改业务源码、部署实现、数据库或测试行为。
