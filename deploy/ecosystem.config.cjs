@@ -1,8 +1,17 @@
+const path = require('node:path');
+
+const requiredAbsoluteDirectory = (name) => {
+  const value = process.env[name];
+  if (!value || !path.isAbsolute(value)) throw new Error(`${name} must be an absolute repository-external directory`);
+  return value;
+};
+
 module.exports = {
   apps: [
     {
-      name: 'xiansuo',
-      cwd: '/opt/xiansuo/server',
+      name: 'xiansuo-api',
+      // Set XIANSUO_SERVER_DIR only in the repository-external PM2 environment.
+      cwd: requiredAbsoluteDirectory('XIANSUO_SERVER_DIR'),
       script: 'dist/index.js',
       interpreter: 'node',
       env: {
@@ -29,8 +38,7 @@ module.exports = {
         CORS_ORIGINS: process.env.CORS_ORIGINS,
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
-      error_file: '/var/log/xiansuo/error.log',
-      out_file: '/var/log/xiansuo/out.log',
+      merge_logs: true,
       max_memory_restart: '512M',
       restart_delay: 3000,
       autorestart: true,

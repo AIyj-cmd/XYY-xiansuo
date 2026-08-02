@@ -9,6 +9,7 @@
     "test": "tsx --test test/*.test.ts",
     "start": "tsx src/server.ts",
     "gateway:health": "tsx src/cli/health.ts",
+    "gateway:recipient-map-check": "node dist/cli/recipient-map-check.js",
     "gateway:session-status": "tsx src/cli/session-status.ts",
     "gateway:prereq-check": "tsx src/cli/prereq-check.ts",
     "gateway:official-session-status": "tsx src/cli/official-session-status.ts",

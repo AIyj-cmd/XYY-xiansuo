@@ -1,13 +1,22 @@
+const path = require('node:path');
+
+const requiredAbsoluteDirectory = (name) => {
+  const value = process.env[name];
+  if (!value || !path.isAbsolute(value)) throw new Error(`${name} must be an absolute repository-external directory`);
+  return value;
+};
+
 module.exports = {
   apps: [{
     name: 'xiansuo-notification-worker',
     script: 'dist/notification-worker.js',
-    cwd: process.env.XIANSUO_SERVER_DIR || '/opt/xiansuo/server',
+    cwd: requiredAbsoluteDirectory('XIANSUO_SERVER_DIR'),
     interpreter: 'node',
     instances: 1,
     exec_mode: 'fork',
     autorestart: true,
     stop_exit_codes: [0],
+    merge_logs: true,
     env: {
       NODE_ENV: process.env.NODE_ENV || 'production',
       DB_PATH: process.env.DB_PATH,

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { canonicalRequest, freshNonce, sha256, sign } from '../src/auth.js'
-import { loadConfig, ensurePrivateOpenClawStateDirectory, ensurePrivateStateDirectory, type GatewayConfig } from '../src/config.js'
+import { inspectRecipientMapFile, loadConfig, ensurePrivateOpenClawStateDirectory, ensurePrivateStateDirectory, type GatewayConfig } from '../src/config.js'
 import { IdempotencyStore } from '../src/idempotency-store.js'
 import { GatewayService } from '../src/gateway-service.js'
 import { OfficialRuntime, type CommandResult, type OfficialCommandRunner, hasVerifiedOutboundSendCapability, parseOfficialSessionStatus, satisfiesDeclaredCompatibility } from '../src/official-runtime.js'
@@ -453,6 +453,17 @@ test('recipient map file is repository-external, exact 0600 and strictly bounded
     assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: recipientMapFile(dir, { '1.0': { target: 'first@im.wechat', enabled: true } }) }), /规范正整数/)
     assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: recipientMapFile(dir, { '0': { target: 'first@im.wechat', enabled: true } }) }), /规范正整数/)
     assert.throws(() => config(dir, { OPENCLAW_RECIPIENT_MAP_FILE: recipientMapFile(dir, { '-1': { target: 'first@im.wechat', enabled: true } }) }), /规范正整数/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('offline recipient map inspection exposes aggregate counts only', () => {
+  const dir = directory(); try {
+    const mapFile = recipientMapFile(dir, {
+      '7': { target: 'private-seven@im.wechat', enabled: true },
+      '9': { target: 'private-nine@im.wechat', enabled: false },
+    })
+    assert.deepEqual(inspectRecipientMapFile(mapFile), { recipients: 2, enabled: 1, disabled: 1 })
+    assert.ok(!JSON.stringify(inspectRecipientMapFile(mapFile)).includes('@im.wechat'))
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

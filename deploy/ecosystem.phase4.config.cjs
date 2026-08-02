@@ -1,10 +1,18 @@
+const path = require('node:path');
+
+const requiredAbsoluteDirectory = (name) => {
+  const value = process.env[name];
+  if (!value || !path.isAbsolute(value)) throw new Error(`${name} must be an absolute repository-external directory`);
+  return value;
+};
+
 // AI Scheduler remains a separate singleton process. API and notification worker
 // configs intentionally do not contain DEEPSEEK_API_KEY.
 const configured = (name, fallback) => process.env[name] === undefined ? fallback : process.env[name];
 module.exports = {
   apps: [{
     name: 'xiansuo-ai-scheduler', script: 'dist/ai-scheduler.js',
-    cwd: process.env.XIANSUO_SERVER_DIR || '/opt/xiansuo/server', interpreter: 'node',
+    cwd: requiredAbsoluteDirectory('XIANSUO_SERVER_DIR'), interpreter: 'node',
     instances: 1, exec_mode: 'fork', autorestart: true, stop_exit_codes: [0],
     env: {
       NODE_ENV: configured('NODE_ENV', 'production'), DB_PATH: process.env.DB_PATH,

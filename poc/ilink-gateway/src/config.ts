@@ -123,6 +123,18 @@ function readRecipientMapFile(path: string): ReadonlyMap<number, { target: strin
   return recipientMap
 }
 
+/**
+ * Offline operator check for the repository-external recipient map.  It
+ * deliberately returns aggregate counts only: target values never reach
+ * stdout, logs, or a process argument.
+ */
+export function inspectRecipientMapFile(path: string): { recipients: number; enabled: number; disabled: number } {
+  const recipientMap = readRecipientMapFile(path)
+  let enabled = 0
+  for (const recipient of recipientMap.values()) if (recipient.enabled) enabled += 1
+  return { recipients: recipientMap.size, enabled, disabled: recipientMap.size - enabled }
+}
+
 export function ensurePrivateDirectory(path: string, variable: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 })
   const state = lstatSync(path)

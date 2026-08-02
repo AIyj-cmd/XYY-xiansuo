@@ -88,6 +88,32 @@ test('迁移校验和冲突或迁移失败时拒绝继续且不写完成记录',
   database.close();
 });
 
+test('006 旧版本升级到全部当前迁移时保留通知历史且所有规则关闭', () => {
+  const database = open('upgrade-006-to-current.db');
+  runMigrations(database, MIGRATIONS.slice(0, 6), { log: () => undefined });
+  database.prepare("INSERT INTO users (username, name, password_hash, role) VALUES ('upgrade-user', '升级用户', 'hash', 'admin')").run();
+  database.prepare("INSERT INTO users (username, name, password_hash, role) VALUES ('upgrade-owner', '升级负责人', 'hash', 'member')").run();
+  database.prepare("INSERT INTO leads (contact_name, source, owner_id, created_by, lead_date) VALUES ('历史客户', '升级演练', 2, 1, '2026-08-02')").run();
+  database.prepare(`INSERT INTO notification_logs (
+    event_type,event_source,operation_id,subject_type,subject_id,lead_id,actor_user_id,new_owner_id,recipient_user_id,
+    occurred_at,dedupe_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,
+    status,max_attempts,available_at,expires_at
+  ) VALUES (
+    'owner_changed','single_edit','upgrade-operation','lead',1,1,1,2,2,
+    '2026-08-02 00:00:00','upgrade-dedupe',1,'{}','["mock"]','mock','{}',
+    'failed',1,'2026-08-02 00:00:00','2026-08-03 00:00:00'
+  )`).run();
+
+  runMigrations(database, MIGRATIONS, { log: () => undefined });
+  const migrations = database.prepare('SELECT version, checksum FROM schema_migrations ORDER BY version').all() as Array<{ version: string; checksum: string }>;
+  assert.deepEqual(migrations.map((row) => ({ ...row })), MIGRATIONS.map(({ version, checksum }) => ({ version, checksum })));
+  assert.equal((database.prepare('SELECT channel FROM notification_logs WHERE dedupe_key=?').get('upgrade-dedupe') as { channel: string }).channel, 'mock');
+  assert.equal((database.prepare('SELECT COUNT(*) AS count FROM notification_rules WHERE enabled != 0').get() as { count: number }).count, 0);
+  assert.equal(Object.values(database.prepare('PRAGMA integrity_check').get() as Record<string, string>)[0], 'ok');
+  assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
+  database.close();
+});
+
 test('迁移 logger 在事务成功提交后记录 applied', () => {
   const database = open('log-applied.db');
   const events: MigrationLogEvent[] = [];
