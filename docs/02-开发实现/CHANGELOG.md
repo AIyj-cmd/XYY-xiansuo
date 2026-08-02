@@ -8,6 +8,8 @@
 
 > 2026-08-01 离线 result_unknown 修复补充：Gateway 状态库新增 realpath/owner/0700/0600/符号链接与硬链接门禁、内部 checksum 迁移、append-only 人工确认和审计哈希链、永久 key 占用、attempt 与线性 generation ledger。仅离线 CLI 可烧毁 legacy key、记录人工确认、准备/授权/取消 generation 和 reconcile；无 HTTP/H5 入口。超时、断连、abort、非法 JSON 和裸 5xx 均收敛为 `result_unknown`；synthetic 任务最大尝试次数为 1，并携带 sealed control manifest 与稳定 delivery request ID。历史 `result_unknown`、`manually_confirmed_not_received`、confirmed count 0 保持不改写；未实际导入外部 state、启动 daemon 或发送。
 
+> 2026-08-02 Worker/Gateway 超时协调：Gateway `ILINK_REQUEST_TIMEOUT_MS` 明确为 Adapter 与 OpenClaw CLI 共用的完整发送窗口，默认 30000ms；Worker HTTP 窗口默认 40000ms。业务端以 `OPENCLAW_GATEWAY_SEND_TIMEOUT_MS` 声明并校验 Gateway 窗口，要求 Worker 严格多出 5000ms 缓冲，非法值或反向关系拒绝启动。每个既有 HMAC 覆盖的投递正文还携带两项实际定时器值；Gateway 在授权、幂等 acquire 和 Adapter 前对本实例 `ILINK_REQUEST_TIMEOUT_MS` 强制核对，独立进程的 30/40 对 60 秒错配以既有 `ILINK_REQUEST_INVALID` 永久拒绝、零发送。延迟 Gateway 成功会在 Worker 窗口内写入 `sent` 和 providerMessageId；只有真正超时、断连或响应无法确认才写入不可自动重试的 `OPENCLAW_SEND_RESULT_UNKNOWN`。未修改迁移、通知内容、映射、入站 Hook、target 或历史任务。
+
 ## Unreleased — OpenClaw 普通微信内部通知（实验性）
 
 - 用户的最新明确授权覆盖了此前“OpenClaw daemon No-Go / 全部真实渠道暂停”的执行口径：接受长轮询、人工扫码、会话维护和实验性主动通知风险，仅批准单账号、单 pilot、单固定接收人的内部文本通知；Direct iLink、Hook、RPA、逆向协议和客户自动回复仍禁止。旧设计文档保留历史风险事实，并增加了最新授权说明。

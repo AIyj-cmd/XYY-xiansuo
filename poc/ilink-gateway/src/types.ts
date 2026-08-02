@@ -16,6 +16,10 @@ export const deliveryRequestSchema = z.object({
   title: z.string().min(1).max(40),
   body: z.string().min(1).max(500),
   detailUrl: z.literal('https://xs.tomatopia.top/'),
+  // Both values are HMAC-covered by the request body. GatewayService compares
+  // them with its real timer before acquiring an idempotency lease.
+  gatewaySendTimeoutMs: z.number().int().min(1_000).max(120_000),
+  workerTimeoutMs: z.number().int().min(6_000).max(180_000),
   pilotControl: pilotControlSchema.optional()
 }).strict()
 

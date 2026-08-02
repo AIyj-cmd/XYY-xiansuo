@@ -6,6 +6,8 @@
 
 配置 `OPENCLAW_CHANNEL_ENABLED`、回环 `OPENCLAW_GATEWAY_URL` 和仓库外精确 0600 `OPENCLAW_GATEWAY_SECRET_FILE`。推荐 Gateway 使用仓库外精确 0600 的 `OPENCLAW_RECIPIENT_MAP_FILE`：其 JSON 根必须为对象，最多 50 项，键必须是规范正整数系统用户 ID，值严格为 `{"target": "<接收人>@im.wechat", "enabled": true|false}`，例如 `{"12":{"target":"<接收人>@im.wechat","enabled":true}}`。文件只在 Gateway 启动时读取，不热更新；映射优先于旧单接收人配置。Gateway 使用同一 Secret 文件、规范 `OPENCLAW_STATE_DIR`（仓库外 0700 官方会话状态目录）和 `OPENCLAW_CONFIG_PATH`。旧 `ILINK_POC_SESSION_DIR` 仅为兼容别名，不得与规范项同时设置。会话失效只能由人工使用专用账号重新登录。
 
+超时按两个明确窗口协调：Gateway 的 `ILINK_REQUEST_TIMEOUT_MS` 是 Adapter Abort 与 OpenClaw CLI 进程共用的完整发送窗口，默认 `30000`ms；Worker 的 `OPENCLAW_GATEWAY_TIMEOUT_MS` 是回环 HTTP 等待窗口，默认 `40000`ms。Worker 同时设置 `OPENCLAW_GATEWAY_SEND_TIMEOUT_MS=30000`；启动校验要求 Worker 窗口严格大于该值加 `5000`ms 缓冲。每次投递还会把这两个**实际控制定时器**值放入既有 HMAC 覆盖的 request body；Gateway 在消耗授权、获取幂等发送权或调用 Adapter 前，强制要求前者等于本实例的 `ILINK_REQUEST_TIMEOUT_MS`，且后者严格多出 `5000`ms。这样独立进程配置成 Worker `30/40`、Gateway `60` 时会在发送前以 `ILINK_REQUEST_INVALID` 拒绝，调用次数为零。任一值不是允许范围内正整数、或关系不满足时业务进程拒绝启动。不得将 Worker 窗口缩短到 Gateway 的完整发送窗口以内。
+
 仅管理员可显式启用单一 `openclaw` 规则。Gateway 可通过经批准的静态映射管理最多 50 名内部接收人；修改映射后必须重新启动 Gateway，禁止自动绑定、客户接收人、AI 日报和批量发送。日志只能记录状态和安全错误码，不能记录消息全文、会话凭证、用户或接收人标识。
 
 ## 启动前门禁
@@ -53,7 +55,7 @@ npm run pilot:queue-check -- \
 
 ## 结果检查与停止
 
-- 成功必须有 Gateway 安全回执；去重返回必须携带相同原回执。`result_unknown`、永久失败或账号受限均停止且不重试。
+- 成功必须有 Gateway 安全回执；去重返回必须携带相同原回执。只有 Gateway 完整发送窗口真正耗尽、连接中断或响应不能确认时才会记录 `OPENCLAW_SEND_RESULT_UNKNOWN`，且 `retry_allowed=0`；永久失败或账号受限同样停止且不重试。
 - 必须确认唯一任务为 `sent`、自动尝试不超过 2、无其他任务被领取、无 DeepSeek 调用或业务副作用。
 - 完成后关闭 `OPENCLAW_CHANNEL_ENABLED` 和 `ILINK_POC_LIVE_ENABLED`，正常停止 Worker、Gateway 与 OpenClaw daemon，确认无残留进程。
 - 不退出或删除会话，除非用户明确要求；不补发历史任务。将脱敏结果写入 Pilot 报告，不提交配置、状态库、二维码、日志或 Secret。

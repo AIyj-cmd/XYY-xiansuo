@@ -70,7 +70,7 @@ test('adapter timeout after a consumed pilot authorization is result_unknown and
     store.prepareGeneration({ runId, generation: 1, deliveryRequestId: requestId, previousKeyHash: null, manifestHash }, key, 1); store.authorizeGeneration(runId, 1, authorizationId, uid, Date.now() + 60_000, Date.now())
     let calls = 0; const adapter: ChannelAdapter = { name: 'fake', health: async () => ({ status: 'healthy' }), send: async () => { calls += 1; throw new Error('disconnect') } }
     const service = new GatewayService(cfg, adapter, new IdempotencyStore(store), store)
-    const request = { deliveryId: requestId, idempotencyKey: key, recipientUserId: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' as const, pilotControl: { runId, generation: 1, authorizationId, deliveryRequestId: requestId, previousKeyHash: null, manifestHash } }
+    const request = { deliveryId: requestId, idempotencyKey: key, recipientUserId: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' as const, gatewaySendTimeoutMs: 30_000, workerTimeoutMs: 40_000, pilotControl: { runId, generation: 1, authorizationId, deliveryRequestId: requestId, previousKeyHash: null, manifestHash } }
     assert.equal((await service.deliver(request)).status, 'result_unknown'); assert.equal((await service.deliver(request)).status, 'permanent_failure'); assert.equal(calls, 1); store.close()
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
@@ -139,7 +139,7 @@ test('burned and generation-reserved keys are rejected by the ordinary gateway b
     const cfg = config(dir); const store = new StateStore(dir); const uid = process.getuid!(); let calls = 0
     const adapter: ChannelAdapter = { name: 'fake', health: async () => ({ status: 'healthy' }), send: async () => { calls += 1; return { status: 'sent', providerMessageId: 'receipt-1' } } }
     const service = new GatewayService(cfg, adapter, new IdempotencyStore(store), store)
-    const ordinary = (idempotencyKey: string) => ({ deliveryId: randomUUID(), idempotencyKey, recipientUserId: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' as const })
+    const ordinary = (idempotencyKey: string) => ({ deliveryId: randomUUID(), idempotencyKey, recipientUserId: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' as const, gatewaySendTimeoutMs: 30_000, workerTimeoutMs: 40_000 })
 
     const legacyKey = 'legacy-gateway-block-key'; store.importLegacyUnknownAttempt({ idempotencyKey: legacyKey, runId: randomUUID(), deliveryRequestId: randomUUID(), manifestHash: sha('legacy-gateway') }, uid, 1)
     const [first, second] = await Promise.all([service.deliver(ordinary(legacyKey)), service.deliver(ordinary(legacyKey))])

@@ -5,9 +5,17 @@ import { assertMessagePolicy, hashMessage } from './message-policy.js'
 import type { GatewayConfig } from './config.js'
 import type { ChannelAdapter, ChannelDeliveryRequest, ChannelDeliveryResult } from './types.js'
 
+export const WORKER_TIMEOUT_BUFFER_MS = 5_000
+
 export class GatewayService {
   constructor(private readonly config: GatewayConfig, private readonly adapter: ChannelAdapter, private readonly idempotency: IdempotencyStore, private readonly state?: StateStore) {}
   async deliver(request: ChannelDeliveryRequest): Promise<ChannelDeliveryResult> {
+    // Reject before authorization consumption, idempotency acquisition and any
+    // Adapter work. This proves the Worker is waiting longer than this exact
+    // Gateway instance's real outbound timer, not merely a mirrored setting.
+    if (request.gatewaySendTimeoutMs !== this.config.ILINK_REQUEST_TIMEOUT_MS || request.workerTimeoutMs <= this.config.ILINK_REQUEST_TIMEOUT_MS + WORKER_TIMEOUT_BUFFER_MS) {
+      return { status: 'permanent_failure', errorCode: 'ILINK_REQUEST_INVALID' }
+    }
     let recipientExternalId: string | undefined
     if (this.config.recipientMap) {
       const recipient = this.config.recipientMap.get(request.recipientUserId)

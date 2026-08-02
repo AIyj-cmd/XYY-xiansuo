@@ -118,9 +118,55 @@ test('Worker 从唯一 synthetic outbox 通过 OpenClaw Channel 到伪 Gateway�
     const message = openClawSyntheticPilotMessage();
     assert.deepEqual({ title: requests[0].title, body: requests[0].body, detailUrl: requests[0].detailUrl }, { title: message.title, body: message.body, detailUrl: message.detailPath });
     assert.equal(typeof requests[0].pilotControl?.deliveryRequestId, 'string'); assert.equal(requests[0].deliveryId, requests[0].pilotControl?.deliveryRequestId);
+    assert.deepEqual({ gatewaySendTimeoutMs: requests[0].gatewaySendTimeoutMs, workerTimeoutMs: requests[0].workerTimeoutMs }, { gatewaySendTimeoutMs: 30_000, workerTimeoutMs: 40_000 });
     assert.equal(JSON.stringify(requests[0]).match(/客户|联系人|手机号|微信号|需求|跟进|prompt|jwt|token|api[_ -]?key/i), null);
     const database = new DatabaseSync(filename, { readOnly: true }); const task = database.prepare('SELECT status,attempt_count,provider_message_id FROM notification_logs').get() as any;
     assert.deepEqual({ ...task }, { status: 'sent', attempt_count: 1, provider_message_id: 'fake-gateway-receipt' }); database.close();
+  } finally {
+    closeDb(); globalThis.fetch = originalFetch;
+    for (const [name, value] of Object.entries(before)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Worker waits past the legacy 10s ceiling for a delayed Fake Gateway success and persists its provider receipt', async () => {
+  const directory = privateDirectory(); const filename = databasePath(directory); const secret = path.join(directory, 'gateway.secret');
+  const names = ['DB_PATH','NOTIFICATION_WORKER_ENABLED','NOTIFICATION_MOCK_ENABLED','OPENCLAW_CHANNEL_ENABLED','OPENCLAW_PILOT_USER_ID','OPENCLAW_GATEWAY_URL','OPENCLAW_GATEWAY_SECRET_FILE','OPENCLAW_GATEWAY_SEND_TIMEOUT_MS','OPENCLAW_GATEWAY_TIMEOUT_MS'];
+  const before = Object.fromEntries(names.map((name) => [name, process.env[name]])); const originalFetch = globalThis.fetch; let calls = 0;
+  try {
+    enqueueOpenClawSyntheticPilot(input(directory)); writeFileSync(secret, 's'.repeat(40)); chmodSync(secret, 0o600);
+    Object.assign(process.env, { DB_PATH: filename, NOTIFICATION_WORKER_ENABLED: 'true', NOTIFICATION_MOCK_ENABLED: 'false', OPENCLAW_CHANNEL_ENABLED: 'true', OPENCLAW_PILOT_USER_ID: '73', OPENCLAW_GATEWAY_URL: 'http://127.0.0.1:39001', OPENCLAW_GATEWAY_SECRET_FILE: secret, OPENCLAW_GATEWAY_SEND_TIMEOUT_MS: '30000', OPENCLAW_GATEWAY_TIMEOUT_MS: '40000' });
+    globalThis.fetch = (async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10_050));
+      return new Response(JSON.stringify({ data: { status: 'sent', providerMessageId: 'late-fake-gateway-receipt' } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    closeDb(); await runOnce(); await runOnce(); closeDb();
+    assert.equal(calls, 1);
+    const database = new DatabaseSync(filename, { readOnly: true }); const task = database.prepare('SELECT status,attempt_count,retry_allowed,last_error_code,provider_message_id FROM notification_logs').get() as any;
+    assert.deepEqual({ ...task }, { status: 'sent', attempt_count: 1, retry_allowed: 1, last_error_code: null, provider_message_id: 'late-fake-gateway-receipt' }); database.close();
+  } finally {
+    closeDb(); globalThis.fetch = originalFetch;
+    for (const [name, value] of Object.entries(before)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Worker records a real Gateway wait-window timeout as non-retryable result_unknown without a second call', async () => {
+  const directory = privateDirectory(); const filename = databasePath(directory); const secret = path.join(directory, 'gateway.secret');
+  const names = ['DB_PATH','NOTIFICATION_WORKER_ENABLED','NOTIFICATION_MOCK_ENABLED','OPENCLAW_CHANNEL_ENABLED','OPENCLAW_PILOT_USER_ID','OPENCLAW_GATEWAY_URL','OPENCLAW_GATEWAY_SECRET_FILE','OPENCLAW_GATEWAY_SEND_TIMEOUT_MS','OPENCLAW_GATEWAY_TIMEOUT_MS'];
+  const before = Object.fromEntries(names.map((name) => [name, process.env[name]])); const originalFetch = globalThis.fetch; let calls = 0;
+  try {
+    enqueueOpenClawSyntheticPilot(input(directory)); writeFileSync(secret, 's'.repeat(40)); chmodSync(secret, 0o600);
+    Object.assign(process.env, { DB_PATH: filename, NOTIFICATION_WORKER_ENABLED: 'true', NOTIFICATION_MOCK_ENABLED: 'false', OPENCLAW_CHANNEL_ENABLED: 'true', OPENCLAW_PILOT_USER_ID: '73', OPENCLAW_GATEWAY_URL: 'http://127.0.0.1:39001', OPENCLAW_GATEWAY_SECRET_FILE: secret, OPENCLAW_GATEWAY_SEND_TIMEOUT_MS: '1000', OPENCLAW_GATEWAY_TIMEOUT_MS: '6001' });
+    globalThis.fetch = ((_: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      calls += 1;
+      (init?.signal as AbortSignal).addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    })) as typeof fetch;
+    closeDb(); await runOnce(); await runOnce(); closeDb();
+    assert.equal(calls, 1);
+    const database = new DatabaseSync(filename, { readOnly: true }); const task = database.prepare('SELECT status,attempt_count,automatic_attempt_count,retry_allowed,last_error_code,provider_message_id FROM notification_logs').get() as any;
+    assert.deepEqual({ ...task }, { status: 'failed', attempt_count: 1, automatic_attempt_count: 1, retry_allowed: 0, last_error_code: 'OPENCLAW_SEND_RESULT_UNKNOWN', provider_message_id: null }); database.close();
   } finally {
     closeDb(); globalThis.fetch = originalFetch;
     for (const [name, value] of Object.entries(before)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }

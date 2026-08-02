@@ -10,7 +10,7 @@ OpenClaw 支持由静态映射批准的正整数内部用户，以及 `owner_cha
 
 入站静默插件位于 `poc/ilink-gateway/openclaw-plugins/xiansuo-no-reply/`，以官方原生插件 manifest 和 `before_agent_reply` 契约实现。它只匹配 `messageProvider === "openclaw-weixin"`，返回无 `reply` 的 `{handled:true}`，因此在 Provider 前短路且不产生外发内容；其他渠道不拦截。它默认不安装、不写 `OPENCLAW_CONFIG_PATH`；受控安装必须使用受支持的 `openclaw plugins install --link <绝对路径>`（不得加 `--force`），再用 `config set` 显式启用插件与 `allowConversationAccess=true`，并通过 runtime inspect 的 `hookCount=1`、`before_agent_reply` 和零 diagnostics 验证，详见插件 README。
 
-Gateway 对同一幂等键持久保存投递状态和原子发送锁。只有明确 `retryable_failure` 才能在 Worker 的两次尝试上限内重新获取发送权；重启后仍可重试。同键的并发请求不能重复调用 Adapter；`sent`、`permanent_failure`、`result_unknown` 均失败关闭。`deduplicated` 必须返回已持久化的原本地回执，否则安全失败。OpenClaw 超时完全由 `OPENCLAW_GATEWAY_TIMEOUT_MS` 控制；Worker 的旧 10 秒保护只保留给 Mock。
+Gateway 对同一幂等键持久保存投递状态和原子发送锁。只有明确 `retryable_failure` 才能在 Worker 的两次尝试上限内重新获取发送权；重启后仍可重试。同键的并发请求不能重复调用 Adapter；`sent`、`permanent_failure`、`result_unknown` 均失败关闭。`deduplicated` 必须返回已持久化的原本地回执，否则安全失败。Gateway 的 `ILINK_REQUEST_TIMEOUT_MS` 同时限制 Adapter Abort 和 OpenClaw CLI 进程，默认完整发送窗口为 30 秒；Worker HTTP 等待默认 40 秒。业务端用 `OPENCLAW_GATEWAY_SEND_TIMEOUT_MS` 声明同一 Gateway 窗口，并拒绝启动任何不满足“Worker 严格大于 Gateway 窗口加 5 秒缓冲”的配置。每一份既有 HMAC 认证的投递正文都携带二者的实际值；Gateway 在 consumeAuthorization、idempotency acquire 与 Adapter 前比较自己的真实窗口，任一错配均以既有 `ILINK_REQUEST_INVALID` 永久拒绝、零发送。Mock 仍保留既有 Worker 10 秒保护。
 
 管理员规则 preview 和 PUT 共用事件接收人策略、单渠道门禁：规则启用与否均必须恰好指定 `mock` 或 `openclaw`。空数组、多渠道和其他渠道均被拒绝，preview 不会将无渠道规则显示为 `pending`。Gateway 已删除无调用的旧 `existing`/`reserve` 及 StateStore 独立创建、更新、查询包装；投递状态仅经原子 `acquire`/`finalize` 路径维护。
 

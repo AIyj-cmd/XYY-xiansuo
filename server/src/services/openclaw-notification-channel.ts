@@ -42,7 +42,10 @@ export class OpenClawNotificationChannel implements NotificationChannel {
     const deliveryId = message.pilotControl?.deliveryRequestId ?? randomUUID();
     // OpenClaw Gateway accepts only the fixed no-token H5 entry URL. Mock
     // retains the relative snapshot detailPath through its separate channel.
-    const body = JSON.stringify({ deliveryId, idempotencyKey, recipientUserId: recipient.userId, title: message.title, body: message.body, detailUrl: DETAIL_URL, ...(message.pilotControl ? { pilotControl: message.pilotControl } : {}) });
+    // These actual timer values are covered by the existing HMAC body hash.
+    // Gateway verifies them against its own configured send window before it
+    // acquires a delivery lease or invokes the Adapter.
+    const body = JSON.stringify({ deliveryId, idempotencyKey, recipientUserId: recipient.userId, title: message.title, body: message.body, detailUrl: DETAIL_URL, gatewaySendTimeoutMs: this.config.openclawGatewaySendTimeoutMs, workerTimeoutMs: openClawTimeoutMs(this.config), ...(message.pilotControl ? { pilotControl: message.pilotControl } : {}) });
     const timestamp = String(Date.now()); const nonce = freshNonce();
     const canonical = canonicalRequest('POST', '/deliveries', timestamp, nonce, sha256(body));
     const controller = new AbortController();

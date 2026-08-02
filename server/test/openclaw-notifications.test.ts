@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { resolveNotificationConfig } from '../src/config.js';
+import { OPENCLAW_GATEWAY_TIMEOUT_BUFFER_MS, resolveNotificationConfig } from '../src/config.js';
 import { configureConnection, MIGRATIONS, runMigrations } from '../src/db.js';
 import { OpenClawNotificationChannel, openClawMessage, openClawTimeoutMs } from '../src/services/openclaw-notification-channel.js';
 import { mapChannelResult, workerAbortTimeoutMs } from '../src/notification-worker.js';
@@ -143,9 +143,17 @@ test('OpenClaw Channel maps owner_changed relative detailPath to the fixed no-to
   } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('OpenClaw owns its configured gateway timeout while Mock keeps the legacy Worker timeout', () => {
-  assert.equal(openClawTimeoutMs(resolveNotificationConfig({ OPENCLAW_GATEWAY_TIMEOUT_MS: '1000' })), 1_000);
-  assert.equal(openClawTimeoutMs(resolveNotificationConfig({ OPENCLAW_GATEWAY_TIMEOUT_MS: '20000' })), 20_000);
+test('OpenClaw Worker timeout is strictly larger than the declared complete Gateway send window, while Mock keeps the legacy Worker timeout', () => {
+  const defaults = resolveNotificationConfig({});
+  assert.equal(defaults.openclawGatewaySendTimeoutMs, 30_000);
+  assert.equal(openClawTimeoutMs(defaults), 40_000);
+  assert.ok(openClawTimeoutMs(defaults) > defaults.openclawGatewaySendTimeoutMs + OPENCLAW_GATEWAY_TIMEOUT_BUFFER_MS);
+  const custom = resolveNotificationConfig({ OPENCLAW_GATEWAY_SEND_TIMEOUT_MS: '20000', OPENCLAW_GATEWAY_TIMEOUT_MS: '26001' });
+  assert.equal(custom.openclawGatewaySendTimeoutMs, 20_000);
+  assert.equal(openClawTimeoutMs(custom), 26_001);
+  assert.throws(() => resolveNotificationConfig({ OPENCLAW_GATEWAY_SEND_TIMEOUT_MS: '30000', OPENCLAW_GATEWAY_TIMEOUT_MS: '35000' }), /必须大于/);
+  assert.throws(() => resolveNotificationConfig({ OPENCLAW_GATEWAY_SEND_TIMEOUT_MS: 'nope' }), /必须为整数/);
+  assert.throws(() => resolveNotificationConfig({ OPENCLAW_GATEWAY_TIMEOUT_MS: '0' }), /超出允许范围/);
   assert.equal(workerAbortTimeoutMs('openclaw'), undefined);
   assert.equal(workerAbortTimeoutMs('mock'), 10_000);
 });

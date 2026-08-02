@@ -28,7 +28,7 @@ function openclawConfigPath(dir: string): string { const parent = join(dir, 'ope
 function config(dir: string, extra: Record<string, string> = {}): GatewayConfig {
   return loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1', ...extra })
 }
-function request() { return { deliveryId: randomUUID(), idempotencyKey: `phase5a-test-${randomUUID()}`, recipientUserId: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' } }
+function request() { return { deliveryId: randomUUID(), idempotencyKey: `phase5a-test-${randomUUID()}`, recipientUserId: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' as const, gatewaySendTimeoutMs: 30_000, workerTimeoutMs: 40_000 } }
 function adapterRequest() { return { recipientExternalId: 'test-recipient-1', idempotencyKey: `phase5a-test-${randomUUID()}`, message: { ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' } } }
 function result(stdout = '', exitCode = 0): CommandResult { return { stdout, stderr: '', exitCode } }
 const openClawMessageSendSuccessFixture = readFileSync(new URL('./fixtures/openclaw-2026.7.1-message-send-success.json', import.meta.url), 'utf8').trim()
@@ -350,9 +350,46 @@ test('OpenClaw configuration path requires a private real parent and a private r
 
 test('configuration rejects invalid boolean, port and timeout without silently coercing them', () => {
   const dir = directory(); try {
+    assert.equal(config(dir).ILINK_REQUEST_TIMEOUT_MS, 30_000)
     assert.throws(() => config(dir, { ILINK_POC_LIVE_ENABLED: 'yes' }))
     assert.throws(() => config(dir, { ILINK_GATEWAY_PORT: '0' }))
     assert.throws(() => config(dir, { ILINK_REQUEST_TIMEOUT_MS: '100' }))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Gateway applies ILINK_REQUEST_TIMEOUT_MS as its complete Adapter window and preserves an uncertain single attempt', async () => {
+  const dir = directory(); let calls = 0
+  try {
+    const state = new StateStore(dir)
+    const adapter = {
+      name: 'fake' as const,
+      health: async () => ({ status: 'healthy' as const }),
+      send: async (_request: unknown, signal: AbortSignal) => {
+        calls += 1
+        await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }))
+        return { status: 'sent' as const, providerMessageId: 'must-not-return-after-abort' }
+      }
+    }
+    const service = new GatewayService(config(dir, { ILINK_REQUEST_TIMEOUT_MS: '1000' }), adapter, new IdempotencyStore(state))
+    const item = { ...request(), gatewaySendTimeoutMs: 1_000, workerTimeoutMs: 6_001 }
+    for (const result of [await service.deliver(item), await service.deliver(item)]) {
+      assert.equal(result.status, 'result_unknown')
+      assert.equal(result.errorCode, 'ILINK_SEND_TIMEOUT')
+    }
+    assert.equal(calls, 1)
+    state.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Gateway rejects a Worker 30s/40s timeout contract when this instance is actually configured for 60s, before Adapter work', async () => {
+  const dir = directory(); let calls = 0
+  try {
+    const state = new StateStore(dir)
+    const adapter = { name: 'fake' as const, health: async () => ({ status: 'healthy' as const }), send: async () => { calls += 1; return { status: 'sent' as const, providerMessageId: 'must-not-send' } } }
+    const service = new GatewayService(config(dir, { ILINK_REQUEST_TIMEOUT_MS: '60000' }), adapter, new IdempotencyStore(state))
+    assert.deepEqual(await service.deliver(request()), { status: 'permanent_failure', errorCode: 'ILINK_REQUEST_INVALID' })
+    assert.equal(calls, 0)
+    state.close()
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

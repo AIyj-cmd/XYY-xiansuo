@@ -74,5 +74,7 @@ export function hashMessage(message: { title: string; body: string; detailUrl: s
 }
 
 export function syntheticRequest(recipientUserId: number, idempotencyKey: string): ChannelDeliveryRequest {
-  return { deliveryId: crypto.randomUUID(), idempotencyKey, recipientUserId, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' }
+  // The offline CLI uses only the deployed 30s/40s contract. A Gateway whose
+  // actual timer differs rejects this request before it can send anything.
+  return { deliveryId: crypto.randomUUID(), idempotencyKey, recipientUserId, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/', gatewaySendTimeoutMs: 30_000, workerTimeoutMs: 40_000 }
 }

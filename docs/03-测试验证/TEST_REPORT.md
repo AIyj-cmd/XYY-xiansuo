@@ -473,3 +473,59 @@
 
 - **P1=0、P2=0、P3=0。** 第 24 节 P2 已被本节独立复验关闭，允许提交并进入后续代码验收。
 - 本测试阶段新增的工作区内容仅为本报告第 25、26 节；其余差异为本轮测试开始前已有的实现、文档和插件文件。未启动 daemon、真实 OpenClaw/Gateway/Worker 或微信，未访问网络、DeepSeek 或业务数据库；此结论不构成真实 Pilot 执行。
+
+## 27. OpenClaw Worker/Gateway 超时协调：独立复核（2026-08-02）
+
+### 测试计划与基线
+
+- 基线提交：`95425137f41866489629fc97ef5eab8b24256010`；开始前工作区已有 13 个本轮实现/测试/示例/文档修改，未恢复、覆盖或暂存。
+- 复核 Gateway Adapter/CLI 的完整发送窗口、Worker HTTP 等待窗口、AbortSignal 结果映射、Fake Gateway 延迟成功及真正超时；并检查两个独立 PM2 进程的配置能否被实际协调。
+- 全程未启动真实 OpenClaw、Gateway、Worker、DeepSeek 或 AI Scheduler，未访问生产数据库或真实微信。
+
+### 通过项
+
+- Gateway `ILINK_REQUEST_TIMEOUT_MS` 默认已由 10000ms 调整为 30000ms，并同时用于 `GatewayService` 的 Adapter Abort 和 `OfficialRuntime` 的 `openclaw message send` 子进程限制。
+- 业务端默认 `OPENCLAW_GATEWAY_SEND_TIMEOUT_MS=30000`、`OPENCLAW_GATEWAY_TIMEOUT_MS=40000`；`resolveNotificationConfig()` 要求 Worker 值严格大于声明的发送窗口加 5000ms。非法整数、范围外值和 30000/35000 边界均由测试拒绝。
+- 离线 Fake Gateway 在 10050ms 后返回 `sent` 时，Worker 仅调用一次，`notification_logs` 写入 `status=sent`、`attempt_count=1` 和原 `provider_message_id`；这覆盖旧 10 秒上限之后的新窗口内成功。
+- 真正超过 Worker 等待窗口的 Fake Gateway 测试写入 `status=failed`、`last_error_code=OPENCLAW_SEND_RESULT_UNKNOWN`、`retry_allowed=0`，且调用次数为 1；明确失败、网络/非法响应、幂等、owner 详细模板、多人映射、no-reply、白名单和成功响应解析均由现有回归覆盖。
+
+### 失败项
+
+#### P2：两个独立进程没有可验证的实际超时契约，仍可配置错配并重现 Worker 先超时
+
+- 预期：Worker 的 40000ms HTTP 等待必须针对 Gateway 实际使用的完整 30000ms Adapter/CLI 窗口；若二者不匹配，任一侧启动或调用应 fail-closed。
+- 实际：Server 仅校验其本地 `OPENCLAW_GATEWAY_SEND_TIMEOUT_MS` 与 `OPENCLAW_GATEWAY_TIMEOUT_MS`；Gateway 仅独立接受范围为 1000–120000ms 的 `ILINK_REQUEST_TIMEOUT_MS`。两进程之间没有共享受控配置、Gateway health/协议字段或启动握手来证明两项相等。`deploy/ecosystem.openclaw-gateway.config.cjs` 只有注释说明“must equal”，不能阻止 Gateway 实际设为 60000ms、Server 仍声明 30000/40000ms 的错配。
+- 配置文档也未完全同步：`deploy/.env.example` 仍保留旧的 `OPENCLAW_GATEWAY_TIMEOUT_MS=10000`，没有 `OPENCLAW_GATEWAY_SEND_TIMEOUT_MS`。
+- 影响：错配时 Gateway 仍可在 Worker 40 秒后继续执行，重现本次修复目标中的 `result_unknown/failed` 假阴性。
+- 建议：建立跨进程可验证契约，例如 Gateway `/health` 明确、受认证地声明实际完整发送窗口，Worker 在启动和每次 OpenClaw 投递前比对声明值及缓冲关系；或让两个 PM2 进程从同一受控超时配置载体读取且在启动脚本中拒绝不相等。同步 `deploy/.env.example`，并补充错配拒绝的集成测试。
+
+### 命令与结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `cd server && npm run build && npm test` | 通过，145/145；仅临时测试数据库。|
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，50/50；Fake Adapter/CLI fixture，无真实 OpenClaw 或网络调用。|
+| `git diff --check` | 通过。|
+| `server/data` SHA-256 前后比较 | 一致；`app.db=8b8bc326…061d5f2`，未改动。|
+| PM2/示例与源码静态交叉核对 | 失败：独立进程无实际超时匹配校验，且 `deploy/.env.example` 仍为旧 10 秒示例。|
+
+### 结论
+
+- **P1=0、P2=1、P3=0；不允许提交或申请真实单条发送授权。** 需先关闭跨进程超时错配门禁并独立复测。
+- 本测试阶段仅新增本报告第 27 节；未修改业务实现、迁移、Schema、映射或消息策略。
+
+### 修复后独立复测
+
+- 第 27 节的 P2 已关闭。业务端把 `gatewaySendTimeoutMs=30000` 与 `workerTimeoutMs=40000` 置入每个 Gateway 请求 body；既有 HMAC 对该完整 body 的 SHA-256 签名，因此两个值不能在签名后被替换。Gateway 的严格 schema 接收这两个整数，并在授权消费、幂等 acquire、接收人解析和 Adapter 调用之前，将它们与本实例的 `ILINK_REQUEST_TIMEOUT_MS` 及 5000ms 缓冲比较。
+- Gateway 以 60000ms 启动、收到已签名的 30000/40000 合约时，独立 Fake Adapter 测试返回 `permanent_failure / ILINK_REQUEST_INVALID`，Adapter 调用计数为 0。默认 30000ms Gateway 与 30000/40000 请求仍通过并只调用 Adapter 一次。
+- Server 的延迟 Fake Gateway 成功测试在 10050ms（旧 10 秒上限之后）返回 `sent`，最终记录为 `sent` 并保存 `provider_message_id`；真正超过 Worker 窗口的测试仍为 `failed / OPENCLAW_SEND_RESULT_UNKNOWN / retry_allowed=0`，调用次数为 1，不会自动重试。明确失败、网络/非法响应和幂等回归均通过。
+- 根与部署 `.env.example`、Gateway 示例、当前 PM2 示例以及 phase3/phase4 PM2 示例均统一为 Gateway 30000ms、Worker 40000ms，未保留本轮 OpenClaw 10 秒默认值。
+
+| 命令/检查 | 修复后结果 |
+| --- | --- |
+| `cd server && npm run build && npm test` | 通过，145/145；仅临时数据库。|
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，51/51；含 60 秒 Gateway 错配前拒绝，未启动真实 OpenClaw。|
+| `git diff --check` | 通过。|
+| `server/data` SHA-256 前后比较 | 一致；`app.db=8b8bc326…061d5f2`。|
+
+**修复后结论：P1=0、P2=0、P3=0，允许提交；本离线结论不构成真实微信发送授权。** 本轮未修改业务实现、迁移或数据库，未启动真实 OpenClaw/微信、DeepSeek、AI Scheduler 或生产服务。

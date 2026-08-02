@@ -32,7 +32,9 @@ const configSchema = z.object({
   ILINK_GATEWAY_SECRET_FILE: absolutePath,
   OPENCLAW_PILOT_USER_ID: z.string().regex(/^[1-9]\d*$/, '只能为一个正整数').optional(),
   OPENCLAW_RECIPIENT_MAP_FILE: absolutePath.optional(),
-  ILINK_REQUEST_TIMEOUT_MS: positiveInt(1_000, 120_000, 10_000),
+  // This is the Gateway's complete outbound window: GatewayService aborts the
+  // Adapter at it and OfficialRuntime gives the OpenClaw CLI the same limit.
+  ILINK_REQUEST_TIMEOUT_MS: positiveInt(1_000, 120_000, 30_000),
   ILINK_SESSION_CHECK_TIMEOUT_MS: positiveInt(100, 60_000, 5_000),
   ILINK_GATEWAY_CLOCK_SKEW_SECONDS: positiveInt(30, 600, 300),
   ILINK_GATEWAY_RATE_LIMIT_PER_MINUTE: positiveInt(1, 120, 30)

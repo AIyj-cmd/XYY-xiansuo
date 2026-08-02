@@ -59,9 +59,14 @@ export type NotificationConfig = {
   openclawPilotUserId?: number;
   openclawGatewayUrl?: string;
   openclawGatewaySecret?: string;
+  /** Gateway 的完整 Adapter/CLI 发送窗口；必须与 Gateway 的 ILINK_REQUEST_TIMEOUT_MS 一致。 */
+  openclawGatewaySendTimeoutMs: number;
   openclawGatewayTimeoutMs: number;
   openclawMaxAttempts: number;
 };
+
+/** 给回环 HTTP 响应、事件循环调度和 Gateway 持久化留出的最小缓冲。 */
+export const OPENCLAW_GATEWAY_TIMEOUT_BUFFER_MS = 5_000;
 
 function strictOpenClawGatewayUrl(value: string): string {
   let url: URL;
@@ -86,6 +91,11 @@ function readGatewaySecretFile(value: string | undefined): string {
 
 export function resolveNotificationConfig(env: NodeJS.ProcessEnv = process.env, options: { requireOpenClawSecret?: boolean } = {}): NotificationConfig {
   const openclawEnabled = resolveStrictBoolean('OPENCLAW_CHANNEL_ENABLED', env.OPENCLAW_CHANNEL_ENABLED);
+  const openclawGatewaySendTimeoutMs = strictInteger(env, 'OPENCLAW_GATEWAY_SEND_TIMEOUT_MS', 30_000, 1_000, 120_000);
+  const openclawGatewayTimeoutMs = strictInteger(env, 'OPENCLAW_GATEWAY_TIMEOUT_MS', 40_000, 6_000, 180_000);
+  if (openclawGatewayTimeoutMs <= openclawGatewaySendTimeoutMs + OPENCLAW_GATEWAY_TIMEOUT_BUFFER_MS) {
+    throw new Error(`OPENCLAW_GATEWAY_TIMEOUT_MS 必须大于 OPENCLAW_GATEWAY_SEND_TIMEOUT_MS 加 ${OPENCLAW_GATEWAY_TIMEOUT_BUFFER_MS}ms 缓冲，拒绝启动`);
+  }
   const config: NotificationConfig = {
     leadPoolClaimEnabled: resolveStrictBoolean('LEAD_POOL_CLAIM_ENABLED', env.LEAD_POOL_CLAIM_ENABLED),
     captureEnabled: resolveStrictBoolean('NOTIFICATION_CAPTURE_ENABLED', env.NOTIFICATION_CAPTURE_ENABLED),
@@ -93,7 +103,8 @@ export function resolveNotificationConfig(env: NodeJS.ProcessEnv = process.env, 
     mockEnabled: resolveStrictBoolean('NOTIFICATION_MOCK_ENABLED', env.NOTIFICATION_MOCK_ENABLED),
     schedulerEnabled: resolveStrictBoolean('NOTIFICATION_SCHEDULER_ENABLED', env.NOTIFICATION_SCHEDULER_ENABLED),
     openclawEnabled,
-    openclawGatewayTimeoutMs: strictInteger(env, 'OPENCLAW_GATEWAY_TIMEOUT_MS', 10_000, 1_000, 120_000),
+    openclawGatewaySendTimeoutMs,
+    openclawGatewayTimeoutMs,
     openclawMaxAttempts: strictInteger(env, 'OPENCLAW_MAX_ATTEMPTS', 2, 2, 2),
   };
   if (env.OPENCLAW_PILOT_USER_ID !== undefined && env.OPENCLAW_PILOT_USER_ID !== '' && !/^[1-9]\d*$/.test(env.OPENCLAW_PILOT_USER_ID)) {
