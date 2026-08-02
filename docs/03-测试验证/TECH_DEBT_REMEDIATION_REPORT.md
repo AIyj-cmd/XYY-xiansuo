@@ -78,7 +78,7 @@
 - H5 真实 Chromium 运行测试通过（证据：[app/test/h5-runtime.spec.ts](../../app/test/h5-runtime.spec.ts)）：管理员登录、列表显示、详情深链刷新（SPA fallback）、负责人转移；member 无管理员 UI、直接请求管理员 API 得到 403 且本地会话不丢失、负责人转移入口隐藏、公海待认领关闭；非法 token 得到 401、清 token 并返回登录页。
 - 端口由 `net.listen(0)` 动态获取，SQLite 位于 `mkdtemp('/tmp/xiansuo-h5-runtime-*')` 的全新目录；使用 `expect.poll`，未发现 `sleep`、`waitForTimeout` 或固定延时。测试的 `afterAll` 发送 SIGTERM 并递归删除该临时目录。复跑后未发现匹配临时目录或测试服务进程。
 - Server 现有集成测试额外覆盖缺失/错误/过期 token 的 401、member 访问管理员接口的 403、角色即时升降级和停用、负责人单条/批量变更的全有或全无、公海重复认领幂等、迁移校验和/事务回滚、outbox 的 channel 范围和 `result_unknown` 终态。
-- `routes/leads.ts` 的查询/详情 SQL 被移动到 [server/src/services/lead-query-service.ts](../../server/src/services/lead-query-service.ts)，静态逐项比对确认筛选、排序、分页、favorite 和详情投影不变；负责人及跟进派生仅为对既有原子实现的再导出。前端分页重置、追加列表和 `hasMore` 逻辑也保持原行为；未发现此次重构引入新的去重分支。
+- `routes/leads.ts` 的查询/详情 SQL 被移动到 [server/src/services/lead-query-service.ts](../../server/src/services/lead-query-service.ts)，静态逐项比对确认筛选、排序、分页、favorite 和详情投影不变；该验证对象当时为负责人及跟进派生增加了再导出入口，最终验收已删除这两个无价值间接层，见下方最终结论。前端分页重置、追加列表和 `hasMore` 逻辑也保持原行为；未发现此次重构引入新的去重分支。
 
 ### 归档、边界与安全审查
 
@@ -144,3 +144,55 @@
 
 - 验收可在保留 `R-1` 的前提下继续：不得公网暴露 Vite dev server；兼容的 uni-app/Vite 升级获批后必须移除该临时豁免并再次运行完整 audit/CI。
 - 本次复测写入前后，除本报告外无 Git 变更；未修改业务源码、部署实现、数据库或测试行为。
+
+---
+
+## 最终验收结论（2026-08-03）
+
+### 判定与交付范围
+
+**PASS：技术债清理与稳定基线收口达到本轮完成标准，可进入合并评审；不构成生产发布、外部发送或功能开关启用授权。**
+
+最终严重级别为 **P1 = 0、P2 = 0、P3 = 0**。保留已接受残余风险 `R-1`：Vite `5.2.8` 位于 `<=6.4.2` 的 high 公告范围；普通生产依赖审计退出 1，临时 critical 门禁退出 0。该风险仍可见且未伪装为已修复。
+
+比较基线为 `b4a28c4`，本轮提交链为 `070223b`、`5926dcb`、`8df9134`、`a6a38a3`、`9b05663`、`70deb9f`、`ffc6539`；归档分支固定为 `archive/openclaw-multi-peer-research-20260802@20f4e5e`。验收只检查并修改 `/tmp/xiansuo-project-health`，未推送、合并、部署，未访问生产数据库或外网 Provider，未执行真实微信、OpenClaw、DeepSeek 或服务号操作。
+
+### 完成标准核对
+
+| 验收项 | 结论 | 最终证据 |
+| --- | --- | --- |
+| 多人研究归档 | PASS | 归档 ref 精确指向 `20f4e5e`；仅作 `RESEARCH ONLY / NO-GO`，未进入当前 17 文件整改差异。归档相对基线未新增数据库、WAL/SHM、真实 `.env`、密钥/证书、日志、二维码或状态/会话文件。 |
+| H5 运行测试 | PASS | 3 条真实 Chromium 烟测覆盖登录、列表、详情深链刷新、负责人变更、member UI/API 403、公海关闭、401/403 会话语义；动态端口和临时 SQLite 均已清理。 |
+| 共享前端逻辑 | PASS | 两个列表页共同使用 `lead-display.ts` 和 `useLeadListState.ts`；新增 5 条直接测试覆盖日期/逾期/意向、分页重置、筛选重置与 `hasMore`，不访问网络或生产数据。Playwright 套件实际为 **8/8**。 |
+| leads 路由第一层拆分 | PASS | 仅新增有实际职责的 `lead-query-service.ts`；查询/详情 SQL 与响应投影保持一致。负责人和跟进派生继续直接复用基线已有的 `lead-owner.ts`、`follow-up-derived.ts`；验收删除两个只有两行再导出的空壳服务，避免为拆分制造新技术债。 |
+| CI、配置与文档 | PASS | CI 使用普通 `npm ci`，覆盖 Server、Gateway、H5 构建及 8 条 Playwright 测试；完整展示 high、阻断 critical，并执行 `git diff --check`。配置清单区分 CURRENT/CANDIDATE/RESEARCH，敏感值未写入文档。 |
+| 数据库与稳定边界 | PASS | `server/src/db.ts` 的基线、HEAD 和工作区 SHA-256 均为 `903767a7daaa99877cba85d4ee13ef0ec4e1480814c2584a0b8cb96fc666ba19`，迁移仍为 `001`–`007`；`server/data` 不存在文件。Worker、Gateway、认证、通知/outbox 与 OpenClaw channel 相对基线无差异。 |
+| 工作区卫生 | PASS | `git diff --check b4a28c4..HEAD` 与工作区检查均通过；测试临时目录和本轮 H5/API/Playwright 进程均已退出。最终报告提交后再次确认 worktree 干净。 |
+
+### 最终验证结果
+
+| 命令 | 结果 |
+| --- | --- |
+| `cd server && npm run build && npm test` | PASS；TypeScript 构建通过，**146/146**，0 failed/skipped。 |
+| `cd poc/ilink-gateway && npm ci && npm run build && npm test` | PASS；全新安装、TypeScript 构建通过，**53/53**，0 failed/skipped；生产依赖审计 0 漏洞。 |
+| `cd app && npm ci && npm run build:h5 && npm run test:h5 && npm run test:e2e` | PASS；全新安装 468 包；H5 构建通过；`test:h5` 与独立 `test:e2e` 的套件均为 **8/8**。 |
+| `cd app && npm audit --omit=dev` | 预期非零；完整报告 **1 high**（Vite），即 `R-1`。 |
+| `cd app && npm audit --omit=dev --audit-level=critical` | PASS；退出 0，仍打印同一 high，当前无 critical。 |
+| `cd server && npm audit --omit=dev` | PASS；0 漏洞。 |
+| 哈希、稳定边界、空白、临时文件与进程复查 | PASS；迁移字节一致，受保护边界无差异；本轮 H5 临时资源自动清理，Server 全量测试遗留的 7 个基线测试夹具目录经精确核对后移入系统回收站，本轮相关进程与 `/tmp` 目录最终无残留。 |
+
+### 当前事实、上线与回滚口径
+
+- 单账号 OpenClaw 已完成真实验证，但只是**默认关闭**的当前发布候选；启用前仍须走既有生产门禁。
+- OpenClaw 多人绑定与 Direct iLink 是 **NO-GO / RESEARCH ONLY**；服务号是未合入当前制品的独立候选；Hermes 为 **NOT STARTED**。
+- 本轮代码可进入合并评审；系统生产上线仍是**有条件 GO**：不得公网暴露 Vite dev server，所有外部消息/AI 开关保持关闭，并须另行完成生产备份恢复、发布制品和真实环境门禁。本报告不授权发布。
+- 本轮没有迁移或数据写入，回滚不需要数据库降级。若合并后出现整改引入的回归，可回退本轮提交链至 `b4a28c4` 并重新构建 H5/Server；回滚前后保持全部外部渠道开关关闭，并复测登录、深链、权限和负责人变更。不得用数据库回滚掩盖应用问题。
+- 监控至少关注 H5 深链静态 404、API 401/403/5xx、负责人变更失败、CI audit critical、Vite dev server 监听地址，以及测试/构建失败；任何 critical 依赖告警或 dev server 非回环监听都应阻断发布。
+
+### 残余风险与后续建议
+
+- `R-1`（已接受）：Vite high 只能在兼容 uni-app/Vite 升级设计获批并完整复验后关闭；不得使用 `force`、`--legacy-peer-deps` 或未批准的大版本升级绕过。
+- H5 烟测不是全量 UI 矩阵，尚未覆盖所有筛选组合、导入导出、上传、并发点击及跨浏览器；关键事务、权限、幂等已有 Server/Gateway 自动测试兜底。
+- 安装仍提示 deprecated/allow-scripts 待审项；本轮未擅自批准脚本或新增生产依赖。
+- 信息项 `I-1`：5 个基线既有 Server 测试文件使用 `mkdtempSync` 后没有自动删除目录，本次运行生成 7 个目录并已由验收阶段精确清理；这些测试文件相对 `b4a28c4` 无差异，不是本轮回归，也不影响运行制品，故不增加 P3，但后续独立测试卫生任务应补上 `after`/`finally` 清理。
+- **Hermes 适合在本稳定基线合并冻结后启动独立的只读审计与技术设计，不适合直接在当前整改分支开始实现、接入或部署。** 开始条件是单独明确业务目标、数据/权限/外部通信边界、退出条件和回滚方案；不得把 Hermes 与本轮验收捆绑上线。
