@@ -18,6 +18,7 @@ jobs:
           cache-dependency-path: |
             app/package-lock.json
             server/package-lock.json
+            poc/ilink-gateway/package-lock.json
 
       - name: Install server dependencies
         working-directory: server
@@ -37,11 +38,27 @@ jobs:
 
       - name: Install app dependencies
         working-directory: app
-        run: npm ci --legacy-peer-deps
+        run: npm ci
+
+      - name: Install Gateway dependencies
+        working-directory: poc/ilink-gateway
+        run: npm ci
+
+      - name: Build and test Gateway
+        working-directory: poc/ilink-gateway
+        run: npm run build && npm test
 
       - name: Build H5 app
         working-directory: app
         run: npm run build:h5
+
+      - name: Install H5 browser
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+
+      - name: Test H5 runtime
+        working-directory: app
+        run: npm run test:e2e
 
       - name: Audit app production dependencies
         working-directory: app

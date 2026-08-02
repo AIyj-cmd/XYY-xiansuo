@@ -2,6 +2,8 @@
 
 当前状态：**阶段一“安全与数据库基线”、阶段二“业务一致性基线”和阶段三“通知基础设施”均已完成本地代码验收，尚未生产部署；生产发布、真实环境核验和备份恢复演练门禁仍有效。** 2026-08-01 用户决定暂停所有真实外部消息渠道：OpenClaw daemon 与 Direct iLink 为 No-Go，企业微信自建应用取消且不属于后续候选，Hook/RPA/逆向/Windows 自动化继续禁止。现行正式通知仅为 H5 站内通知，Mock 仅用于测试/灰度；阶段三通知基础设施与阶段四 DeepSeek/AI 调度、日报等能力保留，但不向外部渠道发送。迁移 `007`、`notification_deliveries`、`notification_channel_bindings` 暂缓。
 
+技术债整改的当前配置口径、H5 运行测试和 Vite 兼容风险见[TECH_DEBT_REMEDIATION_REPORT.md](03-测试验证/TECH_DEBT_REMEDIATION_REPORT.md)。
+
 前端发布策略现为 **H5-only**：之后不再构建、发布或验收微信小程序。该策略不影响业务微信字段或公众号来源；普通微信、企业微信和其他真实外部通知渠道均已暂停，不作为待实施规划。
 
 ## 事实优先级
@@ -34,7 +36,8 @@ docs/
 ├── 03-测试验证/
 │   ├── TEST_REPORT.md
 │   ├── PHASE_2_TEST_REPORT.md
-│   └── H5_ONLY_FRONTEND_TEST_REPORT.md
+│   ├── H5_ONLY_FRONTEND_TEST_REPORT.md
+│   └── TECH_DEBT_REMEDIATION_REPORT.md
 ├── 04-验收交付/
 │   ├── ACCEPTANCE_REPORT.md
 │   ├── DEPLOYMENT_NOTES.md
@@ -69,6 +72,7 @@ docs/
 | 测试验证 | [TEST_REPORT.md](03-测试验证/TEST_REPORT.md) | 独立测试、历史发现的修复复测与 28/28 结果。 |
 | 测试验证 | [PHASE_2_TEST_REPORT.md](03-测试验证/PHASE_2_TEST_REPORT.md) | 阶段二独立测试、阻断发现与后续复测记录。 |
 | 测试验证 | [H5_ONLY_FRONTEND_TEST_REPORT.md](03-测试验证/H5_ONLY_FRONTEND_TEST_REPORT.md) | H5-only 构建、依赖、浏览器烟测和业务边界的独立验证。 |
+| 测试验证 | [TECH_DEBT_REMEDIATION_REPORT.md](03-测试验证/TECH_DEBT_REMEDIATION_REPORT.md) | 技术债整改、配置清单、当前/候选/历史状态和依赖风险。 |
 | 验收交付 | [ACCEPTANCE_REPORT.md](04-验收交付/ACCEPTANCE_REPORT.md) | 阶段一验收结论、残余风险和上线建议。 |
 | 验收交付 | [DEPLOYMENT_NOTES.md](04-验收交付/DEPLOYMENT_NOTES.md) | 生产上线门禁、部署步骤、验证与监控要求。 |
 | 验收交付 | [ROLLBACK_PLAN.md](04-验收交付/ROLLBACK_PLAN.md) | 迁移、应用和配置的回滚准备、触发条件及验证步骤。 |
