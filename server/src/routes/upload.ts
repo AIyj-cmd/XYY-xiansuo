@@ -1,12 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createWriteStream } from 'fs';
+import { createWriteStream, mkdirSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { authenticate } from '../middleware/auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
+mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic']);
 const EXT_MAP: Record<string, string> = {

@@ -24,7 +24,7 @@ export async function memoRoutes(app: FastifyInstance) {
     const user = (request as any).user;
     const parsed = bodySchema.safeParse(request.body);
     if (!parsed.success) {
-      return reply.status(400).send({ error: parsed.error.errors[0].message });
+      return reply.status(400).send({ code: 1, msg: parsed.error.issues[0].message, data: null });
     }
     const db = getDb();
     const now = nowDatetime();
@@ -41,12 +41,12 @@ export async function memoRoutes(app: FastifyInstance) {
     const id = parseInt((request.params as any).id);
     const parsed = bodySchema.safeParse(request.body);
     if (!parsed.success) {
-      return reply.status(400).send({ error: parsed.error.errors[0].message });
+      return reply.status(400).send({ code: 1, msg: parsed.error.issues[0].message, data: null });
     }
     const db = getDb();
     const memo = db.prepare(`SELECT id, user_id FROM memos WHERE id = ?`).get(id) as any;
-    if (!memo) return reply.status(404).send({ error: '备忘不存在' });
-    if (memo.user_id !== user.id) return reply.status(403).send({ error: '无权操作' });
+    if (!memo) return reply.status(404).send({ code: 1, msg: '备忘不存在', data: null });
+    if (memo.user_id !== user.id) return reply.status(403).send({ code: 1, msg: '无权操作', data: null });
     const now = nowDatetime();
     db.prepare(`UPDATE memos SET content = ?, updated_at = ? WHERE id = ?`)
       .run(parsed.data.content, now, id);
@@ -60,8 +60,8 @@ export async function memoRoutes(app: FastifyInstance) {
     const id = parseInt((request.params as any).id);
     const db = getDb();
     const memo = db.prepare(`SELECT id, user_id FROM memos WHERE id = ?`).get(id) as any;
-    if (!memo) return reply.status(404).send({ error: '备忘不存在' });
-    if (memo.user_id !== user.id) return reply.status(403).send({ error: '无权操作' });
+    if (!memo) return reply.status(404).send({ code: 1, msg: '备忘不存在', data: null });
+    if (memo.user_id !== user.id) return reply.status(403).send({ code: 1, msg: '无权操作', data: null });
     db.prepare(`DELETE FROM memos WHERE id = ?`).run(id);
     return reply.send({ code: 0, data: null });
   });

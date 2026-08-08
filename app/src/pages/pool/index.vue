@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, computed } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
 import { get, post, del } from '../../utils/request';
 import { useUserStore } from '../../store/user';
 import CustomTabBar from '../../components/CustomTabBar.vue';
+import { useLeadListState } from '../../composables/useLeadListState';
+import { intentHeadColor, intentLabel, overdueDays, overdueTagClass, relativeTime, today } from '../../utils/lead-display';
 
 const store = useUserStore();
+// 构建期开关只控制 UI；服务端 LEAD_POOL_CLAIM_ENABLED 才是安全边界。
+const poolClaimRaw = import.meta.env.VITE_LEAD_POOL_CLAIM_ENABLED;
+if (poolClaimRaw !== undefined && poolClaimRaw !== '' && poolClaimRaw !== 'true' && poolClaimRaw !== 'false') {
+  throw new Error('VITE_LEAD_POOL_CLAIM_ENABLED 只能为 true 或 false');
+}
+const poolClaimEnabled = poolClaimRaw === 'true';
 
 interface Lead {
   id: number;
@@ -16,31 +24,33 @@ interface Lead {
   status: string;
   source: string;
   owner_name: string;
-  owner_id: number;
+  owner_id: number | null;
   intent_level: string;
   last_follow_at: string | null;
   next_follow_at: string | null;
-  is_favorited: boolean | number;
+  is_favorited?: boolean | number;
+  idle_days?: number;
 }
 
-const list = ref<Lead[]>([]);
-const loading = ref(false);
-const refreshing = ref(false);
-const page = ref(1);
-const total = ref(0);
-const hasMore = computed(() => list.value.length < total.value);
+const viewMode = ref<'all' | 'public'>('all');
+const poolDays = ref(0);
+const minimumPoolDays = ref(7);
+const claimingId = ref<number | null>(null);
+const {
+  items: list, loading, refreshing, page, total, keyword, showFilter,
+  sortMode, filterDate, filterStatus, filterSource, filterIndustry, filterIntent,
+  resetPagination, resetFilters,
+} = useLeadListState<Lead>();
+const hasMore = computed(() => viewMode.value === 'all' && list.value.length < total.value);
+const poolDayOptions = computed(() => Array.from(new Set([
+  minimumPoolDays.value,
+  Math.max(minimumPoolDays.value, 15),
+  Math.max(minimumPoolDays.value, 30),
+])));
 
-const keyword = ref('');
-const showFilter = ref(false);
-const sortMode = ref<'last_follow' | 'next_follow' | 'created_new'>('last_follow');
-const filterDate = ref('');
 const favoriteOnly = ref(false);
 
-const filterStatus = ref<string[]>([]);
-const filterSource = ref('');
 const filterOwner = ref('');
-const filterIntent = ref('');
-const filterIndustry = ref('');
 
 const users = ref<{ id: number; name: string }[]>([]);
 
@@ -57,13 +67,6 @@ const STATUS_COLORS: Record<string, string> = {
   '已成交': '#2f855a', '已流失': '#718096', '暂搁置': '#a0aec0', '停止跟进': '#c05621',
 };
 
-function intentHeadColor(level: string): string {
-  const map: Record<string, string> = { '高': '#E53E3E', '中': '#B7791F', '低': '#2F855A' };
-  return map[level] || '#eef1f5';
-}
-function intentLabel(level: string): string {
-  return level && level !== '未知' ? `${level}意向` : '未知';
-}
 
 const activeFilterCount = computed(() => {
   let n = filterStatus.value.length;
@@ -74,37 +77,13 @@ const activeFilterCount = computed(() => {
   return n;
 });
 
-const showStats = computed(() => activeFilterCount.value === 0 && !keyword.value && !filterDate.value);
+const showStats = computed(() => viewMode.value === 'public'
+  || (activeFilterCount.value === 0 && !keyword.value && !filterDate.value));
 
 function isMine(lead: Lead) {
   return lead.owner_id === store.userInfo?.id;
 }
 
-function today() {
-  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-}
-
-function relativeTime(dateStr: string | null): string {
-  if (!dateStr) return '';
-  const nowDate = new Date(today());
-  const d = new Date(dateStr.slice(0, 10));
-  const diff = Math.floor((nowDate.getTime() - d.getTime()) / 86400000);
-  if (diff === 0) return '今天';
-  if (diff === 1) return '昨天';
-  if (diff < 7) return `${diff}天前`;
-  if (diff < 30) return `${Math.floor(diff / 7)}周前`;
-  return `${Math.floor(diff / 30)}月前`;
-}
-
-function overdueDays(d: string): number {
-  return Math.floor((new Date(today()).getTime() - new Date(d).getTime()) / 86400000);
-}
-
-function overdueTagClass(days: number): string {
-  if (days >= 8) return 'overdue-critical';
-  if (days >= 4) return 'overdue-high';
-  return 'overdue-warn';
-}
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 function onKeywordInput() {
@@ -173,20 +152,60 @@ function applyFilter() {
 }
 
 function resetFilter() {
-  filterStatus.value = [];
-  filterSource.value = '';
+  resetFilters();
   filterOwner.value = '';
-  filterIntent.value = '';
-  filterIndustry.value = '';
   showFilter.value = false;
   loadList(true);
 }
 
+function switchMode(mode: 'all' | 'public') {
+  if (mode === 'public' && !poolClaimEnabled) return;
+  if (viewMode.value === mode) return;
+  viewMode.value = mode;
+  showFilter.value = false;
+  loadList(true);
+}
+
+function setPoolDays(days: number) {
+  if (poolDays.value === days) return;
+  poolDays.value = days;
+  loadList(true);
+}
+
+async function claimLead(item: Lead) {
+  if (claimingId.value !== null) return;
+  claimingId.value = item.id;
+  try {
+    await post(`/api/pool/${item.id}/claim`);
+    uni.showToast({ title: '认领成功', icon: 'success' });
+    await loadList(true);
+  } finally {
+    claimingId.value = null;
+  }
+}
+
 async function loadList(reset = false) {
-  if (reset) { page.value = 1; list.value = []; }
+  if (reset) resetPagination();
   if (loading.value && !reset) return;
   loading.value = true;
   try {
+    if (viewMode.value === 'public' && poolClaimEnabled) {
+      const res = await get<{
+        minimum_days: number;
+        threshold_days: number;
+        total: number;
+        list: Lead[];
+      }>(
+        '/api/pool',
+        { days: poolDays.value || undefined },
+      );
+      minimumPoolDays.value = res.minimum_days;
+      poolDays.value = res.threshold_days;
+      total.value = res.total;
+      list.value = res.list;
+      return;
+    }
+
     const params: Record<string, any> = {
       page: page.value,
       pageSize: 20,
@@ -226,18 +245,31 @@ function goDetail(id: number) {
   uni.navigateTo({ url: `/pages/leads/detail?id=${id}` });
 }
 
-onMounted(async () => {
+let usersLoaded = false;
+onShow(async () => {
   store.init();
-  const res = await get<any[]>('/api/users/members').catch(() => []);
-  users.value = res || [];
+  if (!store.isLoggedIn()) {
+    uni.reLaunch({ url: '/pages/login/index' });
+    return;
+  }
+  if (!usersLoaded) {
+    usersLoaded = true;
+    const res = await get<any[]>('/api/users/members').catch(() => []);
+    users.value = res || [];
+  }
   await loadList(true);
 });
 </script>
 
 <template>
   <view class="pool-page">
+    <view v-if="poolClaimEnabled" class="mode-switch">
+      <view class="mode-item" :class="{ active: viewMode === 'all' }" @click="switchMode('all')">全部线索</view>
+      <view v-if="poolClaimEnabled" class="mode-item" :class="{ active: viewMode === 'public' }" @click="switchMode('public')">公海待认领</view>
+    </view>
+
     <!-- 搜索栏 -->
-    <view class="search-bar">
+    <view v-if="viewMode === 'all'" class="search-bar">
       <view class="search-input-wrap">
         <input
           class="search-input"
@@ -253,7 +285,7 @@ onMounted(async () => {
     </view>
 
     <!-- 状态 chips -->
-    <scroll-view class="chips-bar" scroll-x>
+    <scroll-view v-if="viewMode === 'all'" class="chips-bar" scroll-x>
       <view class="chips-inner">
         <view
           v-for="s in STATUS_LIST" :key="s"
@@ -265,7 +297,7 @@ onMounted(async () => {
     </scroll-view>
 
     <!-- 排序 + 按日期筛选 -->
-    <view class="sort-area">
+    <view v-if="viewMode === 'all'" class="sort-area">
       <scroll-view class="sort-bar" scroll-x>
         <view
           v-for="s in SORT_LIST" :key="s.value"
@@ -292,9 +324,20 @@ onMounted(async () => {
       </view>
     </view>
 
+    <view v-else-if="poolClaimEnabled" class="pool-days-bar">
+      <text class="pool-days-label">连续未跟进：</text>
+      <view
+        v-for="days in poolDayOptions"
+        :key="days"
+        class="pool-days-item"
+        :class="{ active: poolDays === days }"
+        @click="setPoolDays(days)"
+      >{{ days }} 天+</view>
+    </view>
+
     <!-- 统计条 -->
     <view v-if="showStats && total > 0" class="stats-bar">
-      <text class="stats-item">共 {{ total }} 条</text>
+      <text class="stats-item">{{ viewMode === 'public' ? `公海共 ${total} 条` : `共 ${total} 条` }}</text>
     </view>
 
     <!-- 列表 -->
@@ -308,7 +351,7 @@ onMounted(async () => {
     >
       <view class="list-inner">
         <view v-if="list.length === 0 && !loading" class="empty-state">
-          <text class="empty-text">暂无线索数据</text>
+          <text class="empty-text">{{ viewMode === 'public' ? '当前没有符合条件的公海线索' : '暂无线索数据' }}</text>
         </view>
 
         <view
@@ -327,7 +370,7 @@ onMounted(async () => {
             <view class="status-tag" :style="{ color: STATUS_COLORS[item.status] }">
               <text>{{ item.status }}</text>
             </view>
-            <view class="fav-star" :class="{ 'fav-star--active': item.is_favorited }" @click.stop="toggleFavorite(item)">
+            <view v-if="viewMode === 'all'" class="fav-star" :class="{ 'fav-star--active': item.is_favorited }" @click.stop="toggleFavorite(item)">
               <text>{{ item.is_favorited ? '★' : '☆' }}</text>
             </view>
           </view>
@@ -341,9 +384,20 @@ onMounted(async () => {
 
           <!-- 第三行：负责人 + 只读/我的标记 -->
           <view class="card-row">
-            <text class="card-owner">负责人：{{ item.owner_name }}</text>
+            <text class="card-owner">负责人：{{ item.owner_name || '未分配' }}</text>
             <view v-if="!isMine(item) && !store.isAdmin()" class="readonly-badge"><text>只读</text></view>
             <view v-else class="mine-badge"><text>{{ isMine(item) ? '我的' : '可编辑' }}</text></view>
+          </view>
+
+          <view v-if="poolClaimEnabled && viewMode === 'public'" class="pool-claim-row">
+            <text class="idle-days">已连续 {{ item.idle_days || poolDays }} 天未跟进</text>
+            <view
+              v-if="!isMine(item)"
+              class="claim-btn"
+              :class="{ disabled: claimingId !== null }"
+              @click.stop="claimLead(item)"
+            >{{ claimingId === item.id ? '认领中...' : '认领线索' }}</view>
+            <text v-else class="mine-hint">当前由你负责</text>
           </view>
 
           <!-- 第四行：最近跟进时间 -->
@@ -373,7 +427,7 @@ onMounted(async () => {
     </scroll-view>
 
     <!-- 筛选抽屉 -->
-    <view v-if="showFilter" class="filter-mask" @click.self="showFilter = false">
+    <view v-if="showFilter && viewMode === 'all'" class="filter-mask" @click.self="showFilter = false">
       <view class="filter-drawer">
         <view class="filter-title">筛选条件</view>
         <scroll-view class="filter-body" scroll-y>
@@ -451,6 +505,10 @@ onMounted(async () => {
 <style scoped>
 .pool-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh; background: #f0f4fa; }
 
+.mode-switch { display: flex; gap: 4px; padding: 8px 12px; background: #fff; border-bottom: 1px solid #e2e8f0; }
+.mode-item { flex: 1; padding: 8px 12px; border-radius: 8px; text-align: center; font-size: 13px; color: #64748b; background: #f5f7fa; }
+.mode-item.active { color: #fff; background: var(--p); font-weight: 700; }
+
 /* 搜索栏 */
 .search-bar { display: flex; align-items: center; padding: 10px 12px; background: #fff; gap: 10px; border-bottom: 1px solid #e2e8f0; }
 .search-input-wrap { flex: 1; }
@@ -479,6 +537,11 @@ onMounted(async () => {
 /* 只看收藏 */
 .fav-filter-btn { flex-shrink: 0; width: 32px; height: 32px; margin-right: 12px; border-radius: 8px; background: #f5f7fa; color: #cbd5e0; display: flex; align-items: center; justify-content: center; font-size: 17px; }
 .fav-filter-btn--active { background: #fff7e6; color: #dd9a3e; }
+
+.pool-days-bar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #fff; border-bottom: 1px solid #e2e8f0; }
+.pool-days-label { font-size: 12px; color: #64748b; }
+.pool-days-item { padding: 5px 10px; border-radius: 14px; border: 1px solid #dbe3ed; font-size: 12px; color: #64748b; }
+.pool-days-item.active { border-color: var(--p); color: var(--p); background: var(--pl); font-weight: 700; }
 
 /* 统计条 */
 .stats-bar { padding: 6px 14px; background: #f0f4fa; }
@@ -520,6 +583,12 @@ onMounted(async () => {
 .readonly-badge text { font-size: 11px; color: #8d9aae; }
 .mine-badge { background: var(--pl); border-radius: 4px; padding: 2px 8px; flex-shrink: 0; }
 .mine-badge text { font-size: 11px; color: var(--p); font-weight: 600; }
+
+.pool-claim-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #e2e8f0; }
+.idle-days { flex: 1; font-size: 12px; color: #c05621; font-weight: 600; }
+.claim-btn { padding: 6px 12px; border-radius: 6px; background: var(--p); color: #fff; font-size: 12px; font-weight: 700; }
+.claim-btn.disabled { opacity: 0.55; }
+.mine-hint { font-size: 12px; color: #2f855a; font-weight: 600; }
 
 .overdue-tag { border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
 .overdue-warn { background: #fffbeb; color: #d69e2e; }

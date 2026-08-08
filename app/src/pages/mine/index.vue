@@ -155,6 +155,12 @@ function handleLogout() {
         <text class="menu-arrow">›</text>
       </view>
 
+      <view class="menu-item" @click="uni.navigateTo({ url: '/pages/hermes-binding/index' })">
+        <text class="menu-icon">💬</text>
+        <text class="menu-text">微信通知绑定</text>
+        <text class="menu-arrow">›</text>
+      </view>
+
       <view class="menu-item" @click="uni.navigateTo({ url: '/pages/admin/trash' })">
         <text class="menu-icon">🗑️</text>
         <text class="menu-text">回收站</text>

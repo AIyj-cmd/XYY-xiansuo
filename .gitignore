@@ -25,6 +25,7 @@ server/backups/
 *.swp
 .DS_Store
 Thumbs.db
+app/test-results/
 
 # Local editor and agent settings
 .vscode/

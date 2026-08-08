@@ -3,6 +3,7 @@ import ExcelJS from 'exceljs';
 import { getDb } from '../db.js';
 import { authenticate, requireAdmin } from '../middleware/auth.js';
 import { Readable } from 'stream';
+import { recomputeFollowUpDerived } from '../services/follow-up-derived.js';
 
 const VALID_STATUS = ['新线索', '跟进中', '已报价', '已成交', '已流失', '暂搁置', '停止跟进'];
 
@@ -63,8 +64,8 @@ export async function importExportRoutes(app: FastifyInstance): Promise<void> {
     const buf = Buffer.concat(chunks);
 
     const db = getDb();
-    const users = db.prepare('SELECT id, name FROM users').all() as { id: number; name: string }[];
-    const userMap = new Map(users.map(u => [u.name, u.id]));
+    const users = db.prepare('SELECT id, name, is_active FROM users').all() as { id: number; name: string; is_active: number }[];
+    const activeUserMap = new Map(users.filter(u => u.is_active === 1).map(u => [u.name, u.id]));
 
     let successCount = 0;
     const skipped: { row: number; reason: string }[] = [];
@@ -76,7 +77,10 @@ export async function importExportRoutes(app: FastifyInstance): Promise<void> {
     if (isCSV) {
       await wb.csv.read(Readable.from(buf));
     } else {
-      await wb.xlsx.load(buf);
+      // ExcelJS 4 的类型定义要求 ArrayBuffer，而 Node 的 Buffer 在新版
+      // @types/node 中可能以 SharedArrayBuffer 为底层类型；复制为 Uint8Array
+      // 可同时满足运行时和类型检查。
+      await wb.xlsx.load(Uint8Array.from(buf).buffer);
     }
 
     const ws = wb.worksheets[0];
@@ -112,9 +116,12 @@ export async function importExportRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const ownerName = String(row[5] || '').trim();
-      const ownerId = userMap.get(ownerName) ?? request.user.id;
-      if (ownerName && !userMap.has(ownerName)) {
-        warnings.push({ row: i, reason: `跟进人"${ownerName}"不存在，已归入导入者` });
+      const ownerId = activeUserMap.get(ownerName) ?? request.user.id;
+      if (ownerName && !activeUserMap.has(ownerName)) {
+        const reason = users.some((user) => user.name === ownerName)
+          ? `跟进人"${ownerName}"已停用，已归入导入者`
+          : `跟进人"${ownerName}"不存在，已归入导入者`;
+        warnings.push({ row: i, reason });
       }
 
       const statusRaw1 = String(row[7] || '').trim();
@@ -129,23 +136,32 @@ export async function importExportRoutes(app: FastifyInstance): Promise<void> {
 
       const source = String(row[6] || '').trim() || '其他';
 
-      const res = db.prepare(`
-        INSERT INTO leads (contact_name, phone, wechat, industry, source, status, owner_id, lead_date, created_by)
-        VALUES (?,?,?,?,?,?,?,?,?)
-      `).run(
-        contactName, phone || null,
-        wechat || null,
-        String(row[8] || '').trim() || null,
-        source, status, ownerId, leadDate,
-        request.user.id
-      );
+      try {
+        db.exec('BEGIN IMMEDIATE;');
+        const res = db.prepare(`
+          INSERT INTO leads (contact_name, phone, wechat, industry, source, status, owner_id, lead_date, created_by)
+          VALUES (?,?,?,?,?,?,?,?,?)
+        `).run(
+          contactName, phone || null,
+          wechat || null,
+          String(row[8] || '').trim() || null,
+          source, status, ownerId, leadDate,
+          request.user.id
+        );
 
-      const followContent = String(row[12] || '').trim();
-      if (followContent) {
-        db.prepare(`
-          INSERT INTO follow_ups (lead_id, user_id, type, content, created_at)
-          VALUES (?,?,?,?,?)
-        `).run(Number(res.lastInsertRowid), request.user.id, '其他', followContent, leadDate + ' 00:00:00');
+        const followContent = String(row[12] || '').trim();
+        if (followContent) {
+          const leadId = Number(res.lastInsertRowid);
+          db.prepare(`
+            INSERT INTO follow_ups (lead_id, user_id, type, content, created_at)
+            VALUES (?,?,?,?,?)
+          `).run(leadId, request.user.id, '其他', followContent, leadDate + ' 00:00:00');
+          recomputeFollowUpDerived(db, leadId, leadDate + ' 00:00:00');
+        }
+        db.exec('COMMIT;');
+      } catch (error) {
+        try { db.exec('ROLLBACK;'); } catch { /* no open transaction */ }
+        throw error;
       }
 
       successCount++;

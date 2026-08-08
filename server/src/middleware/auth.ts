@@ -19,12 +19,27 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
   try {
     const payload = await verifyToken(rawToken);
     const db = getDb();
-    const user = db.prepare('SELECT is_active FROM users WHERE id = ?').get(payload.id) as { is_active: number } | undefined;
+    const user = db.prepare(
+      'SELECT id, username, name, role, is_active FROM users WHERE id = ?'
+    ).get(payload.id) as {
+      id: number;
+      username: string;
+      name: string;
+      role: string;
+      is_active: number;
+    } | undefined;
     if (!user || !user.is_active) {
       reply.code(401).send({ code: 1, msg: '账号已停用，请联系管理员', data: null });
       return;
     }
-    request.user = payload;
+    // 权限与展示信息以数据库实时状态为准，避免角色调整后旧 JWT
+    // 在最长 7 天有效期内继续保留原权限。
+    request.user = {
+      id: user.id,
+      username: user.username,
+      name: user.name,
+      role: user.role,
+    };
   } catch {
     reply.code(401).send({ code: 1, msg: '登录已过期，请重新登录', data: null });
   }
