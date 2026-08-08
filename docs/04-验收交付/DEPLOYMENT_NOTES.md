@@ -139,3 +139,13 @@ OpenClaw 的安装、会话检查和入站静默插件只按 [运行手册](OPEN
 当前可用信号只用于后续获批实况设计：配置 fail-closed、Gateway `ILINK_HERMES_DISABLED`/`ILINK_HERMES_SESSION_UNCHECKED` health code、`result_unknown` 数量、幂等冲突、子进程 timeout/kill/reap、状态文件权限/完整性失败、Gateway 重启与状态目录增长。没有真实 session/送达监控，本轮不能据此上线。
 
 任一 upstream gate、路径权限、HMAC/状态完整性、映射、幂等、子进程回收或数据哈希检查失败即停止；任何 DNS/网络、登录、扫码、真实发送或相关常驻进程出现均视为越界并进入安全事件处置。真实 Pilot 必须另行批准账号、接收人、数量、消息、网络、停止条件、监控和人工确认流程。
+
+## 8. Hermes 成功响应分类修复交付说明（2026-08-08）
+
+本修复是**离线代码交付，不是部署或实况授权**。不需要数据库迁移、依赖安装或环境变量变更；默认 `openclaw` transport、Hermes enable=false、live=false 保持不变。不要为验证本修复启动 Gateway、Worker、Hermes、登录、扫码或网络发送。
+
+离线复验顺序：运行 overlay 测试两轮（期望每轮 13/13），随后运行 Gateway build/test（期望 59/59）、Server build/test（期望 146/146）和 H5 build；最后检查 `git diff --check`、`server/data` 哈希及相关进程。stdout 只能包含 `status`、`code`、固定 `responseShape`、`idempotencyKey`；日志和制品不得包含原始 provider 响应、正文、token、context token、peer、Secret 或映射。
+
+上一 Pilot 的事实必须继续分别保存：技术记录 `permanent_failure / ILINK_PROVIDER_REJECTED`，人工记录 `manually_confirmed_received`、实际收到 1 条、自动重试 0、其他渠道 0；不得用新分类规则批量回写旧账本。
+
+若以后获得新的真实单条授权，只允许唯一接收人、固定正文、新幂等键和一次 adapter 调用。放行标准同时要求技术状态 `sent`、人工实际收到 1 条、自动重试 0、其他渠道 0；任何 unknown、超时、断连或结果不一致立即停止且不重发。在该实况门禁完成前不得接入 Worker、PM2/systemd、Nginx 或生产。

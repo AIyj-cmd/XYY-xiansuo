@@ -87,23 +87,80 @@ async def _call_upstream_once(source_root: Path, config: TransportConfig, reques
             await connector.close()
 
 
-def _result(status: str, code: str, request: SendRequest) -> dict[str, str]:
-    return {"status": status, "code": code, "idempotencyKey": request.idempotency_key}
+def _result(status: str, code: str, response_shape: str, request: SendRequest) -> dict[str, str]:
+    # This is the complete stdout contract consumed by the Gateway.  The
+    # response shape is a fixed enum: it intentionally never includes a raw
+    # provider value, field name, message body, token, peer or request key.
+    return {
+        "status": status,
+        "code": code,
+        "responseShape": response_shape,
+        "idempotencyKey": request.idempotency_key,
+    }
 
 
 def _classify_exception(exc: BaseException, request: SendRequest) -> dict[str, str]:
     if isinstance(exc, asyncio.TimeoutError):
-        return _result("result_unknown", "ILINK_SEND_TIMEOUT", request)
+        return _result("result_unknown", "ILINK_SEND_TIMEOUT", "timeout", request)
     status_match = _HTTP_STATUS_RE.search(str(exc))
     if status_match:
         status = int(status_match.group(1))
         if 400 <= status < 500:
-            return _result("permanent_failure", "ILINK_PROVIDER_REJECTED", request)
+            return _result("permanent_failure", "ILINK_PROVIDER_REJECTED", "http_client_error", request)
         if status >= 500:
-            return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", request)
+            return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", "http_server_error", request)
     # Disconnects, TLS failures and malformed JSON can happen after an HTTP
     # request was accepted.  Do not retry or reinterpret them as unsent.
-    return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", request)
+    return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", "transport_error", request)
+
+
+def _is_real_int(value: object) -> bool:
+    # bool is a subclass of int in Python and must never be a provider code.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _classify_response(response: object, request: SendRequest) -> dict[str, str]:
+    """Reduce an untrusted provider response to the fixed stdout contract."""
+    if not isinstance(response, dict):
+        return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", "non_object", request)
+    if not response:
+        # Tencent's pinned official plugin uses an exact empty object as a
+        # successful send fixture.  The prior live Pilot raw body was not
+        # retained, so this is a narrow audited contract, not a reconstruction.
+        return _result("sent", "ILINK_SENT", "empty_object", request)
+
+    has_ret = "ret" in response
+    has_errcode = "errcode" in response
+    if not has_ret and not has_errcode:
+        return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", "unrecognized_object", request)
+
+    ret = response.get("ret")
+    errcode = response.get("errcode")
+    if (has_ret and not _is_real_int(ret)) or (has_errcode and not _is_real_int(errcode)):
+        return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", "invalid_code_type", request)
+
+    # A zero success signal and a nonzero failure signal disagree.  Preserve
+    # the single-attempt boundary and require manual reconciliation instead of
+    # choosing one untrusted interpretation.
+    if has_ret and has_errcode and ((ret == 0) != (errcode == 0)):
+        return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", "conflicting_codes", request)
+
+    # A definite numeric provider rejection wins over HTTP success.  Values
+    # and other response fields are deliberately neither retained nor output.
+    if has_ret and ret != 0 and has_errcode and errcode != 0:
+        return _result("permanent_failure", "ILINK_PROVIDER_REJECTED", "both_codes_nonzero", request)
+    if has_ret and ret != 0:
+        return _result("permanent_failure", "ILINK_PROVIDER_REJECTED", "ret_nonzero", request)
+    if has_errcode and errcode != 0:
+        return _result("permanent_failure", "ILINK_PROVIDER_REJECTED", "errcode_nonzero", request)
+
+    if has_ret:
+        if has_errcode:
+            return _result("sent", "ILINK_SENT", "ret_zero_errcode_zero", request)
+        return _result("sent", "ILINK_SENT", "ret_zero", request)
+
+    # errcode=0 without ret is not a documented send success shape.
+    return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", "unrecognized_object", request)
 
 
 PostOnce = Callable[[Path, TransportConfig, SendRequest, str], Awaitable[dict[str, Any]]]
@@ -120,16 +177,12 @@ async def send_once(
     try:
         context_token = state.token_for(request.peer)
     except StateError:
-        return _result("permanent_failure", "ILINK_STALE_CONTEXT_TOKEN", request)
+        return _result("permanent_failure", "ILINK_STALE_CONTEXT_TOKEN", "not_attempted", request)
     if not context_token:
         # No tokenless send is permitted, including after a restart.
-        return _result("permanent_failure", "ILINK_STALE_CONTEXT_TOKEN", request)
+        return _result("permanent_failure", "ILINK_STALE_CONTEXT_TOKEN", "not_attempted", request)
     try:
         response = await post_once(source_root, config, request, context_token)
     except Exception as exc:  # status classification must never leak credentials
         return _classify_exception(exc, request)
-    if not isinstance(response, dict):
-        return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", request)
-    if response.get("ret") == 0:
-        return _result("sent", "ILINK_SENT", request)
-    return _result("permanent_failure", "ILINK_PROVIDER_REJECTED", request)
+    return _classify_response(response, request)

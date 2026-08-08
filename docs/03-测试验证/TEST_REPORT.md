@@ -850,3 +850,51 @@ P2：无。
 - 第 31 节的 **P2-1 已关闭**：Hermes `loadHermesConfig()` 在创建/使用 Gateway ledger 前强制 `ILINK_POC_STATE_DIR` 为当前用户拥有、精确 `0700`、无 final/ancestor symlink、仓库外的目录；回归测试确认 SQLite ledger 落在该外部目录。
 - 当前严重级别：**P1=0，P2=0，P3=1**。P3 仅为第 31 节已记录的自定义 HMAC 流加密组合维护风险，不构成当前离线边界失败；不得在后续修改中削弱 nonce、域分离或双层 MAC。
 - **最终离线代码验证：PASS，允许进入后续验收阶段。** 本结论不等同于真实 Pilot/真实微信送达已通过；真实登录、网络、外发仍未执行，必须另获明确授权并单独验收。
+
+## 33. Hermes 成功响应分类修复独立验证（2026-08-08，已完成）
+
+### 测试环境、基线与预先测试计划
+
+- 任务边界：只验证本次“实际送达但旧 overlay 误报 permanent”修复；严格禁止真实登录、扫码、网络调用、微信发送、常驻 Worker/Gateway/Hermes 进程启动。允许差异仅为 overlay transport/README/tests+fixture 与 Gateway adapter/tests。
+- 开始 Git 基线：`M poc/hermes-weixin-transport/{README.md,src/hermes_weixin_transport/transport.py,test/test_transport.py}`、`M poc/ilink-gateway/{src/adapters/hermes-adapter.ts,test/gateway.test.ts}`、`?? poc/hermes-weixin-transport/test/fixtures/`。`git diff --name-only` 与此相同；这些是测试开始前已有实现改动，未恢复、覆盖或清理。开始时相关文件 SHA-1 已记录：transport `883fed6…`、overlay tests `9738ec9…`、README `e60de3e…`、adapter `05b3822…`、Gateway tests `fa32144…`、fixture `2610aba…`。
+- 预先计划：
+  1. 静态核对允许路径、分类表、固定 `responseShape` 枚举和敏感值泄露面；执行恶意 canary 扫描。
+  2. 离线执行 overlay 至少两轮，并以受控 fake `post_once` 覆盖 `{}`、`ret=0`、可选 `errcode=0`、所有数值非零、bool/string/null、冲突、未知对象和非对象；逐项断言 `type(value) is int` 的语义、一次调用、无重试/无 fallback。
+  3. 验证 stdout 严格四字段、status/code/shape/exit-code 合法组合，确认旧三字段退化为 unknown；运行 Gateway receipt/idempotency/history-result_unknown 防回归用例及 Gateway build/test。
+  4. 执行 Server build/test、H5 build；前后检查 diff、哈希、进程和网络监听。未发生依赖/lockfile 差异时不运行生产依赖审计。
+
+### 已执行命令及结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `poc/hermes-weixin-transport/run-tests.sh` 连续两轮 | 通过；每轮 **13/13**，共 **26/26**。全部为本地 `unittest`、临时状态目录和 fake `post_once`。 |
+| 受控 `PYTHONPATH=... python3 -c ...` 分类对抗矩阵 | 通过，**21** 例：分别覆盖 `ret` 与 `errcode` 的 bool、string、null、float、list、object，双向 0/非 0 冲突、未知对象、非对象及敏感 canary；无 canary 出现在结果中。 |
+| 静态分类/契约/恶意 canary 扫描 | 通过。transport 仅输出 `status`、`code`、固定 `responseShape`、调用方提供的幂等键；Gateway 对 stdout 强制恰好四字段、固定 status/code/shape 组合及 sent=exit 0、非 sent=exit 1。canary 仅存在于测试 fixture/test case，不存在业务输出实现。 |
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，**59/59**；包含旧三字段 stdout 拒绝为 unknown、非法 shape/组合/exit code 拒绝、receipt、并发幂等、重启后去重和 `result_unknown` 烧毁回归。 |
+| `cd server && npm run build && npm test` | 通过，**146/146**。 |
+| `cd app && npm run build:h5` | 通过；仅有既有的未配置 Appid 与可选更新提示。未构建微信小程序。 |
+| `git diff --check`、最终状态/范围复核 | 通过。测试完成后，除本报告外的差异仍严格是开始时记录的五个允许文件与 fixture；无 lockfile/package 变动，因此不触发生产依赖审计。 |
+| `server/data` SHA-256、进程与监听检查 | 通过。`app.db`、`app.db-shm`、`app.db-wal` 哈希分别仍为 `8b8bc326…`、`42a2baf3…`、`194c0753…`，与既有独立复测记录一致；没有 Hermes/OpenClaw/iLink/Worker/Weixin 相关进程（扫描命中仅为当前检查命令和 sandbox）。监听端口均为本轮测试前已有的无关本地服务，测试未启动监听者。 |
+
+### 通过项与证据
+
+- **已审计成功形态：通过。** 精确 `{}` 被映射为 `sent/ILINK_SENT/empty_object`；真正整数 `ret=0`（可带真正整数 `errcode=0`）为 `sent`。空对象来自固定官方插件成功 fixture；上一 Pilot 的原始响应未保存，本测试不把其结构反推为 `{}`。
+- **显式拒绝与未知边界：通过。** 任一不冲突的真正整数非零 `ret`/`errcode` 为 `permanent_failure`；同时的 0 与非 0 为 `result_unknown/conflicting_codes`；单独 `errcode=0`、未知非空对象与非对象均未知。`_is_real_int()` 显式排除 Python `bool`，对 bool/string/null/其他非 int 均失败关闭。
+- **最小且无泄露的响应契约：通过。** `responseShape` 是 adapter 允许表中的固定原子枚举；未知字段、上游字段名/值、正文、token、peer 不会进入 stdout。fixture 的 `raw-provider-body-token-peer` 和额外对抗 canary 均未回显。
+- **一次投递与无降级：通过。** 每个 fake provider case 都断言调用次数为 1；transport 中无 retry/fallback/chunk/typing/media 分支，Gateway `HermesAdapter.attemptPolicy` 为 `single_attempt`，任一 unknown 均不转为 retryable。
+- **Gateway 严格消费与账本回归：通过。** 旧三字段、额外字段、未知 shape、status/code/shape 不匹配和 exit-code 不匹配均归一为 unknown；sent receipt 保持本地脱敏稳定值；同键并发、重启、历史 unknown 均不会再调用 adapter。
+
+### 未覆盖范围
+
+- 按本轮明确禁止项，未做真实登录、扫码、网络请求、iLink 调用、微信投递或用户端回执确认；因此本报告只证明离线分类与防重语义，不把它表述为新的实况送达证据。
+- 未启动常驻 Gateway/Worker/Hermes；所有涉及的 provider/runner 都是 fake 或受控子进程。
+
+### 失败项、复现与建议
+
+本轮响应分类范围内无失败项，无待修复 P1/P2/P3（不覆盖第 31 节已记录的历史 P3 维护风险）。若后续另行获批进行新实测，应只验证这一条已审计的 `{}` 成功形态和零重试/单回执，并把实际送达作为独立人工事实记录；不得依据 `result_unknown` 自动重发。
+
+### 测试阶段文件变化与放行结论
+
+- 测试阶段仅追加本报告；未修改 `app/src`、`server/src`、`scripts`、`deploy` 或本次允许范围内的业务实现。overlay 的 `__pycache__` 为 Python 测试运行时产生/复用的忽略缓存，未成为 Git 变化；未清理测试前已有的任何工作区内容。
+- 最终 Git 差异相对本节开始基线仅新增 `docs/03-测试验证/TEST_REPORT.md`；其余五个修改文件及 fixture 均为测试开始前已有的待验收实现。
+- **结论：PASS（本轮响应分类范围：P1=0，P2=0，P3=0）。允许进入验收阶段（仅离线实现验收）。** 本放行不授权真实发送；任何新的真实 Pilot 仍须由用户单独、明确授权。

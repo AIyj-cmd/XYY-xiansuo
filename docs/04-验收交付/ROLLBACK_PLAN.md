@@ -84,3 +84,10 @@ OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已�
 5. 回退验证：默认 transport/enable/live 仍关闭；Gateway、Hermes/OpenClaw/Worker/AI 相关进程为空；`git diff --check` 通过；Server/Gateway build/test 与 H5 build 通过；`server/data` 前后 SHA-256 一致；仓库和提交中无 token、HMAC key、Secret、peer、context token 或本机上游副本。
 
 P3 自定义 HMAC 流加密风险的后续迁移也必须采用新 schema 版本、先验证旧状态完整性再原子迁移，并保留可审计回退路径；禁止就地改算法后继续读取旧密文，或删除 MAC/nonce/域分离以求兼容。
+
+## 8. Hermes 成功响应分类修复回退（2026-08-08）
+
+- 本修复未部署、未迁移数据库、未改变依赖或真实账号状态；提交前不采纳时只排除本轮允许路径和四份报告追加，不清理用户其他改动。提交后使用正常 Git revert 回退对应提交，禁止 `git reset --hard` 或删除账本/状态。
+- 回退不得把上一 Pilot 的人工事实改成“未收到”：旧技术结果继续保留 `permanent_failure / ILINK_PROVIDER_REJECTED`，人工事实继续保留 `manually_confirmed_received`、实际收到 1 条、自动重试 0、其他渠道 0。
+- 回退后 Hermes enable/live 和 Worker 继续关闭；不得用旧分类器重放消息，也不得为验证回退而登录、联网或发送。任何已存在的 sent、permanent 或 `result_unknown` key 均保持烧毁，不换 key、不 fallback。
+- 回退验证：overlay/Gateway 受影响测试、Server build/test、H5 build 和 `git diff --check` 通过；`server/data` 哈希不变；无 Hermes/OpenClaw/iLink/Worker/Weixin 常驻进程，仓库和输出中无敏感值。

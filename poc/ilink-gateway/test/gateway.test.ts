@@ -610,7 +610,7 @@ test('Hermes adapter uses only bounded JSON stdin/stdout and never exposes peer 
     const fakeCli: HermesCommandRunner = { run: async (command, args, stdin, _timeout, env) => {
       calls.push({ command, args, stdin, env })
       const payload = JSON.parse(stdin) as Record<string, string>
-      return { exitCode: 0, stdout: JSON.stringify({ status: 'sent', code: 'ILINK_SENT', idempotencyKey: payload.idempotencyKey }) }
+      return { exitCode: 0, stdout: JSON.stringify({ status: 'sent', code: 'ILINK_SENT', responseShape: 'ret_zero', idempotencyKey: payload.idempotencyKey }) }
     } }
     const item = { ...adapterRequest(), recipientExternalId: 'peer-a' }
     const result = await new HermesAdapter(cfg, fakeCli).send(item, new AbortController().signal)
@@ -632,17 +632,48 @@ test('Hermes adapter treats startup, timeout and illegal output as unknown and n
       { exitCode: null, stdout: '', timedOut: true },
       { exitCode: 0, stdout: '{"status":"sent"}' },
       { exitCode: 0, stdout: JSON.stringify({ status: 'sent', code: 'ILINK_SENT', idempotencyKey: 'other-key' }) },
+      { exitCode: 0, stdout: JSON.stringify({ status: 'sent', code: 'ILINK_SENT', responseShape: 'not_a_fixed_shape', idempotencyKey: item.idempotencyKey }) },
+      { exitCode: 1, stdout: JSON.stringify({ status: 'permanent_failure', code: 'ILINK_PROVIDER_REJECTED', responseShape: 'ret_zero', idempotencyKey: item.idempotencyKey }) },
     ]
     for (const response of variants) {
       const adapter = new HermesAdapter(cfg, { run: async () => response })
       const outcome = await adapter.send(item, new AbortController().signal)
       assert.deepEqual({ status: outcome.status, errorCode: outcome.errorCode }, { status: 'result_unknown', errorCode: response.timedOut ? 'ILINK_SEND_TIMEOUT' : 'ILINK_SEND_RESULT_UNKNOWN' })
     }
-    const explicit = new HermesAdapter(cfg, { run: async (_command, _args, stdin) => ({ exitCode: 1, stdout: JSON.stringify({ status: 'permanent_failure', code: 'ILINK_PROVIDER_REJECTED', idempotencyKey: (JSON.parse(stdin) as { idempotencyKey: string }).idempotencyKey }) }) })
+    const explicit = new HermesAdapter(cfg, { run: async (_command, _args, stdin) => ({ exitCode: 1, stdout: JSON.stringify({ status: 'permanent_failure', code: 'ILINK_PROVIDER_REJECTED', responseShape: 'ret_nonzero', idempotencyKey: (JSON.parse(stdin) as { idempotencyKey: string }).idempotencyKey }) }) })
     assert.deepEqual(await explicit.send(item, new AbortController().signal), { status: 'permanent_failure', errorCode: 'ILINK_PROVIDER_REJECTED', latencyMs: 0 })
     assert.deepEqual(await new HermesAdapter({ ...cfg, ILINK_POC_LIVE_ENABLED: false }).health(), { status: 'healthy', channelStatus: 'disabled', code: 'ILINK_HERMES_DISABLED' })
     assert.equal(createConfiguredAdapter(config(dir)).name, 'ilink')
     assert.equal(createConfiguredAdapter(cfg).name, 'hermes')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Hermes strict stdout contract accepts only the atomic fixed response-shape enum without leaking values', async () => {
+  const dir = directory(); try {
+    const cfg = hermesConfig(dir); const item = { ...adapterRequest(), recipientExternalId: 'peer-a' }
+    const valid = [
+      { exitCode: 0, status: 'sent', code: 'ILINK_SENT', responseShape: 'empty_object' },
+      { exitCode: 0, status: 'sent', code: 'ILINK_SENT', responseShape: 'ret_zero_errcode_zero' },
+      { exitCode: 1, status: 'permanent_failure', code: 'ILINK_PROVIDER_REJECTED', responseShape: 'both_codes_nonzero' },
+      { exitCode: 1, status: 'result_unknown', code: 'ILINK_SEND_RESULT_UNKNOWN', responseShape: 'conflicting_codes' },
+    ] as const
+    for (const expected of valid) {
+      const { exitCode, ...response } = expected
+      const adapter = new HermesAdapter(cfg, { run: async (_command, _args, stdin) => ({ exitCode, stdout: JSON.stringify({ ...response, idempotencyKey: (JSON.parse(stdin) as { idempotencyKey: string }).idempotencyKey }) }) })
+      const outcome = await adapter.send(item, new AbortController().signal)
+      assert.equal(outcome.status, expected.status)
+      assert.equal(outcome.errorCode, expected.code)
+    }
+    for (const invalid of [
+      { status: 'sent', code: 'ILINK_SENT', responseShape: 'ret_zero', extra: 'forbidden' },
+      { status: 'sent', code: 'ILINK_SENT', responseShape: 'token=should-not-parse' },
+      { status: 'result_unknown', code: 'ILINK_SEND_RESULT_UNKNOWN', responseShape: 'ret_nonzero' },
+    ]) {
+      const adapter = new HermesAdapter(cfg, { run: async (_command, _args, stdin) => ({ exitCode: 0, stdout: JSON.stringify({ ...invalid, idempotencyKey: (JSON.parse(stdin) as { idempotencyKey: string }).idempotencyKey }) }) })
+      const outcome = await adapter.send(item, new AbortController().signal)
+      assert.deepEqual({ status: outcome.status, errorCode: outcome.errorCode }, { status: 'result_unknown', errorCode: 'ILINK_SEND_RESULT_UNKNOWN' })
+      assert.equal(JSON.stringify(outcome).includes('should-not-parse'), false)
+    }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

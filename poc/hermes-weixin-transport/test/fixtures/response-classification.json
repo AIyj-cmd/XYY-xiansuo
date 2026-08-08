@@ -1,0 +1,16 @@
+[
+  {"response": {}, "status": "sent", "code": "ILINK_SENT", "responseShape": "empty_object"},
+  {"response": {"ret": 0}, "status": "sent", "code": "ILINK_SENT", "responseShape": "ret_zero"},
+  {"response": {"ret": 0, "opaque": "raw-provider-body-token-peer"}, "status": "sent", "code": "ILINK_SENT", "responseShape": "ret_zero", "redactionProbe": "raw-provider-body-token-peer"},
+  {"response": {"ret": 0, "errcode": 0}, "status": "sent", "code": "ILINK_SENT", "responseShape": "ret_zero_errcode_zero"},
+  {"response": {"ret": 1}, "status": "permanent_failure", "code": "ILINK_PROVIDER_REJECTED", "responseShape": "ret_nonzero"},
+  {"response": {"errcode": -1}, "status": "permanent_failure", "code": "ILINK_PROVIDER_REJECTED", "responseShape": "errcode_nonzero"},
+  {"response": {"ret": -1, "errcode": -2}, "status": "permanent_failure", "code": "ILINK_PROVIDER_REJECTED", "responseShape": "both_codes_nonzero"},
+  {"response": {"ret": 0, "errcode": 1}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "conflicting_codes"},
+  {"response": {"ret": true}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "invalid_code_type"},
+  {"response": {"ret": "0"}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "invalid_code_type"},
+  {"response": {"errcode": null}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "invalid_code_type"},
+  {"response": {"errcode": 0}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "unrecognized_object"},
+  {"response": {"opaque": "fixture"}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "unrecognized_object"},
+  {"response": [0], "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "non_object"}
+]

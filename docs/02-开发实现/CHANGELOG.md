@@ -191,3 +191,12 @@
 - 子进程交换仅使用有界 JSON stdin/stdout，peer、正文和 secret 不进入 argv；timeout/abort/超量输出先 SIGTERM，250ms 后 SIGKILL，并等待 `close`/reap 后才返回 `result_unknown`。
 - 新增 overlay 12 项测试和 Gateway Hermes 配置、路径、单次投递、重启、非法输出、SIGKILL/reap 测试。最终验收为 overlay 60/60、上游旧行为离线对照 9/9、Gateway 58/58、Server 146/146、H5 build 通过；未登录、扫码、联网、发送或访问生产数据库。
 - 未新增生产依赖、数据库迁移或 API 字段；未修改 `app/src`、`server/src`、`server/data`、`scripts` 或 `deploy`。已知 P3 为自定义 HMAC 流加密组合的维护风险；真实 Pilot/生产继续 NO-GO。
+
+### Hermes 成功响应分类修复（2026-08-08）
+
+- 修复上一真实 Pilot 已送达但旧 overlay 因只接受 `ret=0` 而误报 `permanent_failure / ILINK_PROVIDER_REJECTED` 的分类缺陷：精确 `{}` 依据固定官方插件成功 fixture 现为 `sent / ILINK_SENT / empty_object`，真正整数 `ret=0`（可选真正整数 `errcode=0`）也为 sent。上一 Pilot 的原始响应未保存，因此不反推其精确结构。
+- 不冲突的真正整数非零 `ret`/`errcode` 保持永久失败；冲突、类型异常、未知非空对象和非对象统一为 `result_unknown`，且 Python `bool` 不再被当作整数状态码。
+- overlay stdout 增加固定枚举 `responseShape`，并冻结为恰好四字段；Gateway 拒绝旧三字段、额外字段、未知 shape、非法 status/shape/退出码组合，失败关闭为 unknown。
+- 新增响应分类 fixture、单次调用/脱敏用例和 Gateway 严格消费回归；验收复验为 overlay **26/26**、Gateway **59/59**、Server **146/146**、H5 build 通过。
+- 历史不改写：上一 Pilot 指定接收人实际收到 1 条、自动重试 0、其他渠道 0；旧技术记录仍为 `permanent_failure / ILINK_PROVIDER_REJECTED`，人工事实仍为 `manually_confirmed_received`。
+- 本轮不新增依赖、API 或数据库变更，不接入 Worker，不登录、不联网、不发送；仅适合本地提交，新的真实单条 Pilot 仍需单独明确授权。

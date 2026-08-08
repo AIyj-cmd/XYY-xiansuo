@@ -136,3 +136,38 @@
 - 未执行且不能宣称通过：真实登录/扫码、session 恢复、真实 context token 有效期、网络故障、限流、provider 回执、用户端送达或生产运行。
 - 适合形成一个边界清晰的**本地提交**，提交范围应只含 overlay、Gateway Hermes adapter/门禁/测试、`TEST_REPORT.md` 与本次四份文档追加。不得把 `/tmp/hermes-agent-v2026.8.3`、仓库外配置/Secret/映射/状态或构建产物纳入提交。
 - 本结论不授权 push、merge、生产 DB、真实账号、网络、登录、扫码、发送、PM2/systemd/Nginx 变更或生产部署。
+
+## 9. Hermes 成功响应分类修复最终验收（2026-08-08）
+
+### 结论
+
+**PASS（仅离线实现）；P1=0、P2=0、P3=0；适合形成范围清晰的本地提交。** 真实登录、扫码、网络调用、微信发送、Worker 接入与生产部署仍为 **NO-GO**，本结论不授权 push、merge 或外发。
+
+上一轮真实 Pilot 的历史事实保持不变：指定接收人实际收到 **1 条**，接收人正确，自动重试 **0**，其他渠道发送 **0**；旧 overlay 当时记录的技术结果为 `permanent_failure / ILINK_PROVIDER_REJECTED`，人工事实为 `manually_confirmed_received`。本次只修正后续响应分类，不回写、删除或伪装该历史技术误判。
+
+### 验收标准与证据
+
+| 验收项 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 已知成功形态 | 通过 | 精确空对象 `{}` 映射为 `sent / ILINK_SENT / empty_object`；真正整数 `ret=0`（可带真正整数 `errcode=0`）映射为 `sent`。 |
+| 明确失败与未知结果 | 通过 | 不冲突的真正整数非零 `ret`/`errcode` 为 `permanent_failure`；0/非零冲突、单独 `errcode=0`、bool/string/null/float、未知对象与非对象均失败关闭为 `result_unknown`。 |
+| 最小响应与脱敏 | 通过 | overlay stdout 恰好为 `status`、`code`、固定枚举 `responseShape`、`idempotencyKey` 四字段；不回显原始响应、未知字段和值、正文、token、context token 或 peer。对抗 canary 只存在于测试 fixture。 |
+| 单次调用 | 通过 | 每个 fake provider 用例断言 `post_once` 调用恰好一次；无 retry、fallback、chunk、typing 或 media 路径，无 context token 时零调用。 |
+| Gateway 严格消费 | 通过 | 旧三字段、额外字段、未知 shape、status/shape 或退出码不匹配均收敛为 `result_unknown`；Hermes adapter 保持 `single_attempt`，永不返回 `retryable_failure`。 |
+| Gateway 幂等 | 通过 | 同 key 并发共享一个在途 promise；持久账本在首次 acquire 时先写 unknown 并加锁，sent、permanent、unknown、重启后命中和历史 retryable 烧毁均不会产生第二次 adapter 调用。 |
+| 范围与兼容性 | 通过 | 仅修改 overlay、Gateway Hermes adapter、测试/fixture、README 与追加报告；未改 API、数据库 schema、`server/src`、`app/src`、依赖或部署脚本。 |
+
+### 验收阶段复验
+
+- overlay 离线脚本连续两轮：每轮 **13/13**，合计 **26/26**。
+- Gateway：build 通过，测试 **59/59**。
+- Server：build 通过，测试 **146/146**。
+- H5：`npm run build:h5` 通过；仅有既有 Appid/可选版本提示。
+- `git diff --check` 通过；`server/data/app.db`、`app.db-shm`、`app.db-wal` 验收前后 SHA-256 分别保持 `8b8bc326…`、`42a2baf3…`、`194c0753…`。
+- 未发现 Hermes、OpenClaw、iLink Gateway、notification-worker 或 Weixin 常驻进程；未执行真实登录、扫码、网络调用或发送。
+
+第 8 节记录的自定义 HMAC 状态格式长期维护风险继续作为既有范围风险保留，但不是本次响应分类修复新增或未关闭的 P3。本轮没有测试报告已确认且仍可复现的问题，因此验收阶段未修改业务源码。
+
+### 下一次真实单条门禁
+
+只有取得新的、明确的一次性授权后，才可做一条新 Pilot；授权需冻结账号、唯一接收人、固定正文、新幂等键、执行窗口、人工观察人和停止条件。执行时必须证明 adapter 调用 **1 次**、技术状态 `sent`、用户端实际收到 **1 条**、自动重试 **0**、其他渠道发送 **0**。任何 `result_unknown`、超时、断连、非法响应或技术/人工结果不一致都立即停止，不换 key、不重发、不 fallback，并保留账本与人工事实供核对。该门禁通过前不得接入 Worker 或生产。

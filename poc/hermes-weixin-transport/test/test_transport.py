@@ -124,7 +124,7 @@ class TransportOverlayTests(unittest.TestCase):
             calls.append(f"{passed.peer}:{token}")
             return {"ret": 0}
         outcome = asyncio.run(send_once(SOURCE, self.config, state, request, post_once=post))
-        self.assertEqual(outcome, {"status": "sent", "code": "ILINK_SENT", "idempotencyKey": "job-42"})
+        self.assertEqual(outcome, {"status": "sent", "code": "ILINK_SENT", "responseShape": "ret_zero", "idempotencyKey": "job-42"})
         self.assertEqual(calls, ["peer-a:captured-context"])
 
     def test_06_stale_context_never_calls_transport(self) -> None:
@@ -152,16 +152,42 @@ class TransportOverlayTests(unittest.TestCase):
             self.assertEqual(outcome["status"], "result_unknown")
             self.assertEqual(calls, 1)
 
-    def test_08_explicit_4xx_and_nonzero_ret_are_permanent_and_input_is_text_only(self) -> None:
+    def test_08_response_shapes_are_strict_safe_and_single_attempt(self) -> None:
+        state = TokenState(self.state_dir, self.config)
+        state.capture("peer-a", "context")
+        request = SendRequest("peer-a", "text", "key")
+        cases = json.loads((OVERLAY / "test" / "fixtures" / "response-classification.json").read_text(encoding="utf-8"))
+        for case in cases:
+            calls = 0
+            async def post(*_args, response=case["response"]):
+                nonlocal calls
+                calls += 1
+                return response
+            outcome = asyncio.run(send_once(SOURCE, self.config, state, request, post_once=post))
+            self.assertEqual(calls, 1)
+            self.assertEqual(
+                outcome,
+                {
+                    "status": case["status"],
+                    "code": case["code"],
+                    "responseShape": case["responseShape"],
+                    "idempotencyKey": "key",
+                },
+            )
+            self.assertEqual(set(outcome), {"status", "code", "responseShape", "idempotencyKey"})
+            self.assertNotIn("fixture", json.dumps(outcome))
+            if "redactionProbe" in case:
+                self.assertNotIn(case["redactionProbe"], json.dumps(outcome))
+
+    def test_08b_explicit_4xx_is_permanent_and_input_is_text_only(self) -> None:
         state = TokenState(self.state_dir, self.config)
         state.capture("peer-a", "context")
         request = SendRequest("peer-a", "text", "key")
         async def rejected(*_args):
             raise RuntimeError("iLink POST sendmessage HTTP 400")
-        self.assertEqual(asyncio.run(send_once(SOURCE, self.config, state, request, post_once=rejected))["status"], "permanent_failure")
-        async def ret_rejected(*_args):
-            return {"ret": 1}
-        self.assertEqual(asyncio.run(send_once(SOURCE, self.config, state, request, post_once=ret_rejected))["status"], "permanent_failure")
+        outcome = asyncio.run(send_once(SOURCE, self.config, state, request, post_once=rejected))
+        self.assertEqual(outcome["status"], "permanent_failure")
+        self.assertEqual(outcome["responseShape"], "http_client_error")
         with self.assertRaises(RequestError):
             parse_send_request({"peer": "peer-a", "text": "x" * 2001, "idempotencyKey": "k"}, self.config.allowed_from)
         with self.assertRaises(RequestError):

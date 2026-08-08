@@ -50,11 +50,26 @@ export const hermesCommandRunner: HermesCommandRunner = {
   }
 }
 
-type OverlayResponse = { status: 'sent' | 'permanent_failure' | 'result_unknown'; code: string; idempotencyKey: string }
+type OverlayResponseShape =
+  | 'empty_object' | 'ret_zero' | 'ret_zero_errcode_zero'
+  | 'ret_nonzero' | 'errcode_nonzero' | 'both_codes_nonzero'
+  | 'unrecognized_object' | 'invalid_code_type' | 'conflicting_codes' | 'non_object'
+  | 'timeout' | 'http_client_error' | 'http_server_error' | 'transport_error' | 'not_attempted'
+type OverlayResponse = { status: 'sent' | 'permanent_failure' | 'result_unknown'; code: string; responseShape: OverlayResponseShape; idempotencyKey: string }
 const allowedCodes: Record<OverlayResponse['status'], ReadonlySet<string>> = {
   sent: new Set(['ILINK_SENT']),
   permanent_failure: new Set(['ILINK_STALE_CONTEXT_TOKEN', 'ILINK_PROVIDER_REJECTED']),
   result_unknown: new Set(['ILINK_SEND_TIMEOUT', 'ILINK_SEND_RESULT_UNKNOWN'])
+}
+const allowedResponseShapes: Record<OverlayResponse['status'], ReadonlySet<OverlayResponseShape>> = {
+  sent: new Set(['empty_object', 'ret_zero', 'ret_zero_errcode_zero']),
+  permanent_failure: new Set(['ret_nonzero', 'errcode_nonzero', 'both_codes_nonzero', 'http_client_error', 'not_attempted']),
+  result_unknown: new Set(['unrecognized_object', 'invalid_code_type', 'conflicting_codes', 'non_object', 'timeout', 'http_server_error', 'transport_error'])
+}
+const allResponseShapes = new Set<OverlayResponseShape>(Object.values(allowedResponseShapes).flatMap((values) => [...values]))
+
+function isOverlayResponseShape(value: unknown): value is OverlayResponseShape {
+  return typeof value === 'string' && allResponseShapes.has(value as OverlayResponseShape)
 }
 
 function strictResponse(stdout: string, key: string, exitCode: number | null): OverlayResponse | undefined {
@@ -62,8 +77,8 @@ function strictResponse(stdout: string, key: string, exitCode: number | null): O
   try { raw = JSON.parse(stdout) } catch { return undefined }
   if (raw === null || Array.isArray(raw) || typeof raw !== 'object') return undefined
   const value = raw as Record<string, unknown>
-  if (Object.keys(value).length !== 3 || !Object.hasOwn(value, 'status') || !Object.hasOwn(value, 'code') || !Object.hasOwn(value, 'idempotencyKey')) return undefined
-  if ((value.status !== 'sent' && value.status !== 'permanent_failure' && value.status !== 'result_unknown') || typeof value.code !== 'string' || value.idempotencyKey !== key || !allowedCodes[value.status].has(value.code)) return undefined
+  if (Object.keys(value).length !== 4 || !Object.hasOwn(value, 'status') || !Object.hasOwn(value, 'code') || !Object.hasOwn(value, 'responseShape') || !Object.hasOwn(value, 'idempotencyKey')) return undefined
+  if ((value.status !== 'sent' && value.status !== 'permanent_failure' && value.status !== 'result_unknown') || typeof value.code !== 'string' || !isOverlayResponseShape(value.responseShape) || value.idempotencyKey !== key || !allowedCodes[value.status].has(value.code) || !allowedResponseShapes[value.status].has(value.responseShape)) return undefined
   if ((value.status === 'sent' && exitCode !== 0) || (value.status !== 'sent' && exitCode !== 1)) return undefined
   return value as OverlayResponse
 }
