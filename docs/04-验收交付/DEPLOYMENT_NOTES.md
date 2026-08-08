@@ -116,3 +116,26 @@ OpenClaw 的安装、会话检查和入站静默插件只按 [运行手册](OPEN
 禁止把该目录加入 PM2/systemd/Nginx、禁止配置真实 token/账号、禁止扫码、禁止启动 Gateway/轮询、禁止真实发送，也禁止把本机 `/tmp` 上游副本打入生产制品。当前没有可用的 Hermes 生产监控信号；只有离线测试退出码、用例数、临时目录清理和数据哈希可作为 PoC 证据。
 
 若未来申请真实 Pilot，必须另行提交并批准：持久化业务幂等、失败分类、未知结果人工确认、真实账号与接收人边界、限流/停止条件、监控告警和专用回滚方案。本说明不授权该扩展。
+
+## 7. Hermes Weixin transport-only overlay 本地交付说明（2026-08-08）
+
+本轮是**本地 overlay 代码交付，不是部署或实况授权**。禁止在生产机、PM2、systemd、Nginx、真实账号或真实网络上启动；禁止登录、扫码、轮询或发送。
+
+### 离线复验
+
+1. 只在开发/评审机准备独立的 `/tmp/hermes-agent-v2026.8.3`，核对 remote `https://github.com/NousResearch/hermes-agent.git`、tag `v2026.8.3`、commit `3c27eb6234bf91b8ceee9e9071591b31e9b148cb`、tree `b217767ccb994605dad522e693fa1b4cdbc2f352`、clean、包版本 `0.20.0` 和 MIT。依赖只存在于该副本自己的 `.venv`，不进入仓库或发布制品。
+2. 从仓库根目录运行 `./poc/hermes-weixin-transport/run-tests.sh`；期望 12/12。该测试使用注入 transport，不发送网络。再运行 `./poc/hermes-weixin-offline/run-offline-poc.sh`；期望 9/9，且上游默认 1+4 重试只发生在 fake 对照路径。
+3. 运行 Gateway `npm run build && npm test`、Server `npm run build && npm test`、H5 `npm run build:h5`；核对 `git diff --check`、`server/data` 前后 SHA-256、临时目录和相关进程。
+
+### 冻结配置边界
+
+- 默认保持 `ILINK_POC_TRANSPORT=openclaw`、`ILINK_HERMES_TRANSPORT_ENABLED=false`、`ILINK_POC_LIVE_ENABLED=false`。本轮不创建可运行的 live 配置，也不启动 Gateway。
+- 若未来另获明确实况授权，Hermes 模式仍必须同时显式选择 transport、enable 和 live；`ILINK_POC_STATE_DIR`、`ILINK_HERMES_STATE_DIR` 为仓库外当前 UID 的精确 `0700` 非链接目录，Gateway Secret、overlay config、recipient map 为仓库外当前 UID 的精确 `0600` 单硬链接普通文件。
+- recipient map 必须为 1–10 个规范系统用户 ID 到唯一 Hermes peer 的严格映射；overlay config 的 `allowed_from` 也必须为 1–10 个固定 peer，并由人工核对两者一致。Secret、token、HMAC key、peer、context token、正文和状态绝不进入 Git、argv、日志或部署包。
+- Gateway HTTP 合同不新增 peer、token 或自由消息字段；不得绕过固定业务消息策略、持久幂等账本、单次 adapter 调用或 `result_unknown` 禁止重试门禁。
+
+### 监控与停止信号
+
+当前可用信号只用于后续获批实况设计：配置 fail-closed、Gateway `ILINK_HERMES_DISABLED`/`ILINK_HERMES_SESSION_UNCHECKED` health code、`result_unknown` 数量、幂等冲突、子进程 timeout/kill/reap、状态文件权限/完整性失败、Gateway 重启与状态目录增长。没有真实 session/送达监控，本轮不能据此上线。
+
+任一 upstream gate、路径权限、HMAC/状态完整性、映射、幂等、子进程回收或数据哈希检查失败即停止；任何 DNS/网络、登录、扫码、真实发送或相关常驻进程出现均视为越界并进入安全事件处置。真实 Pilot 必须另行批准账号、接收人、数量、消息、网络、停止条件、监控和人工确认流程。

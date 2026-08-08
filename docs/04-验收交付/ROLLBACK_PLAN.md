@@ -72,3 +72,15 @@ OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已�
 - 提交后若需撤回，使用正常 Git revert 撤销对应 PoC 提交，保留历史记录；不操作 `server/data`，不删除默认 Hermes 状态或任何仓库外凭据目录。
 - 若发现意外 Hermes/OpenClaw/Worker 进程或真实网络/发送行为，立即停止该进程、隔离凭据并保全日志；这已超出纯离线 PoC，必须按安全事件处理并重新评审，不能用删除测试记录掩盖。
 - 回退验收：`git diff --check` 通过，产品源码/依赖/`server/data` 与 PoC 前一致，且无 `/tmp/xiansuo-hermes-weixin-offline-*` 或相关服务进程。
+
+## 7. Hermes Weixin transport-only overlay 回退（2026-08-08）
+
+本轮没有部署、数据库迁移、真实账号状态或真实发送，因此正常回退只涉及 Git 交付范围，不执行数据恢复：
+
+1. 提交前若不采纳，不把 `poc/hermes-weixin-transport/`、Gateway Hermes adapter/门禁/测试以及本次报告追加纳入提交；不得清理或覆盖用户其他未提交改动。
+2. 提交后若撤回，使用正常 Git revert 撤销对应单一提交并保留历史；不得使用 `git reset --hard`、删除 `server/data`、修改迁移记录或以清理仓库外状态冒充回滚。
+3. 若未来获批运行后需要停用，先阻止新业务任务并将 `ILINK_POC_LIVE_ENABLED=false`、`ILINK_HERMES_TRANSPORT_ENABLED=false`，再停止 Gateway/overlay 子进程。不得重试、换 key 或 fallback 处理已有 `result_unknown`；必须保留 Gateway ledger、烧毁 key、context-token 状态与日志供人工核对。
+4. 发现上游 gate、映射、权限、状态 MAC、幂等、超时回收异常，或出现意外网络/登录/扫码/发送时，立即隔离真实凭据、停止进程并保全仓库外 `0700/0600` 现场；按安全事件重新评审，不先删除状态或日志。
+5. 回退验证：默认 transport/enable/live 仍关闭；Gateway、Hermes/OpenClaw/Worker/AI 相关进程为空；`git diff --check` 通过；Server/Gateway build/test 与 H5 build 通过；`server/data` 前后 SHA-256 一致；仓库和提交中无 token、HMAC key、Secret、peer、context token 或本机上游副本。
+
+P3 自定义 HMAC 流加密风险的后续迁移也必须采用新 schema 版本、先验证旧状态完整性再原子迁移，并保留可审计回退路径；禁止就地改算法后继续读取旧密文，或删除 MAC/nonce/域分离以求兼容。

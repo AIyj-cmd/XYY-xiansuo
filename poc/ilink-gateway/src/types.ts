@@ -43,7 +43,9 @@ export type GatewayHealthStatus = 'healthy' | 'degraded' | 'offline' | 'login_re
 export type AdapterHealth = { status: GatewayHealthStatus; code?: string; sessionStatus?: 'authenticated' | 'login_required' | 'expired' | 'restricted' | 'unsupported' | 'unknown' | 'offline'; channelStatus?: 'enabled' | 'disabled' }
 
 export interface ChannelAdapter {
-  readonly name: 'fake' | 'ilink'
+  readonly name: 'fake' | 'ilink' | 'hermes'
+  /** A Hermes CLI execution is never safe to retry once a key is acquired. */
+  readonly attemptPolicy?: 'single_attempt'
   send(request: AdapterDeliveryRequest, signal: AbortSignal): Promise<ChannelDeliveryResult>
   health(): Promise<AdapterHealth>
 }
@@ -58,6 +60,8 @@ export type ErrorDisposition = {
 export const ERROR_DISPOSITIONS: Record<string, ErrorDisposition> = {
   ILINK_CHANNEL_DISABLED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
   ILINK_LIVE_DISABLED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
+  ILINK_HERMES_DISABLED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_HERMES_SESSION_UNCHECKED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
   ILINK_GATEWAY_OFFLINE: { retryable: true, mayDuplicate: false, level: 'warn', requiresHuman: false },
   ILINK_SESSION_EXPIRED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
   ILINK_LOGIN_REQUIRED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },

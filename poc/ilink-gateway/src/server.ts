@@ -7,7 +7,7 @@ import { StateStore } from './state-store.js'
 import { ReplayStore } from './replay-store.js'
 import { IdempotencyStore } from './idempotency-store.js'
 import { deliveryRequestSchema, type ChannelAdapter } from './types.js'
-import { ILinkAdapter } from './adapters/ilink-adapter.js'
+import { createConfiguredAdapter } from './adapters/factory.js'
 import { GatewayService } from './gateway-service.js'
 
 const MAX_BODY_BYTES = 16 * 1024
@@ -26,7 +26,7 @@ async function readBody(request: IncomingMessage): Promise<Buffer> {
 export function createGateway(config: GatewayConfig = loadConfig(), adapter?: ChannelAdapter) {
   ensurePrivateStateDirectory(config)
   const store = new StateStore(config.stateDir)
-  const service = new GatewayService(config, adapter ?? new ILinkAdapter(config), new IdempotencyStore(store), store)
+  const service = new GatewayService(config, adapter ?? createConfiguredAdapter(config), new IdempotencyStore(store), store)
   const replay = new ReplayStore(store)
   const rate = new Map<string, number[]>()
   const secretList = [config.gatewaySecret]

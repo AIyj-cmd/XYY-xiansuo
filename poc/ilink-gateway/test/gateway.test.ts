@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +10,8 @@ import { IdempotencyStore } from '../src/idempotency-store.js'
 import { GatewayService } from '../src/gateway-service.js'
 import { OfficialRuntime, type CommandResult, type OfficialCommandRunner, hasVerifiedOutboundSendCapability, parseOfficialSessionStatus, satisfiesDeclaredCompatibility } from '../src/official-runtime.js'
 import { ILinkAdapter, MockOfficialSendTransport, OfficialTransportError, OpenClawCliTransport, classifyOfficialResponse } from '../src/adapters/ilink-adapter.js'
+import { HermesAdapter, hermesCommandRunner, type HermesCommandRunner } from '../src/adapters/hermes-adapter.js'
+import { createConfiguredAdapter } from '../src/adapters/factory.js'
 import { FakeAdapter } from '../src/adapters/fake-adapter.js'
 import { StateStore } from '../src/state-store.js'
 import { createGateway } from '../src/server.js'
@@ -28,6 +30,17 @@ function recipientMapFile(dir: string, mapping: unknown): string { const file = 
 function openclawConfigPath(dir: string): string { const parent = join(dir, 'openclaw-config'); mkdirSync(parent, { recursive: true, mode: 0o700 }); chmodSync(parent, 0o700); return join(parent, 'openclaw.json') }
 function config(dir: string, extra: Record<string, string> = {}): GatewayConfig {
   return loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1', ...extra })
+}
+function hermesConfig(dir: string, mapping: unknown = { '1': { peer: 'peer-a', enabled: true }, '2': { peer: 'peer-b', enabled: true } }, extra: Record<string, string> = {}): GatewayConfig {
+  const overlayConfig = join(dir, 'hermes-config.json'); writeFileSync(overlayConfig, '{"opaque":"test-only"}', { mode: 0o600 }); chmodSync(overlayConfig, 0o600)
+  const overlayState = join(dir, 'hermes-state'); mkdirSync(overlayState, { recursive: true, mode: 0o700 }); chmodSync(overlayState, 0o700)
+  const map = recipientMapFile(dir, mapping)
+  return loadConfig({
+    ILINK_POC_TRANSPORT: 'hermes', ILINK_POC_LIVE_ENABLED: 'true', ILINK_HERMES_TRANSPORT_ENABLED: 'true',
+    ILINK_POC_STATE_DIR: dir, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), ILINK_HERMES_SOURCE_DIR: dir,
+    ILINK_HERMES_CONFIG_FILE: overlayConfig, ILINK_HERMES_STATE_DIR: overlayState,
+    ILINK_HERMES_RECIPIENT_MAP_FILE: map, ...extra
+  })
 }
 function request() { return { deliveryId: randomUUID(), idempotencyKey: `phase5a-test-${randomUUID()}`, recipientUserId: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' as const, gatewaySendTimeoutMs: 30_000, workerTimeoutMs: 40_000 } }
 function adapterRequest() { return { recipientExternalId: 'test-recipient-1', idempotencyKey: `phase5a-test-${randomUUID()}`, message: { ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' } } }
@@ -307,9 +320,30 @@ test('login launches only the official command after secure live gates', async (
 test('private state and session directories require 0700 and reject symbolic links', () => {
   const parent = directory(); try {
     const real = join(parent, 'real'); const linked = join(parent, 'linked'); mkdirSync(real, { mode: 0o700 }); symlinkSync(real, linked)
-    assert.throws(() => ensurePrivateStateDirectory(config(linked)), /ILINK_POC_STATE_DIR/)
+    const linkedConfig = loadConfig({ ILINK_POC_STATE_DIR: linked, OPENCLAW_STATE_DIR: join(parent, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(parent), ILINK_GATEWAY_SECRET_FILE: secretFile(parent), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1' })
+    assert.throws(() => ensurePrivateStateDirectory(linkedConfig), /ILINK_POC_STATE_DIR/)
     const cfg = config(parent); ensurePrivateStateDirectory(cfg); ensurePrivateOpenClawStateDirectory(cfg); chmodSync(cfg.openclawStateDir!, 0o755); assert.throws(() => ensurePrivateOpenClawStateDirectory(cfg), /0700/)
   } finally { rmSync(parent, { recursive: true, force: true }) }
+})
+
+test('Hermes mode keeps the Gateway ledger root and its database outside the repository', () => {
+  const dir = directory(); try {
+    const externalState = join(dir, 'gateway-ledger')
+    const cfg = hermesConfig(dir, undefined, { ILINK_POC_STATE_DIR: externalState })
+    assert.equal(lstatSync(externalState).mode & 0o777, 0o700)
+    const state = new StateStore(cfg.stateDir)
+    assert.ok(existsSync(join(externalState, 'ilink-poc-state.db')))
+    state.close()
+
+    assert.throws(() => hermesConfig(dir, undefined, { ILINK_POC_STATE_DIR: join(process.cwd(), 'src') }), /ILINK_POC_STATE_DIR 必须位于仓库外/)
+    assert.doesNotThrow(() => loadConfig({ ILINK_POC_STATE_DIR: join(process.cwd(), 'src'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'compatibility-only' }))
+    assert.throws(() => hermesConfig(dir, undefined, { ILINK_POC_STATE_DIR: 'relative' }), /必须为绝对路径/)
+    const actualParent = join(dir, 'actual-ledger-parent'); const linkedParent = join(dir, 'linked-ledger-parent')
+    mkdirSync(actualParent, { mode: 0o700 }); chmodSync(actualParent, 0o700); symlinkSync(actualParent, linkedParent)
+    assert.throws(() => hermesConfig(dir, undefined, { ILINK_POC_STATE_DIR: join(linkedParent, 'ledger') }), /祖先目录必须是非符号链接目录/)
+    const unsafe = join(dir, 'unsafe-ledger'); mkdirSync(unsafe, { mode: 0o700 }); chmodSync(unsafe, 0o755)
+    assert.throws(() => hermesConfig(dir, undefined, { ILINK_POC_STATE_DIR: unsafe }), /权限精确 0700/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('configuration accepts only frozen names, absolute paths and a non-conflicting legacy alias', () => {
@@ -402,7 +436,13 @@ test('Gateway Secret must be an exact 0600 regular file', () => {
       assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: file, OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'recipient' }), /精确 0600/)
     }
     chmodSync(file, 0o600); const linked = join(dir, 'linked.secret'); symlinkSync(file, linked)
-    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: linked, OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'recipient' }), /普通文件/)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: linked, OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'recipient' }), /当前用户拥有/)
+    const hardLinked = join(dir, 'hard-linked.secret'); linkSync(file, hardLinked)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: hardLinked, OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'recipient' }), /当前用户拥有/)
+    const actualParent = join(dir, 'actual-secret-parent'); mkdirSync(actualParent, { mode: 0o700 }); const ancestorLink = join(dir, 'linked-secret-parent'); symlinkSync(actualParent, ancestorLink)
+    const ancestorSecret = join(ancestorLink, 'gateway.secret'); writeFileSync(ancestorSecret, 'b'.repeat(48), { mode: 0o600 }); chmodSync(ancestorSecret, 0o600)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: ancestorSecret, OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'recipient' }), /当前用户拥有/)
+    assert.throws(() => loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: join(process.cwd(), 'src', 'config.ts'), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'recipient' }), /仓库外/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -561,6 +601,88 @@ test('mock transport validates successful and unknown live send lifecycle withou
     assert.equal((await sent.send(adapterRequest(), new AbortController().signal)).status, 'sent')
     const unknown = new ILinkAdapter(cfg, readyRuntime(cfg), new MockOfficialSendTransport(undefined, new OfficialTransportError('ignored', 'after_request')))
     assert.equal((await unknown.send(adapterRequest(), new AbortController().signal)).status, 'result_unknown')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Hermes adapter uses only bounded JSON stdin/stdout and never exposes peer or secrets in argv', async () => {
+  const dir = directory(); try {
+    const cfg = hermesConfig(dir); const calls: Array<{ command: string; args: readonly string[]; stdin: string; env: NodeJS.ProcessEnv }> = []
+    const fakeCli: HermesCommandRunner = { run: async (command, args, stdin, _timeout, env) => {
+      calls.push({ command, args, stdin, env })
+      const payload = JSON.parse(stdin) as Record<string, string>
+      return { exitCode: 0, stdout: JSON.stringify({ status: 'sent', code: 'ILINK_SENT', idempotencyKey: payload.idempotencyKey }) }
+    } }
+    const item = { ...adapterRequest(), recipientExternalId: 'peer-a' }
+    const result = await new HermesAdapter(cfg, fakeCli).send(item, new AbortController().signal)
+    assert.equal(result.status, 'sent'); assert.match(result.providerMessageId ?? '', /^hermes-local:[a-f0-9]{64}$/); assert.equal(calls.length, 1)
+    assert.equal(calls[0].command, cfg.hermesLauncherPath)
+    assert.deepEqual(calls[0].args, ['send', '--config', cfg.hermesConfigPath!, '--state-dir', cfg.hermesStateDir!])
+    assert.deepEqual(JSON.parse(calls[0].stdin), { peer: 'peer-a', text: `${item.message.title}\n${item.message.body}`, idempotencyKey: item.idempotencyKey })
+    assert.equal(calls[0].args.join(' ').includes('peer-a'), false)
+    assert.equal(calls[0].env.HERMES_SOURCE_DIR, cfg.hermesSourceDir); assert.equal(calls[0].env.HERMES_HOME, cfg.hermesStateDir)
+    assert.equal(calls[0].env.HOME, cfg.hermesStateDir); assert.equal(calls[0].env.PYTHONPATH, '')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Hermes adapter treats startup, timeout and illegal output as unknown and never retryable', async () => {
+  const dir = directory(); try {
+    const cfg = hermesConfig(dir); const item = { ...adapterRequest(), recipientExternalId: 'peer-a' }
+    const variants = [
+      { exitCode: null, stdout: '', spawnError: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) },
+      { exitCode: null, stdout: '', timedOut: true },
+      { exitCode: 0, stdout: '{"status":"sent"}' },
+      { exitCode: 0, stdout: JSON.stringify({ status: 'sent', code: 'ILINK_SENT', idempotencyKey: 'other-key' }) },
+    ]
+    for (const response of variants) {
+      const adapter = new HermesAdapter(cfg, { run: async () => response })
+      const outcome = await adapter.send(item, new AbortController().signal)
+      assert.deepEqual({ status: outcome.status, errorCode: outcome.errorCode }, { status: 'result_unknown', errorCode: response.timedOut ? 'ILINK_SEND_TIMEOUT' : 'ILINK_SEND_RESULT_UNKNOWN' })
+    }
+    const explicit = new HermesAdapter(cfg, { run: async (_command, _args, stdin) => ({ exitCode: 1, stdout: JSON.stringify({ status: 'permanent_failure', code: 'ILINK_PROVIDER_REJECTED', idempotencyKey: (JSON.parse(stdin) as { idempotencyKey: string }).idempotencyKey }) }) })
+    assert.deepEqual(await explicit.send(item, new AbortController().signal), { status: 'permanent_failure', errorCode: 'ILINK_PROVIDER_REJECTED', latencyMs: 0 })
+    assert.deepEqual(await new HermesAdapter({ ...cfg, ILINK_POC_LIVE_ENABLED: false }).health(), { status: 'healthy', channelStatus: 'disabled', code: 'ILINK_HERMES_DISABLED' })
+    assert.equal(createConfiguredAdapter(config(dir)).name, 'ilink')
+    assert.equal(createConfiguredAdapter(cfg).name, 'hermes')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Hermes command runner SIGKILLs and reaps timeout or oversized-output children', async () => {
+  const dir = directory()
+  const runHostileChild = async (mode: 'timeout' | 'oversize') => {
+    const marker = join(dir, `${mode}.pid`)
+    const program = mode === 'timeout'
+      ? `process.on('SIGTERM',()=>{});require('fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000)`
+      : `process.on('SIGTERM',()=>{});require('fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));process.stdout.write('x'.repeat(9000));setInterval(()=>{},1000)`
+    const result = await hermesCommandRunner.run(process.execPath, ['-e', program], '{}', mode === 'timeout' ? 80 : 2_000, process.env, new AbortController().signal)
+    assert.equal(mode === 'timeout' ? result.timedOut : result.invalidOutput, true)
+    const pid = Number(readFileSync(marker, 'utf8')); assert.ok(Number.isSafeInteger(pid) && pid > 1)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(existsSync(`/proc/${pid}`), false, 'runner must return only after child close/reap')
+  }
+  try { await runHostileChild('timeout'); await runHostileChild('oversize') } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Hermes Gateway selection maps peer outside HTTP and preserves one terminal attempt across concurrent and restart calls', async () => {
+  const dir = directory(); const item = request(); let calls = 0; let release: (() => void) | undefined
+  const delayed = new Promise<void>((resolve) => { release = resolve })
+  const adapter = {
+    name: 'hermes' as const, attemptPolicy: 'single_attempt' as const,
+    health: async () => ({ status: 'degraded' as const, channelStatus: 'enabled' as const }),
+    send: async (request: { recipientExternalId: string }) => { calls += 1; assert.equal(request.recipientExternalId, 'peer-a'); await delayed; return { status: 'sent' as const, providerMessageId: 'hermes-receipt' } }
+  }
+  try {
+    const state = new StateStore(dir); const service = new GatewayService(hermesConfig(dir), adapter, new IdempotencyStore(state)); const first = service.deliver(item); const second = service.deliver(item); release!()
+    const results = await Promise.all([first, second]); assert.equal(calls, 1); assert.ok(results.some((value) => value.status === 'sent')); assert.ok(results.some((value) => value.status === 'deduplicated'))
+    assert.equal((await service.deliver({ ...item, recipientUserId: 2 })).errorCode, 'ILINK_IDEMPOTENCY_CONFLICT')
+    state.close()
+    const reopened = new StateStore(dir); const afterRestart = new GatewayService(hermesConfig(dir), adapter, new IdempotencyStore(reopened))
+    assert.deepEqual(await afterRestart.deliver(item), { status: 'deduplicated', providerMessageId: 'hermes-receipt', errorCode: 'ILINK_DUPLICATE_SUPPRESSED' }); assert.equal(calls, 1)
+    const noRetryAdapter = { ...adapter, send: async () => { calls += 1; return { status: 'retryable_failure' as const, errorCode: 'ILINK_GATEWAY_OFFLINE' } } }
+    const unknownItem = { ...request(), idempotencyKey: `hermes-unknown-${randomUUID()}` }
+    const unknown = new GatewayService(hermesConfig(dir), noRetryAdapter, new IdempotencyStore(reopened)); assert.equal((await unknown.deliver(unknownItem)).status, 'result_unknown'); assert.equal((await unknown.deliver(unknownItem)).status, 'result_unknown'); assert.equal(calls, 2)
+    reopened.close()
+    const afterUnknownRestart = new StateStore(dir); const afterUnknown = new GatewayService(hermesConfig(dir), noRetryAdapter, new IdempotencyStore(afterUnknownRestart))
+    assert.equal((await afterUnknown.deliver(unknownItem)).status, 'result_unknown'); assert.equal(calls, 2); afterUnknownRestart.close()
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

@@ -97,3 +97,42 @@
 - **P3=1（范围限制）**：全 fake 离线测试不能证明扫码、会话恢复、context token 有效期、限流、用户端回执或真实送达。
 - **离线 PoC：PASS，允许形成仅包含上述 PoC 与追加文档的本地提交。**
 - **真实 Pilot、真实发送、生产接入或部署：NO-GO。** 关闭 P1、完成独立实况设计与验证并重新取得明确授权前，不得进入这些阶段。
+
+## 8. Hermes Weixin v2026.8.3 transport-only overlay 最终验收（2026-08-08）
+
+### 结论
+
+**离线 transport-only overlay：PASS；本地提交：GO；真实登录、扫码、联网、微信发送、真实 Pilot 与生产部署：NO-GO。**
+
+本节验收的是后续新增的 `poc/hermes-weixin-transport/` 本地 overlay 与 `poc/ilink-gateway` 显式 Hermes adapter，不改写第 7 节对“直接使用上游默认 Weixin send”的历史 P1 结论。overlay 绕开上游默认 1+4 重试路径，并以 Gateway 持久账本、单次调用和未知结果烧毁门禁关闭了该风险；本轮仍没有证明真实协议或用户端送达。
+
+### 需求与范围核对
+
+| 验收目标 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| 固定上游与 fail-closed gate | 通过 | 固定 `NousResearch/hermes-agent` tag `v2026.8.3`、commit `3c27eb6234bf91b8ceee9e9071591b31e9b148cb`、tree `b217767ccb994605dad522e693fa1b4cdbc2f352`、包版本 `0.20.0`、MIT；remote/tag/commit/tree/clean 与受控文件 SHA-256 均在读取配置、状态和导入 Hermes 前核验。 |
+| capture-only 边界 | 通过 | 只接受 1–10 项静态 allowlist 中、发给配置账号的非群非自身 DM，并只捕获 context token；ignored 输入不创建状态，不读取正文、媒体或消息 ID，不触发 Agent、Provider、AI、工具或回复。 |
+| 最小加密状态 | 通过 | schema 2 仅保存 HMAC reference、随机 nonce、密文、entry MAC 与集合 MAC；原始 account、peer、token、正文、媒体、message ID 不落盘。配置/映射/Secret/状态严格仓库外，文件 `0600`、目录 `0700`、当前 UID、单硬链接、无 final/ancestor symlink。 |
+| 单次确定性发送 | 通过 | `client_id` 由 account、peer、业务幂等键确定；只允许一次纯文本 `ilink/bot/sendmessage`，无 token 时零调用，无 retry、chunk、typing、media、fallback；4xx/非零 ret 为明确失败，timeout/断线/5xx/坏 JSON 为 `result_unknown`。 |
+| Gateway 默认关闭与隔离 | 通过 | 默认 transport 仍为 `openclaw`；Hermes 必须同时显式选择 transport 与 enable flag，live 仍默认关闭；HTTP schema 不接收 peer/token/自由正文，peer 只来自仓库外严格映射，Gateway ledger 同样位于仓库外。 |
+| 幂等、超时与进程回收 | 通过 | 同 key 并发、重启、历史 retryable/unknown 均不会再次调用 adapter；非法输出、spawn、timeout/abort 均烧毁为未知结果。runner 先 SIGTERM，250ms 后 SIGKILL，并等待 `close` 后返回，受控忽略 SIGTERM 子进程已验证 reap。 |
+| 无关范围与数据保护 | 通过 | 未修改 `app/src`、`server/src`、数据库迁移、依赖清单或部署脚本；未访问生产数据库。`server/data` 8 个普通文件验收前后逐文件 SHA-256 一致。 |
+
+### 最终测试结果
+
+| 检查 | 结果 |
+| --- | --- |
+| overlay 压力回归 | 连续 5 轮，每轮 12/12，共 **60/60**；每轮包含 10 个 12-thread 冷启动 capture 回合。 |
+| 上游旧行为离线对照 | **9/9**；全部为 fake transport 与 DNS/socket 失败桩，预期复现上游默认重试风险，不发生真实发送。 |
+| Gateway build/test | build 通过，**58/58**。 |
+| Server build/test | build 通过，**146/146**。 |
+| H5 build | `npm run build:h5` 通过；只有未配置 Appid 的统计提示。 |
+| 合计 | **273/273 自动化测试通过**，另有 3 项构建通过（Gateway、Server、H5）。 |
+| 完整性与运行边界 | `git diff --check` 通过；敏感凭据模式扫描无命中；无 Hermes/OpenClaw/Gateway/Worker/DeepSeek/AI Scheduler 服务进程。 |
+
+### 分级、已知问题与放行建议
+
+- **P1=0、P2=0、P3=1**。P3 是自定义 HMAC-SHA256 keystream + Encrypt-then-MAC 状态格式的长期维护风险；当前 nonce、域分离、entry MAC、集合 MAC 与篡改失败关闭已满足本轮离线边界。未来如在已批准依赖内迁移成熟 AEAD，必须版本化、兼容验证，不能原地削弱现有保护。
+- 未执行且不能宣称通过：真实登录/扫码、session 恢复、真实 context token 有效期、网络故障、限流、provider 回执、用户端送达或生产运行。
+- 适合形成一个边界清晰的**本地提交**，提交范围应只含 overlay、Gateway Hermes adapter/门禁/测试、`TEST_REPORT.md` 与本次四份文档追加。不得把 `/tmp/hermes-agent-v2026.8.3`、仓库外配置/Secret/映射/状态或构建产物纳入提交。
+- 本结论不授权 push、merge、生产 DB、真实账号、网络、登录、扫码、发送、PM2/systemd/Nginx 变更或生产部署。

@@ -720,3 +720,133 @@ P2：无。
 - 验收前后 `server/data/app.db`、`app.db-shm`、`app.db-wal` 的 SHA-256 分别保持 `8b8bc326…`、`42a2baf3…`、`194c0753…`；最终 8 个文件清单聚合 SHA-256 为 `7cfa8026040a7f5b5915322fbfed619a745d76e5970724bb6519035b94c6cf10`。
 - 最终未发现 `/tmp/xiansuo-hermes-weixin-offline-*`；进程检查未发现 Hermes、OpenClaw、notification-worker、DeepSeek 或 AI Scheduler 服务实例。
 - 本节保留 `HEAD` 原有 **630 行**测试历史，并只在其后追加 Hermes 专项结果；未覆盖、删除或改写既有 1–29 节。
+
+## 30. Hermes transport-only overlay 与 Gateway adapter 独立复验（2026-08-08）
+
+### 测试环境、基线与计划
+
+- 工作目录：`/home/yj/xiansuo`；分支：`feature/hermes-weixin-transport-only-fork`。开始前已读取根 `AGENTS.md`、当前 Hermes overlay README、Direct iLink 设计审计、开发变更日志及本报告既有记录。
+- 开始基线 `git status --short`：已修改 `poc/ilink-gateway/src/{cli/common.ts,config.ts,gateway-service.ts,server.ts,types.ts}` 与 `test/gateway.test.ts`；已未跟踪 `poc/hermes-weixin-transport/`、`src/adapters/{factory.ts,hermes-adapter.ts}`。这些均为测试前已有改动，未恢复、覆盖、暂存或提交。
+- 计划：先检查上游 gate、文件权限/路径、入站过滤与状态最小化；再做并发/单次投递/子进程与 HTTP 边界验证；最后执行 overlay 两轮、旧 offline 9/9、Gateway、Server、H5、diff 和 `server/data` 哈希回归。全程未启动真实 Hermes/OpenClaw/Gateway/Worker 进程、未登录、未扫码、未调用真实网络或微信。
+- `server/data` 所有普通文件在前后逐文件 SHA-256 一致；`git diff --check` 通过。依赖及 lockfile 不在本轮差异中，故不触发生产依赖审计。
+
+### 已执行命令及结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `poc/hermes-weixin-transport/run-tests.sh` 连续两轮 | 第一轮 10/10；第二轮 9/10，`test_10_concurrent_captures_leave_a_valid_locked_atomic_state` 失败。 |
+| overlay 10 轮压力重跑 | **3/10 失败**，均为 12 个 concurrent capture 中至少一个 `StateError: 状态目录或文件不安全`。 |
+| `./poc/hermes-weixin-offline/run-offline-poc.sh` | 9/9 通过；DNS/socket 均为失败桩。先前以系统 Python 直接运行因缺少 `dotenv` 无法导入，已改按此脚本的固定 `.venv` 复验，不将阻塞记为通过。 |
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，56/56；均为 fake adapter/受控子进程结果或 loopback HTTP。 |
+| `cd server && npm run build && npm test` | 通过，146/146。 |
+| `cd app && npm run build:h5` | 通过；仅有未配置 Appid 的常规提示。 |
+| `ps`、上游 Git/受控文件检查 | 未发现真实 Hermes/OpenClaw/iLink/微信/Worker 进程；固定 source 的 remote/tag/commit/tree/clean、MIT、版本与 manifest 哈希现状均通过。 |
+
+### 通过项与未覆盖范围
+
+- `ILINK_POC_TRANSPORT` 默认仍为 `openclaw`；Hermes 需同时显式选择 transport 与 enable flag，factory 不回退到其他 adapter。Gateway HTTP schema 不接收 peer、token 或自由消息字段；peer 只来自仓库外 `0600` Hermes 映射。
+- overlay 的 gate 在 overlay CLI 读取配置、状态或导入 `gateway.platforms.weixin` 前核验 remote/tag/commit/tree/dirty、版本、MIT 和 manifest 文件哈希；send 只构造一次文本 payload，client ID 对 account/peer/idempotencyKey 确定，timeout/断线/5xx/bad JSON 映射未知，4xx 映射明确失败，无 token 不调用 transport。
+- Gateway fake-runner 覆盖了非法 stdout、exit、timeout、spawn 错误与 retryable 归一为 `result_unknown`，并覆盖同一 service 的并发、重启后 receipt 与历史 retryable 烧毁；无 retry/tokenless/chunk/fallback 的正向设计证据存在。
+- 未覆盖：真实 session、provider 回执、实际限流/断线与用户端送达；这些均未执行，不能据此宣称实况能力通过。gate 的 skip-worktree/TOCTOU 对抗、全祖先目录链接和强制 kill/reap 也没有现有自动化覆盖。
+
+### 失败项、复现与建议
+
+#### P1-1：首次并发 capture 的 lock 创建竞态使合法 token 更新失败
+
+- 预期：任意 0/1/10 allowlist peer 的并发 capture 必须经锁与原子 replace 保持有效状态，合法请求不得因另一个合法请求首次初始化 lock 而失败。
+- 实际：`TokenState._ensure()` 先检查 `lexists(lock_path)`、后以 `O_EXCL` 创建；竞争者可在两步之间创建同一 lock，另一个竞争者将 `FileExistsError` 包装为 `StateError`。10 轮中 3 轮失败；第一轮/第二轮两次顺序运行也已出现 10/10 与 9/10 的不稳定差异。
+- 最小复现：`for 10 次 poc/hermes-weixin-transport/run-tests.sh`；失败日志 `/tmp/hermes-overlay-run-{3,5,7}.log`，断言位置 `poc/hermes-weixin-transport/test/test_transport.py:172`。
+- 建议：将 lock 的“存在或安全创建”处理为单一可重试原子步骤；遇到 `FileExistsError` 重新严格验证并打开该文件，而不是拒绝合法 capture。补足多进程、冷启动、多 peer 和重启压力测试。
+
+#### P1-2：状态文件泄露原始 account/peer，违反状态最小化与身份隔离门禁
+
+- 预期：状态不得保存正文、media、messageId、原始 peer 或原始 account；只应保存不可逆的 HMAC reference 与必要 token 保护材料。
+- 实际：`state.py` 写入 JSON 顶层 `account_id`，并以原始 peer 为 `tokens` 的键，同时以明文 `token` 保存 context token；HMAC `ref`/`refs_mac` 不能消除这些原文副本。
+- 证据：`poc/hermes-weixin-transport/src/hermes_weixin_transport/state.py:70,74,85,127,142`；现有测试只断言正文/media/messageId 未写入，未断言 account/peer 不落盘。
+- 建议：以 HMAC(account/peer) 作为状态索引与绑定 reference，删除任何原始 account/peer 字段；迁移/清除既有状态并新增序列化、重启、篡改和跨账户隔离断言。
+
+#### P1-3：Gateway secret 未执行 owner、hardlink、realpath 与仓库外校验
+
+- 预期：身份/认证 key 与 Hermes 配置、状态、映射一样，必须当前 UID 拥有、精确 `0600`、单硬链接、无 symlink/祖先链接且在仓库外。
+- 实际：`readSecretFile()` 仅检查 final component 的普通文件和 `0600`，不检查 `uid`、`nlink`、`realpath` 或仓库边界；这发生在 Hermes 分支前。
+- 证据：`poc/ilink-gateway/src/config.ts:126-132`；现有 `Gateway Secret must be an exact 0600 regular file` 未覆盖 owner/hardlink/repository 外约束。
+- 建议：复用并收紧 `requirePrivateExternalFile()`，且在读内容前完成祖先路径与仓库外检查；增加 owner、hardlink、final/ancestor symlink、仓库内路径矩阵。
+
+#### P2-1：overlay 直连 CLI 的配置/状态路径不强制仓库外，且只检查最终组件链接
+
+- 预期：直接 CLI 和 Gateway adapter 都必须拒绝仓库内、经任意祖先 symlink 的 config/state/identity 路径。
+- 实际：`load_config()` 只对 final config file 调用 `require_private_file()`，而 `ensure_state_directory()/require_state_directory()` 只 `lstat` 目标或直接父目录；未比较所有路径祖先的 realpath，也未检查 repository root 边界。
+- 证据：`config.py:39`、`security.py:37-77`。Gateway 的 Hermes config/map path 已有部分外部校验，但 direct overlay CLI 可绕过这些检查。
+- 建议：统一接受绝对路径、逐段无链接 realpath、当前 UID、`0600/0700`、单硬链接与仓库外限制；测试应覆盖 config/state/identity/map 的 final 与祖先 symlink/hardlink/owner/mode 矩阵。
+
+#### P2-2：子进程 timeout/非法输出只发 SIGTERM 后立即返回，未保证终止并 reap
+
+- 预期：timeout、abort、超量 stdout/stderr 时应先烧毁 key，并等待子进程退出；忽略 SIGTERM 的子进程必须被强杀和 reap，避免返回后继续执行。
+- 实际：`hermesCommandRunner.terminate()` 调用 `child.kill('SIGTERM')` 后立刻 `finish()`，没有 close 等待或 SIGKILL 后备；当前单元测试仅注入 runner result，未覆盖真实忽略 SIGTERM 的安全子进程。
+- 证据：`poc/ilink-gateway/src/adapters/hermes-adapter.ts:18-39`。
+- 建议：增加受控测试子进程，断言 timeout/aborted/oversize 后 key 为未知、adapter 单调用、子进程已退出且无存活后代；实施 TERM 宽限、KILL 和 close/reap。
+
+### 测试阶段文件变化与放行结论
+
+- 测试产生的 `poc/hermes-weixin-offline/__pycache__/` 已删除；`/tmp/hermes-overlay-run-*.log` 与前后哈希清单为测试临时证据，不在仓库。除本报告外，未修改仓库文件；未修改 `app/src`、`server/src`、`scripts` 或 `deploy`。
+- 结束前 Git 状态与开始基线相同，待本报告写入后仅新增 `docs/03-测试验证/TEST_REPORT.md` 修改；其他差异均为测试前已有改动。
+- 严重级别：**P1=3，P2=2，P3=0**。**验收：FAIL / 不允许进入验收阶段；真实 Pilot：FAIL / 严禁启动。** 至少修复三项 P1，并补足 P2 的路径与子进程对抗测试后，重跑 overlay（连续多轮）、old offline 9/9、Gateway、Server、H5、diff 与 `server/data` 哈希，才可重新进行独立评估。
+
+## 31. Hermes transport 修复后的独立复测（2026-08-08）
+
+### 新基线与测试计划
+
+- 本节开始前重新记录 `git status --short` 与 `git diff --name-only`。开始时已有第 30 节报告、Gateway 改动、overlay 与 adapter 未跟踪文件；均保留且未恢复。测试后仅本报告新增追加内容，`server/data` 全部普通文件 SHA-256 与开始前一致，`git diff --check` 通过。
+- 计划按修复项独立覆盖：20 轮冷启动并发、schema 2 磁盘最小化与篡改矩阵、Gateway/overlay 路径权限矩阵、受控子进程 SIGTERM/SIGKILL/reap、单次投递映射及全量回归。没有登录、扫码、真实网络、微信投递或常驻 Gateway/Worker/Hermes 进程。
+
+### 已执行命令与结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `poc/hermes-weixin-transport/run-tests.sh` 压力循环 20 次 | **20/20 通过**；每次内置 10 个 12-thread 冷启动 capture 回合，共 **200** 回合。 |
+| overlay 单轮 | 12/12 通过。 |
+| 独立 schema 2 篡改脚本 | 通过：磁盘只含 `schema/entries/entries_mac`，不含测试 account/peer/context token；ciphertext、错 HMAC key、nonce（重算外层 MAC 后）、entry tag（重算外层 MAC 后）和畸形 schema 均 `StateError` 失败关闭。 |
+| Gateway Hermes config/map/state 路径矩阵 | 通过：overlay config 的 symlink/hardlink、map 的 symlink/hardlink、overlay state symlink 均被拒绝；Gateway secret 回归同时覆盖 0600、symlink、hardlink、祖先 symlink 与仓库内路径。 |
+| `cd poc/ilink-gateway && npm run build && npm test` | 通过，57/57；新增真实安全子进程忽略 SIGTERM 的 timeout 与超量 stdout 两分支，均 SIGKILL 且在 runner 返回前 `/proc/<pid>` 已消失。 |
+| `./poc/hermes-weixin-offline/run-offline-poc.sh` | 通过，9/9；仍全部 fake transport/DNS/socket 失败桩。 |
+| `cd server && npm run build && npm test` | 通过，146/146。 |
+| `cd app && npm run build:h5` | 通过；仅未配置 Appid 提示。 |
+
+### 原 P1/P2 关闭复核
+
+- **原 P1-1（cold-start lock race）：关闭。** `open_private_lock()` 对 `O_EXCL` 的 `FileExistsError` 改为安全 reopen/retry，并叠加进程内锁；20 次完整压力运行无失败。
+- **原 P1-2（原始 account/peer/token 落盘）：关闭。** schema 2 使用 HMAC(account,peer) reference、随机 256-bit nonce 的派生 HMAC-SHA256 流加密和 Encrypt-then-MAC；外层 `entries_mac` 覆盖整个集合。独立序列化与篡改矩阵均通过，legacy schema 1 仅在通过原 HMAC 校验后原子迁移为 schema 2。
+- **加密实现评估：满足本轮“磁盘不保存原始标识/token、篡改/错 key 失败关闭”的安全边界，无新增 P1/P2。** 该构造采用由根 key 域分离的 HMAC-SHA256 keystream、随机 32-byte nonce、entry MAC（含 reference/nonce/ciphertext）和集合 MAC；在 HMAC 作为 PRF、nonce 不复用的标准假设下，提供机密性和完整性。它仍是自定义组合而非已封装 AEAD，列为 P3 维护风险：后续如可在已批准依赖内使用成熟 AEAD，应做版本化迁移；不得削弱当前 nonce、域分离、entry MAC 或外层 MAC。
+- **原 P1-3（Gateway secret 文件约束）：关闭。** `readSecretFile()` 复用外部私有文件校验，覆盖 owner、0600、单硬链接、realpath/祖先 symlink 与仓库外要求。
+- **原 P2-1（overlay direct CLI 路径）：关闭。** overlay config/state 经 `normalized_external_path()` 要求绝对、仓库外、所有祖先非链接；独立路径矩阵通过。
+- **原 P2-2（子进程终止/reap）：关闭。** runner 在终止后等待 `close`，250ms 后 SIGKILL；受控忽略 SIGTERM 子进程在 timeout/oversize 两种分支均被 reaped。非法输出/timeout 仍由 adapter 映射 `result_unknown`，Gateway 的同 key、重启与历史 retryable 单次投递回归通过。
+
+### 新发现的未关闭项
+
+#### P2-1：Hermes Gateway 的 `ILINK_POC_STATE_DIR` 仍可指向仓库内
+
+- 预期：本轮要求的所有状态路径均必须在仓库外，并同时满足 owner、0700、无链接与文件安全条件。
+- 实际：仅加载 Hermes Gateway config 时，将 `ILINK_POC_STATE_DIR=/home/yj/xiansuo/poc`，其余 secret/source/overlay config/state/map 均使用安全仓库外临时路径，`loadConfig()` 输出 `{"accepted":true}`。`loadHermesConfig()` 只对 `ILINK_HERMES_STATE_DIR` 使用 `requireSafeDirectory(..., outsideRepository=true)`；通用 `stateDir` 仍来自直接 `resolve()`。
+- 影响：可将 Gateway SQLite 幂等/nonce/投递账本放入工作树，使敏感操作元数据有误提交、覆盖或被仓库工具处理的风险；违反明确的仓库外状态门禁。
+- 建议：在 `loadConfig()` 中针对 Hermes（最好所有 Gateway transport）将 `ILINK_POC_STATE_DIR` 纳入同一仓库外、绝对路径、所有祖先非链接、0700/current UID 检查；补仓库内、祖先 symlink、owner/mode 矩阵测试。
+
+### 测试阶段文件变化与结论
+
+- 本轮运行产生的 offline `__pycache__` 已删除；压力日志、路径矩阵和哈希清单位于 `/tmp`，不在仓库。未修改业务源码、`app/src`、`server/src`、`scripts` 或 `deploy`。
+- 严重级别：**P1=0，P2=1，P3=1**。原报告第 30 节 P1=3/P2=2 是历史失败记录；本节明确关闭其中五项并记录新的未关闭 P2。
+- **总体：FAIL，暂不允许进入最终验收或真实 Pilot。** 修复新的 P2-1、补对应回归，并重跑 overlay 压力、Gateway/Server/H5、diff 与 `server/data` 哈希后，才可重新评估。所有真实外部渠道在此之前继续保持关闭。
+
+## 32. Hermes Gateway ledger 外部状态路径最终独立复测（2026-08-08）
+
+### 范围、基线与结果
+
+- 开始前重新记录 Git 基线；此前 Gateway/overlay/报告改动均为既有内容，未恢复或覆盖。本节只追加本报告。`server/data` 普通文件 SHA-256 前后一致，`git diff --check` 通过；未启动真实 Hermes/OpenClaw/Gateway/Worker，未登录、扫码、联网或发送。
+- 独立最小配置加载矩阵（不启动 server）：Hermes mode 的 `ILINK_POC_STATE_DIR` 指向仓库内 `/home/yj/xiansuo/poc`、经祖先 symlink 的路径、已存在 `0755` 目录均返回 `{\"ok\":false}`；仓库外新目录返回 `{\"ok\":true}` 且实测创建权限为 `0700`。
+- OpenClaw 兼容性复核：同一仓库内 `ILINK_POC_STATE_DIR` 在明确 `ILINK_POC_TRANSPORT=openclaw` 的旧兼容配置中仍可加载 `{\"ok\":true}`，证明修复仅收紧 Hermes 模式，未改变既有 OpenClaw 解析契约。
+- `poc/hermes-weixin-transport/run-tests.sh`：通过，12/12。`cd poc/ilink-gateway && npm run build && npm test`：通过，58/58，包含外部 Gateway ledger、非法路径、SIGKILL/reap、单次投递、重启与未知结果门禁。
+
+### 结论
+
+- 第 31 节的 **P2-1 已关闭**：Hermes `loadHermesConfig()` 在创建/使用 Gateway ledger 前强制 `ILINK_POC_STATE_DIR` 为当前用户拥有、精确 `0700`、无 final/ancestor symlink、仓库外的目录；回归测试确认 SQLite ledger 落在该外部目录。
+- 当前严重级别：**P1=0，P2=0，P3=1**。P3 仅为第 31 节已记录的自定义 HMAC 流加密组合维护风险，不构成当前离线边界失败；不得在后续修改中削弱 nonce、域分离或双层 MAC。
+- **最终离线代码验证：PASS，允许进入后续验收阶段。** 本结论不等同于真实 Pilot/真实微信送达已通过；真实登录、网络、外发仍未执行，必须另获明确授权并单独验收。

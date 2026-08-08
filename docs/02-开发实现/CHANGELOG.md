@@ -180,3 +180,14 @@
 - 测试在导入 Hermes 前把 HOME/HERMES_HOME/XDG 定向到随机 `/tmp`，并以失败桩禁止 DNS/socket；不登录、不扫码、不轮询、不发送微信、不构造真实 Agent/Provider/模型工具。
 - 未修改 `app/src`、`server/src`、`server/data`、数据库 schema、package/lockfile、部署脚本或生产配置；不新增生产依赖。
 - 已知阻断：timeout、HTTP 400/503、坏 JSON 均默认执行 1+4 次尝试；相同业务消息跨独立调用生成新 `client_id`，没有跨调用业务幂等。因此仅离线 PoC PASS，真实 Pilot/生产 NO-GO。
+
+## Unreleased — Hermes Weixin v2026.8.3 transport-only overlay（2026-08-08）
+
+- 新增 `poc/hermes-weixin-transport/` 本地 overlay：在任何配置/状态读取和 Hermes import 前严格核验固定 upstream remote/tag/commit/tree/clean、包版本、MIT 与受控文件 SHA-256；只保留 allowlist DM context-token capture 和单次纯文本 send，不启动 Gateway、登录、扫码、轮询、typing、Agent、Provider、AI、工具或媒体路径。
+- capture 只接受 1–10 个静态 peer；ignored 输入不创建状态。schema 2 使用不可逆 account+peer HMAC reference、随机 256-bit nonce、域分离 HMAC-SHA256 流加密、entry MAC 与集合 MAC，原始 account/peer/token/正文/媒体/message ID 不落盘；有效 legacy schema 1 会原子迁移。
+- send 使用 account、peer、业务幂等键派生的 deterministic client ID，只调用一次 `ilink/bot/sendmessage`；无 context token 时零调用，4xx/非零 ret 为永久失败，timeout/断线/5xx/坏 JSON 为 `result_unknown`，不重试、不分块、不 fallback。
+- `poc/ilink-gateway` 新增显式 adapter factory 与 Hermes adapter。默认 transport 保持 `openclaw`，Hermes 需 `ILINK_POC_TRANSPORT=hermes` 和 `ILINK_HERMES_TRANSPORT_ENABLED=true`，live 默认仍关闭；HTTP 不接收 peer/token/自由消息，peer 只从仓库外 1–10 项严格映射解析。
+- Gateway Hermes 模式将 Secret、overlay config、recipient map、overlay state 和 Gateway ledger 全部限制为仓库外；目录精确 `0700`、文件精确 `0600`、当前 UID、单硬链接、无 final/ancestor symlink。持久幂等账本保证同 key 并发、重启和 unknown 不产生第二次 adapter 调用。
+- 子进程交换仅使用有界 JSON stdin/stdout，peer、正文和 secret 不进入 argv；timeout/abort/超量输出先 SIGTERM，250ms 后 SIGKILL，并等待 `close`/reap 后才返回 `result_unknown`。
+- 新增 overlay 12 项测试和 Gateway Hermes 配置、路径、单次投递、重启、非法输出、SIGKILL/reap 测试。最终验收为 overlay 60/60、上游旧行为离线对照 9/9、Gateway 58/58、Server 146/146、H5 build 通过；未登录、扫码、联网、发送或访问生产数据库。
+- 未新增生产依赖、数据库迁移或 API 字段；未修改 `app/src`、`server/src`、`server/data`、`scripts` 或 `deploy`。已知 P3 为自定义 HMAC 流加密组合的维护风险；真实 Pilot/生产继续 NO-GO。
