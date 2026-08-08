@@ -104,3 +104,15 @@ OpenClaw 的安装、会话检查和入站静默插件只按 [运行手册](OPEN
 - 任一迁移 `failed`、checksum 冲突、完整性或外键检查失败。
 - 生产空库缺少合规初始管理员密码。
 - 核心 API、实时降权或响应包络冒烟失败。
+
+## 6. Hermes Weixin 纯离线 PoC 交付说明（2026-08-08）
+
+本 PoC **没有部署步骤，也不得作为服务启动**。它只供开发/评审机器在固定本地上游源码副本上复现离线证据：
+
+1. 准备 `/tmp/hermes-agent-v2026.8.3`，核对 remote、tag、commit、`pyproject.toml` 版本和 MIT 许可证；依赖环境只建立在该副本自己的 `.venv`。
+2. 从仓库根目录运行 `./poc/hermes-weixin-offline/run-offline-poc.sh`；期望 9/9，且结束后无 `/tmp/xiansuo-hermes-weixin-offline-*`。
+3. 复现前后核对 `server/data` 哈希与相关进程；任何 DNS/socket 尝试都会令测试失败。
+
+禁止把该目录加入 PM2/systemd/Nginx、禁止配置真实 token/账号、禁止扫码、禁止启动 Gateway/轮询、禁止真实发送，也禁止把本机 `/tmp` 上游副本打入生产制品。当前没有可用的 Hermes 生产监控信号；只有离线测试退出码、用例数、临时目录清理和数据哈希可作为 PoC 证据。
+
+若未来申请真实 Pilot，必须另行提交并批准：持久化业务幂等、失败分类、未知结果人工确认、真实账号与接收人边界、限流/停止条件、监控告警和专用回滚方案。本说明不授权该扩展。

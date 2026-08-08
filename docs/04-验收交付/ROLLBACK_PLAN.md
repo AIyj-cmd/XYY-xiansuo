@@ -64,3 +64,11 @@ OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已�
 - 日志无迁移 `failed` 重试循环和敏感信息。
 - 若保留内部通知能力，离线映射检查必须为 `SAFE` 且 `enabled=1`；DeepSeek 与 AI Scheduler 继续关闭，回滚验证不发送真实消息。
 - 记录回滚原因、时间、制品、备份、数据影响和后续修复负责人。
+
+## 6. Hermes Weixin 纯离线 PoC 回退（2026-08-08）
+
+- 本 PoC 未部署、未迁移数据库、未修改产品源码或依赖，因此没有运行时或数据回滚动作。
+- 提交前若不采纳，保持 `poc/hermes-weixin-offline/` 与本次四份文档追加不进入提交；不得为此清理用户其他未提交改动。
+- 提交后若需撤回，使用正常 Git revert 撤销对应 PoC 提交，保留历史记录；不操作 `server/data`，不删除默认 Hermes 状态或任何仓库外凭据目录。
+- 若发现意外 Hermes/OpenClaw/Worker 进程或真实网络/发送行为，立即停止该进程、隔离凭据并保全日志；这已超出纯离线 PoC，必须按安全事件处理并重新评审，不能用删除测试记录掩盖。
+- 回退验收：`git diff --check` 通过，产品源码/依赖/`server/data` 与 PoC 前一致，且无 `/tmp/xiansuo-hermes-weixin-offline-*` 或相关服务进程。

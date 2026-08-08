@@ -628,3 +628,95 @@
 - 测试后 Git 状态相对开始时仅新增/修改本报告 `docs/03-测试验证/TEST_REPORT.md` 的第 29 节；开始时的 9 个实现/文档差异仍在，且未被修改、恢复、暂存或清理。`node_modules` 与 H5 构建产物未形成新的受跟踪工作区差异。
 - 复现证据为本报告表中列出的测试文件及以上完整命令输出；任何重新验证均应继续使用离线缓存和临时目录，并在完成后比较 `server/data` 聚合哈希。
 - **结论：允许进入验收阶段（离线发布冻结范围）。** 条件是验收阶段不得扩大为生产 DB 操作、真实 OpenClaw/Gateway/Worker/DeepSeek 启动或真实消息发送；这些操作仍须分别获得用户授权、生产副本备份/恢复门禁和后续实况验证。
+
+## 30. Hermes Weixin v2026.8.3 纯离线 PoC 独立验证（2026-08-08）
+
+
+> 验证日期：2026-08-08
+>
+> 结论：**离线 PoC 验证通过；不允许据此无条件进入真实 Pilot、真实发送或生产上线验收。**
+
+### 测试环境与基线
+
+- 工作区：`/home/yj/xiansuo`；分支：`poc/hermes-weixin-multi-user`。
+- 已阅读根目录 `AGENTS.md`、现有设计/实施记录和当前差异。设计文档内的历史 No-Go 与后续授权说明仅作为待核验上下文，本报告以实际 PoC 与测试结果为准。
+- 测试前 Git 基线：`git status --short` 仅有 `?? poc/hermes-weixin-offline/`；`git diff --name-only` 为空。该未跟踪目录属于测试前已有实现，未被恢复、清理或归因给测试阶段。
+- 测试前 `server/data/` 逐文件 SHA-256 已记录；`app.db` 为 `8b8bc326ab3ac27a553b22ea7cacf6e34681d1f471246277907a8ed0a061d5f2`。测试后逐文件哈希完全一致。
+- 测试对象是本地 `/tmp/hermes-agent-v2026.8.3`：remote 为 `https://github.com/NousResearch/hermes-agent.git`，`HEAD=3c27eb6234bf91b8ceee9e9071591b31e9b148cb`，精确 tag `v2026.8.3`，`pyproject.toml` 为 `hermes-agent 0.20.0`，`LICENSE` 为 MIT。
+
+### 测试计划与范围
+
+1. 固定上游版本、许可证与公开 `hermes send` 的 Weixin 路由。
+2. 离线隔离：随机 `/tmp` 的 `HERMES_HOME`/`HOME`/XDG、禁止 DNS/socket、无默认 `~/.hermes`、无 `server/data` 写入和临时状态清理。
+3. 两个虚构 peer 的 `MessageEvent`/session、account+peer `context_token` 落盘和“重启”恢复。
+4. `disabled`、`pairing`、`allowlist` 的真实 intake 和 Gateway 授权分支。
+5. fake 出站 payload、失败重试、跨调用 `client_id`、真实 Agent/Provider/模型工具零构造。
+6. 仓库后端构建/测试及前端 H5 构建；不构建小程序。
+
+未覆盖：真实微信登录/扫码/轮询/网络、真实 iLink 投递与用户端回执、主动推送授权、真实 context token 的有效期、生产数据库和真实服务生命周期。本报告不构成真实外发授权。
+
+### 已执行命令及结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `git status --short`、`git diff --name-only`（测试前） | 记录到仅有未跟踪 PoC 目录。 |
+| 上游 `git remote -v`、`rev-parse HEAD`、精确 tag、`pyproject.toml`、`LICENSE` | 通过，固定到声明的官方 remote/tag/commit/version/MIT。 |
+| `./poc/hermes-weixin-offline/run-offline-poc.sh` | 最终代码连续执行 **2 次**，均为 **9/9** 通过；总计测试期间执行 5 次，其中前 1 次发现并修正测试桩缺陷，不计作通过证据。 |
+| `cd server && npm run build` | 通过。 |
+| `cd server && npm test` | 通过，**146/146**。 |
+| `cd app && npm run build:h5` | 通过；仅有未配置 uni Appid 的统计提示。 |
+| `git diff --check` | 通过（报告完成后复查）。 |
+| `server/data` 前后 SHA-256、`/tmp/xiansuo-hermes-weixin-offline-*`、相关进程 | 数据哈希完全一致；无 PoC 临时目录；无 Hermes/OpenClaw/Worker/AI 服务进程（扫描命中仅为当前 shell、`rg` 与沙箱包装进程）。 |
+
+本次 PoC 未修改 package/lockfile，因此不触发“依赖发生变化”的生产依赖审计。
+
+### 通过项与证据
+
+| 验收项 | 结果与证据 |
+| --- | --- |
+| 供应链固定 | PoC 的 provenance 用例同时断言目录名、Git HEAD/tag、包名/版本和 MIT；上游 remote 另经命令核验。 |
+| 默认主目录与网络隔离 | 在导入 Hermes 前设置随机 `/tmp` 状态目录；每个测试替换 DNS 和 socket connect/send 入口为失败桩。两次完整运行均未触发网络断言。 |
+| 数据隔离与清理 | 全程仅写 `/tmp/xiansuo-hermes-weixin-offline-*`，最终搜索为空；`server/data` 八个文件的逐文件 SHA-256 均不变。 |
+| 双 peer/session/token | `peer-a`/`peer-b` 的 `MessageEvent.source` 和 session key 各不相同；token 按 account+peer 独立保存，再实例化后可正确恢复。 |
+| DM 策略与 Gateway | `disabled` 在 token 写入/handler 前丢弃；`pairing` 可进入 handler；`allowlist` 只有已列 peer 可进入 handler。两类入站随后都验证：Gateway 未授权早退、不进入 session/Agent；授权时会调用 `_handle_message_with_agent` 记录桩一次。 |
+| 零 Agent/Provider/模型工具 | Gateway “进入 Agent 链”测试使用 `AsyncMock` 记录桩，未构造真实 AIAgent/Provider/模型工具；public send 测试只使用显式 fake transport。`tools.send_message_tool` 是 CLI 共用传输模块，不是本次调用的模型工具。 |
+| 公开发送入口 | 调用公开 `hermes_cli.send_cmd.cmd_send()` handler，以 `weixin:wxid_targetpeer` 和 fake transport 获得退出码 0、准确 target 和 payload；未启动 CLI 子进程、未发网络。 |
+| 直接发送契约 | `send_weixin_direct` 的 `_api_post` 被 fake；断言仅目标 peer、保存的 context token、bot message type 和文本 `item_list`。 |
+
+### 失败项、风险与最小复现
+
+#### P1：默认重试会对 timeout、HTTP 4xx/5xx 与坏 JSON 均执行 1+4 次，且跨调用没有业务幂等
+
+- 预期：真实外发前必须由业务层明确失败分类和跨调用幂等，不能把不确定或明确 4xx 结果默认重复投递。
+- 实际：固定 Hermes v2026.8.3 的 `WeixinAdapter.send()` 在 timeout、模拟 HTTP 400、HTTP 503、坏 JSON 四种失败中均调用 `_send_message` 5 次；同一次逻辑发送复用一个 `client_id`，但两次相同逻辑 `send()` 生成不同 `hermes-weixin-*` client ID。
+- 最小复现：运行 `./poc/hermes-weixin-offline/run-offline-poc.sh`，观察 `test_default_transport_failures_are_retried_and_are_a_no_go_finding` 和 `test_repeated_logical_send_generates_new_client_ids_and_has_no_cross_call_idempotency`。证据：`poc/hermes-weixin-offline/test_offline_poc.py`。
+- 影响：在真实未知送达/重复任务环境中存在重复消息风险，HTTP 4xx 的重试也可能放大无效请求。
+- 建议：不得直接把 Hermes 出站用于业务通知；应在获批准的独立 Gateway/业务 outbox 中实现持久化业务幂等键、严格状态分类、未知结果人工确认和重复投递门禁，再进行专门的实况验证。
+
+#### P3：离线断言不能证明真实协议能力与用户端送达
+
+- 实际：所有 iLink 调用均为 fake，socket/DNS 被禁；CLI handler 也未 fork 真实子进程。
+- 影响：不能据此宣称扫码/会话恢复、主动发送、回执、限流、上下文有效期或用户端送达已通过。
+- 建议：仅在用户另行授权、使用独立账号/目录/网络隔离与明确停止条件后，设计单独实况计划。
+
+P2：无。
+
+### 测试阶段文件变化
+
+- 测试前已有未跟踪目录 `poc/hermes-weixin-offline/`；测试阶段仅修订其中的测试辅助文件 `test_offline_poc.py` 与说明 `README.md`，补足已授权 Gateway 对照分支、公开 `hermes send` handler fake transport 覆盖，并移除测试自身的未关闭 event loop 警告。
+- 本阶段修改本报告 `docs/03-测试验证/TEST_REPORT.md`；未修改 `app/src`、`server/src`、`scripts` 或 `deploy`。
+- 最终 Git 状态应包含本报告修改与既有未跟踪 PoC 目录；构建产物未新增 Git 条目，`server/data` 未变化。
+
+### 放行结论
+
+- **离线 PoC：PASS。** 固定来源、离线性、文件隔离、双 peer/token 分离、策略实际分支、fake payload、公开 CLI handler 路由与临时清理均已通过。
+- **真实 Pilot/生产/真实发送：FAIL（P1）。** 默认 1+4 重试和跨调用无幂等未解决前，不允许进入无条件验收。
+- **带条件进入后续验收：允许，但仅限离线 PoC 文档/代码收口。** 条件是不得启动真实 Hermes/OpenClaw/Worker、不得访问网络或 `server/data`、不得发送消息；若要进入真实外发验收，必须先关闭 P1 并获得新的明确授权。
+
+### 验收阶段最终复验补充（2026-08-08）
+
+- 验收阶段再次连续执行 2 轮 `./poc/hermes-weixin-offline/run-offline-poc.sh`，两轮均为 **9/9** 通过；全程未触发网络失败桩。
+- `cd server && npm run build && npm test` 通过，后端 **146/146**；`cd app && npm run build:h5` 通过，仅有未配置 uni Appid 的统计提示。
+- 验收前后 `server/data/app.db`、`app.db-shm`、`app.db-wal` 的 SHA-256 分别保持 `8b8bc326…`、`42a2baf3…`、`194c0753…`；最终 8 个文件清单聚合 SHA-256 为 `7cfa8026040a7f5b5915322fbfed619a745d76e5970724bb6519035b94c6cf10`。
+- 最终未发现 `/tmp/xiansuo-hermes-weixin-offline-*`；进程检查未发现 Hermes、OpenClaw、notification-worker、DeepSeek 或 AI Scheduler 服务实例。
+- 本节保留 `HEAD` 原有 **630 行**测试历史，并只在其后追加 Hermes 专项结果；未覆盖、删除或改写既有 1–29 节。

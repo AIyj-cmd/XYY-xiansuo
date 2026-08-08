@@ -172,3 +172,11 @@
 
 - 未新增通知、普通微信、企业微信、DeepSeek、AI、拜访、日报、周报、`sales_stage`、客户价值评分或组织架构功能。
 - 未提交、推送、创建 PR 或执行生产数据库迁移。
+
+## Unreleased — Hermes Weixin v2026.8.3 纯离线 PoC（2026-08-08）
+
+- 新增 `poc/hermes-weixin-offline/`：固定读取官方 `NousResearch/hermes-agent` tag `v2026.8.3`、commit `3c27eb6234bf91b8ceee9e9071591b31e9b148cb`、包版本 `0.20.0`、MIT 的本地源码副本。
+- 新增纯离线运行脚本与 9 项测试，覆盖双 peer/session、account+peer context token、DM 策略、Gateway 授权、公开 `cmd_send` fake transport、单 peer payload、失败重试和跨调用 `client_id`。
+- 测试在导入 Hermes 前把 HOME/HERMES_HOME/XDG 定向到随机 `/tmp`，并以失败桩禁止 DNS/socket；不登录、不扫码、不轮询、不发送微信、不构造真实 Agent/Provider/模型工具。
+- 未修改 `app/src`、`server/src`、`server/data`、数据库 schema、package/lockfile、部署脚本或生产配置；不新增生产依赖。
+- 已知阻断：timeout、HTTP 400/503、坏 JSON 均默认执行 1+4 次尝试；相同业务消息跨独立调用生成新 `client_id`，没有跨调用业务幂等。因此仅离线 PoC PASS，真实 Pilot/生产 NO-GO。

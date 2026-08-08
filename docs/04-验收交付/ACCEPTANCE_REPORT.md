@@ -70,3 +70,30 @@
   4. 仅对唯一指定内部接收人完成人工身份/映射核对；账号 B 保持 `experimental/disabled` 且不删除凭据，其他同事使用 H5。任何新真实发送仍需一次明确授权。
 
 本结论不允许推送、合并、生产数据库操作、覆盖 H5、PM2/Nginx 重启或真实微信发送。
+
+## 7. Hermes Weixin v2026.8.3 纯离线 PoC 验收（2026-08-08）
+
+### 验收范围与实现一致性
+
+- 交付仅包含 `poc/hermes-weixin-offline/{README.md,run-offline-poc.sh,test_offline_poc.py}` 及本次追加文档；未修改产品源码、数据库、服务配置、部署脚本或依赖。
+- 上游来源固定为 `https://github.com/NousResearch/hermes-agent.git` 的 tag `v2026.8.3`、commit `3c27eb6234bf91b8ceee9e9071591b31e9b148cb`、包版本 `0.20.0`、MIT；测试同时断言目录、Git HEAD/tag 和包元数据。
+- 9 项测试覆盖双 peer/session、account+peer token 隔离与恢复、`disabled/pairing/allowlist` intake、Gateway 未授权早退及授权进入 Agent 链记录桩、公开 `cmd_send` fake transport、单 peer payload 和当前失败语义。
+- 所有外部发送路径均为 fake；未访问网络、未登录或扫码、未真实投递、未读取默认 Hermes 状态、未启动 Hermes/OpenClaw/Worker/AI 服务、未改动 `server/data`。
+
+### 最终验证
+
+| 检查 | 结果 |
+| --- | --- |
+| Hermes 离线脚本 | 验收阶段连续两轮 **9/9**，均通过。 |
+| 后端 | `npm run build` 通过；`npm test` **146/146**。 |
+| 前端 H5 | `npm run build:h5` 通过；仅未配置 uni Appid 的统计提示。 |
+| 数据/临时状态 | 三个活动数据库文件验收前后哈希一致；最终 8 文件清单聚合 SHA-256 为 `7cfa8026040a7f5b5915322fbfed619a745d76e5970724bb6519035b94c6cf10`；无 PoC 临时目录。 |
+| 历史保护 | `TEST_REPORT.md` 的 `HEAD` 原有 630 行保持逐字一致，Hermes 结果仅作为第 30 节追加。 |
+
+### 分级与放行
+
+- **P1=1（真实外发阻断）**：timeout、HTTP 400、HTTP 503 与坏 JSON 均默认尝试 1+4 次；相同业务消息跨独立调用生成新 `client_id`，不存在跨调用业务幂等。
+- **P2=0**：本次批准范围内未发现中等级漏实现或越界改动。
+- **P3=1（范围限制）**：全 fake 离线测试不能证明扫码、会话恢复、context token 有效期、限流、用户端回执或真实送达。
+- **离线 PoC：PASS，允许形成仅包含上述 PoC 与追加文档的本地提交。**
+- **真实 Pilot、真实发送、生产接入或部署：NO-GO。** 关闭 P1、完成独立实况设计与验证并重新取得明确授权前，不得进入这些阶段。
