@@ -20,7 +20,15 @@ export class GatewayService {
       return { status: 'permanent_failure', errorCode: 'ILINK_REQUEST_INVALID' }
     }
     let recipientExternalId: string | undefined
-    if (this.config.recipientMap) {
+    const isHermes = this.config.ILINK_POC_TRANSPORT === 'hermes'
+    if (isHermes) {
+      const generation = request.recipientBindingGeneration
+      if (!Number.isInteger(generation) || generation === undefined || generation < 1) return { status: 'permanent_failure', errorCode: 'ILINK_RECIPIENT_NOT_CONFIGURED' }
+      // No raw peer mapping is available to the Gateway.  The vault-resolving
+      // overlay receives this exact pair and rejects stale generations.
+      recipientExternalId = `hermes:${request.recipientUserId}:${generation}`
+    }
+    else if (this.config.recipientMap) {
       const recipient = this.config.recipientMap.get(request.recipientUserId)
       if (!recipient) return { status: 'permanent_failure', errorCode: this.config.ILINK_POC_TRANSPORT === 'hermes' ? 'ILINK_RECIPIENT_NOT_CONFIGURED' : 'OPENCLAW_RECIPIENT_NOT_BOUND' }
       if (!recipient.enabled) return { status: 'permanent_failure', errorCode: this.config.ILINK_POC_TRANSPORT === 'hermes' ? 'ILINK_RECIPIENT_MISMATCH' : 'OPENCLAW_RECIPIENT_DISABLED' }
@@ -64,7 +72,7 @@ export class GatewayService {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), this.config.ILINK_REQUEST_TIMEOUT_MS)
       try {
-        const result = await this.adapter.send({ recipientExternalId, message, idempotencyKey: request.idempotencyKey }, controller.signal)
+        const result = await this.adapter.send({ recipientExternalId, ...(isHermes ? { recipientUserId: request.recipientUserId, recipientBindingGeneration: request.recipientBindingGeneration! } : {}), message, idempotencyKey: request.idempotencyKey }, controller.signal)
         // A deduplicated result is usable only when it carries the persisted
         // original local receipt. Never manufacture one in the worker.
         const normalized = singleAttempt && result.status === 'retryable_failure'

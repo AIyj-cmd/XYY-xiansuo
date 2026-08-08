@@ -63,6 +63,12 @@ export type NotificationConfig = {
   openclawGatewaySendTimeoutMs: number;
   openclawGatewayTimeoutMs: number;
   openclawMaxAttempts: number;
+  hermesEnabled: boolean;
+  hermesGatewayUrl?: string;
+  hermesGatewaySecret?: string;
+  /** Binding capture is separately gated from delivery and defaults off. */
+  hermesBindingEnabled: boolean;
+  hermesInternalSecret?: string;
 };
 
 /** 给回环 HTTP 响应、事件循环调度和 Gateway 持久化留出的最小缓冲。 */
@@ -89,6 +95,13 @@ function readGatewaySecretFile(value: string | undefined): string {
   return secret;
 }
 
+function strictLoopbackUrl(value: string, name: string): string {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error(`${name} 必须为合法本地 HTTP URL，拒绝启动`); }
+  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.username || url.password || url.hash || url.pathname !== '/' || url.search) throw new Error(`${name} 只允许回环 HTTP 根地址，拒绝启动`);
+  return url.toString().replace(/\/$/, '');
+}
+
 export function resolveNotificationConfig(env: NodeJS.ProcessEnv = process.env, options: { requireOpenClawSecret?: boolean } = {}): NotificationConfig {
   const openclawEnabled = resolveStrictBoolean('OPENCLAW_CHANNEL_ENABLED', env.OPENCLAW_CHANNEL_ENABLED);
   const openclawGatewaySendTimeoutMs = strictInteger(env, 'OPENCLAW_GATEWAY_SEND_TIMEOUT_MS', 30_000, 1_000, 120_000);
@@ -106,6 +119,8 @@ export function resolveNotificationConfig(env: NodeJS.ProcessEnv = process.env, 
     openclawGatewaySendTimeoutMs,
     openclawGatewayTimeoutMs,
     openclawMaxAttempts: strictInteger(env, 'OPENCLAW_MAX_ATTEMPTS', 2, 2, 2),
+    hermesEnabled: resolveStrictBoolean('HERMES_CHANNEL_ENABLED', env.HERMES_CHANNEL_ENABLED),
+    hermesBindingEnabled: resolveStrictBoolean('HERMES_BINDING_ENABLED', env.HERMES_BINDING_ENABLED),
   };
   if (env.OPENCLAW_PILOT_USER_ID !== undefined && env.OPENCLAW_PILOT_USER_ID !== '' && !/^[1-9]\d*$/.test(env.OPENCLAW_PILOT_USER_ID)) {
     throw new Error('OPENCLAW_PILOT_USER_ID 只能为一个正整数，拒绝启动');
@@ -120,6 +135,15 @@ export function resolveNotificationConfig(env: NodeJS.ProcessEnv = process.env, 
     config.openclawPilotUserId = Number(pilot);
     config.openclawGatewayUrl = strictOpenClawGatewayUrl(env.OPENCLAW_GATEWAY_URL || '');
     if (options.requireOpenClawSecret) config.openclawGatewaySecret = readGatewaySecretFile(env.OPENCLAW_GATEWAY_SECRET_FILE);
+  }
+  if (config.hermesEnabled) {
+    config.hermesGatewayUrl = strictLoopbackUrl(env.HERMES_GATEWAY_URL || '', 'HERMES_GATEWAY_URL');
+    if (options.requireOpenClawSecret) config.hermesGatewaySecret = readGatewaySecretFile(env.HERMES_GATEWAY_SECRET_FILE);
+  }
+  if (config.hermesBindingEnabled) {
+    // This secret authenticates capture prepare/commit/refresh only.  It is
+    // intentionally independent from the delivery gateway secret.
+    config.hermesInternalSecret = readGatewaySecretFile(env.HERMES_INTERNAL_SECRET_FILE);
   }
   return config;
 }

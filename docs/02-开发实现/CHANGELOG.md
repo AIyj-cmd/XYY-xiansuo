@@ -1,5 +1,18 @@
 # 变更日志
 
+## Unreleased — Hermes 1–10 用户网站绑定与定向通知（2026-08-08）
+
+- H5 登录用户可生成 `XYY-` + 26 位 Base32 的 128-bit、10 分钟有效、单次使用绑定码，并查看不含 peer/token/cursor 的绑定状态与代次；前端请求继续统一使用 `app/src/utils/request.ts`。
+- 新增唯一迁移 `008`：业务库只保存 Hermes 不透明 peer 指纹、绑定状态/代次、绑定挑战控制、prepared 激活凭证、active activationId 派生哈希、nonce 派生哈希/时限及通知接收代次；raw peer、context token、轮询 cursor、raw nonce 和入站正文不进入业务库。`001`–`007` 的版本与 checksum 保持不变。
+- capture-only daemon 仅处理同一 Hermes 账号收到的精确 `绑定 XYY-<26位Base32>` 私聊命令，或为已绑定 peer 刷新 context token；群聊和其他未知消息忽略，无 Agent、AI、自动回复、typing 或媒体路径。
+- raw peer、context token 与 cursor 仅保存在仓库外当前用户所有的 `0700` 加密 vault；所有公开 vault 读写使用同一个跨进程 `fcntl.flock` 临界区，并在锁内执行最多 10 项容量及 peer 唯一性检查。Gateway 不读取 Hermes peer map，只把 `recipientUserId + recipientBindingGeneration` 交给 overlay 精确解析。
+- prepared vault 条目携带 activationId；daemon 在 Server commit 后才 activate，并在该崩溃窗口重启时先幂等重放 commit。Server active 快路径只接受原 activationId 的派生哈希，错误 activationId 拒绝。内部 HMAC nonce 以 SHA-256 派生值持久化，跨进程/重启拒绝重放，容量 10,000、到期清理。
+- 网站用户停用、绑定禁用及 Hermes 待发任务取消在同一 `BEGIN IMMEDIATE` 事务内；独立 internal disable 同样保证失败时完整回滚。
+- `owner_changed` outbox 固化绑定代次；重绑/停用会取消旧代次待发任务，Worker 发送前再次核对状态和代次。Hermes 无 fallback，Gateway/overlay 均保持单次调用，`result_unknown` 不自动重试。
+- 全局 active/prepared 容量上限为 10，第 11 位在 prepare 阶段失败关闭；同一 active 用户重绑不额外占槽。
+- `HERMES_CHANNEL_ENABLED` 与 `HERMES_BINDING_ENABLED` 默认均为 `false`，Hermes live 总开关同样默认关闭；没有新增生产依赖，也没有授权真实登录、扫码、联网、发送、Pilot 或生产部署。
+- 最终验收复跑：Server build 与 `156/156`、Gateway build 与 `59/59`、overlay `18/18`、H5 build 全部通过。测试报告 34.1 的 P1/P2 已由 34.2 修复并在验收阶段复现关闭；验收阶段未修改业务源码。
+
 ## Unreleased — 当前版本离线收尾（2026-08-02）
 
 - 单账号发布冻结：保留既有多人映射解析和旧单用户兼容，但 `ILINK_POC_LIVE_ENABLED=true` 的映射模式与离线 `gateway:recipient-map-check` 均要求恰好一个 `enabled=true`；零个或多个启用项失败，检查输出只保留安全结论和聚合计数，绝不输出用户 ID 或 target。未绑定仍为 `OPENCLAW_RECIPIENT_NOT_BOUND`，不回退。

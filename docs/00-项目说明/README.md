@@ -133,7 +133,7 @@ bash scripts/backup.sh
 
 ## H5-only 发布边界
 
-前端当前只构建、发布和验收 H5，产物为 `app/dist/build/h5/`。不再保留微信小程序依赖、构建脚本或发布流程；这不影响业务数据中的微信号、公众号来源、跟进方式“微信”。普通安装口径是 `npm ci`，不使用 `--legacy-peer-deps`。首版内部 OpenClaw 通知仅允许单账号、单启用接收人；生产 Gateway 和离线 `gateway:recipient-map-check` 都要求映射恰好一个 `enabled=true`，多账号定向发送为 NO-GO。账号 B 仅可保留为 `experimental/disabled` 预配置，不删除其凭据但不得在生产使用；其他同事使用 H5。DeepSeek、AI Scheduler 与所有通知开关默认关闭。任何新的真实微信发送都必须单独取得明确授权。除已冻结且只做入站静默的 `xiansuo-openclaw-no-reply` 官方插件外，不新增其他 Hook；RPA、逆向协议和 Windows 自动化继续禁止。
+前端当前只构建、发布和验收 H5，产物为 `app/dist/build/h5/`。不再保留微信小程序依赖、构建脚本或发布流程；这不影响业务数据中的微信号、公众号来源、跟进方式“微信”。普通安装口径是 `npm ci`，不使用 `--legacy-peer-deps`。Hermes 多用户通知使用网站账号的一次性绑定码和绑定代次：业务库只保存指纹、状态和代次，原始 peer、context token 与轮询 cursor 只能在仓库外 0700 加密 vault 保存；默认关闭，capture daemon 仅捕获精确绑定命令或已绑定 peer 的 token 刷新，绝不启动 AI、回复、typing 或媒体。DeepSeek、AI Scheduler 与所有通知开关默认关闭。任何新的真实微信发送都必须单独取得明确授权。除已冻结且只做入站静默的 `xiansuo-openclaw-no-reply` 官方插件外，不新增其他 Hook；RPA、逆向协议和 Windows 自动化继续禁止。
 
 ## 环境变量
 

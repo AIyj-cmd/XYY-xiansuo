@@ -898,3 +898,267 @@ P2：无。
 - 测试阶段仅追加本报告；未修改 `app/src`、`server/src`、`scripts`、`deploy` 或本次允许范围内的业务实现。overlay 的 `__pycache__` 为 Python 测试运行时产生/复用的忽略缓存，未成为 Git 变化；未清理测试前已有的任何工作区内容。
 - 最终 Git 差异相对本节开始基线仅新增 `docs/03-测试验证/TEST_REPORT.md`；其余五个修改文件及 fixture 均为测试开始前已有的待验收实现。
 - **结论：PASS（本轮响应分类范围：P1=0，P2=0，P3=0）。允许进入验收阶段（仅离线实现验收）。** 本放行不授权真实发送；任何新的真实 Pilot 仍须由用户单独、明确授权。
+
+## 34. Hermes 1–10 用户网站绑定与路由最终独立测试（2026-08-08）
+
+初测日期：2026-08-08；最终复测：2026-08-08
+最终结论：**PASS，允许进入验收阶段。** 初测 P1、容量 P1 与 replay P3 均已修复并独立复测；未进行真实微信登录、扫码或生产发送。
+
+### 修复复测（最终结论）
+
+本节是对初测结论的独立复验，后文保留初测失败证据以追溯修复缘由。
+
+#### 已修复并验证通过
+
+- **Server → Gateway HMAC 与代次契约**：Server 现在发送现有 Gateway 的 `x-ilink-gateway-*` 头、完整 `deliveryId`、30/40 秒定时器和 `recipientBindingGeneration`。隔离 HTTP 链路实测返回 `sent`，Gateway adapter 收到且仅收到 `recipientExternalId=hermes:2:3`、`recipientUserId=2`、`recipientBindingGeneration=3`。
+- **Gateway → overlay 代次隔离**：Gateway 不再读取 raw peer map；只向 `send-bound` 传递 userId、generation、受控正文和幂等键。独立 overlay 测试证明 `(userId=2,generation=1)` 对已绑定 generation 2 零上游调用且返回永久 stale；精确 generation 2 才可一次发送。
+- **capture-only daemon**：新增 daemon mock `getUpdates` 复测。真实 `InternalClient` HMAC canonical 请求仅向 prepare 提交 `code+peerFingerprint`，Server 响应定位 `userId`；DM 的 `item_list` 精确 `绑定 <32 hex>` 完成绑定，群聊在文本提取前被拒绝，测试桩没有 reply/typing/media/Agent/AI 接口。
+- **P3 replay cache**：内部 HMAC replay cache 已设 10,000 上限；最小复现 `size=9999` 接受合法新 nonce，`size=10000` 失败关闭。
+
+#### 复测执行结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `cd server && npm run build && npm test` | PASS：151/151。 |
+| `cd poc/ilink-gateway && npm run build && npm test` | PASS：59/59；含 OpenClaw/Mock、Gateway 并发/重启与 unknown 不重试回归。 |
+| `cd poc/hermes-weixin-transport && ./run-tests.sh` | PASS：16/16；其中新增独立 daemon HMAC、`item_list`、群聊拒绝和精确代次 send-bound 测试。 |
+| `cd app && npm run build:h5` | PASS；仅验证 H5，未构建微信小程序。 |
+| 隔离 Server→Gateway HTTP | PASS：HMAC、header、schema、`recipientUserId + generation` 均被真实 Gateway 接受并准确传给 adapter。 |
+| 隔离 Fastify prepare | PASS：调用方不提供 userId，绑定码由 Server 定位并返回 `{userId:1,generation:1}`。 |
+| 1/2/10/11 容量 | PASS：第 1、2、10 人可绑定；第 11 人 prepare 失败关闭；边界并发仅一项 reservation 成功。 |
+
+#### 容量 P1 修复复测
+
+##### 历史 P1-4（已修复）：没有全局 10 人活跃绑定上限
+
+初测最小复现：隔离 SQLite 应用 001–008，为 11 位不同用户逐一生成绑定码并 commit，结果为 `{"active":11}`。
+
+最终复测：第 1、2、10 位用户可绑定；第 11 位用户 `prepare` 被拒绝，challenge 保持、`prepared_generation` 仍为 `NULL`。9 个 active 时两个并发 prepare 只允许一个预留；同一 active 用户重绑不额外占槽。commit 异常后 vault 条目为 `prepared`，但 `send-bound` 的精确 `(userId,generation)` 查询返回空，故不可发送。
+
+实现验证：`BEGIN IMMEDIATE` 下的 active + prepared reservation 计数限制为 10；008 已增加 `prepared_generation/prepared_code_hash/prepared_at` 及索引。无需进一步容量修复。
+
+#### 迁移 008 最终复测
+
+- fresh 库：`001`–`008` 一次应用，包含 prepared 三列。
+- 007→008：先应用 `001`–`007`，再应用当前集；成功升级为 `001`–`008`。
+- 重复执行：`schema_migrations` 数量不变；008 checksum 一致。
+- checksum：故意替换已执行 008 的 checksum 被拒绝。
+- 回滚前提：以 008 版本的失败探针验证，事务回滚后没有探针表、也没有 008 ledger 记录。
+- 009 没有进入 `MIGRATIONS`；容量字段合并进未发布的 008。001–007 checksum 与 `HEAD` 一致。
+
+### 测试环境与基线
+
+- 工作目录：`/home/yj/xiansuo`；Node `v24.18.0`；Python `python3`。
+- 测试前 `git status --short` 已有 19 个已修改文件及 4 个新增 Hermes 相关文件；它们均为实施前已有工作区改动，未恢复、覆盖或清理。
+- 测试前 `git diff --name-only` 与测试后结果一致（本报告除外）。
+- `server/data` 的全部文件 SHA-256 在测试前后相同；测试只使用 `/tmp` 下的隔离数据库和临时配置，均已删除。
+- `server/src/db.ts` 的 diff 仅新增迁移 `008`；`001`–`007` 的版本号和 checksum 与 `HEAD` 一致。`git diff --check` 通过。
+- `package.json` / lockfile 没有差异，因此未运行生产依赖审计（不适用）。
+
+### 测试范围与计划
+
+1. 验证迁移 008、绑定码强度/TTL/单次使用、HMAC、重放、认证与数据最小化。
+2. 验证 1、2、10 与第 11 人边界，负责人变更绑定代次、Worker 取消及渠道隔离。
+3. 验证 Server → Gateway → Hermes overlay 的 `recipientUserId + generation` 契约、并发/重启幂等和 `result_unknown` 不重试。
+4. 验证 capture-only 是否具备可运行长轮询 daemon，及 Agent/AI/reply/typing/media 禁止边界。
+5. 回归 Server、OpenClaw/Mock、Gateway、overlay 与 H5。
+
+未覆盖：未登录、未扫码、未向微信联网或发送真实消息；这不在本次授权范围，且应在后续验收批准后单独进行受控 Pilot。
+
+### 已执行命令及结果
+
+| 命令 | 结果 |
+| --- | --- |
+| `cd server && npm run build && npm test` | PASS：TypeScript 构建通过，149/149 通过。含 OpenClaw/Mock 既有回归、迁移及新增 Hermes 服务层测试。 |
+| `cd poc/ilink-gateway && npm run build && npm test` | PASS：构建通过，59/59 通过。含并发、重启、unknown 烧毁、Hermes adapter 子进程及 OpenClaw 回归。 |
+| `cd poc/hermes-weixin-transport && ./run-tests.sh` | PASS：13/13 通过。覆盖单次 capture/send、脱敏状态、超时/5xx `result_unknown`。 |
+| `cd app && npm run build:h5` | PASS：H5 构建通过；未构建微信小程序。 |
+| Gateway HTTP 最小复现 | **FAIL**：Server 使用的 `x-hermes-gateway-*` 头收到 401 `ILINK_SIGNATURE_INVALID`；改为 Gateway 所需的 `x-ilink-gateway-*` 头后，带 `generation: 1` 的请求仍收到 400 `ILINK_REQUEST_INVALID`。 |
+| Gateway Hermes 映射最小复现 | PASS：10 个接收人可加载；第 11 人按 1–10 限制拒绝。 |
+| 隔离 Fastify API 绑定流程 | PASS：普通用户生成 32 位 hex 绑定码；`prepare`/`commit` 成功；同一 HMAC nonce 重放返回 401；公开响应仅含 `status/generation/expires_at`，不含 peer/token/fingerprint。 |
+| 静态调用链核对 | **FAIL**：overlay CLI 仅接受 `capture`、`send`；没有 daemon/poll 命令或实现，且 `MultiUserVault/capture_inbound` 没有被 CLI 或 Gateway 调用。 |
+
+### 通过项
+
+- 迁移 008 在隔离库中可应用；表中只保存 `peer_fingerprint`、状态、代次和绑定码哈希，不含 peer、context token 或 cursor。
+- 绑定码是 `randomBytes(16)` 生成的 128-bit/32 位 hex 值，TTL 为 10 分钟；提交后清除哈希与过期时间。服务层测试验证重绑代次递增、旧任务取消。
+- 内部绑定端点要求独立 HMAC、13 位时间戳、16–128 位 nonce，并在 60 秒窗口内拒绝重放；实测重放为 401。
+- Hermes `owner_changed` 在 Server 出队前校验绑定状态与精确代次；重绑会取消旧代次任务，`result_unknown` 映射为不可自动重试。
+- Gateway 的 Hermes 配置对仓库外 0600/0700 文件、1–10 唯一 peer 映射、同键并发/重启和 unknown 不二次调用有测试覆盖。
+- overlay 源码中未发现 Agent、AI/model、provider tool、自动 reply、typing 或 media 路径；capture 原语对非目标 DM/群聊/无 token 输入返回 ignored，发送路径是纯文本单次调用。
+- 业务数据库、Server 公开绑定响应和访问日志结构均未包含原始 peer、context token、cursor 或绑定码哈希；该项为静态与隔离 API 验证，非真实微信运行验证。
+
+### 失败项、复现步骤与建议
+
+#### 历史 P1-1（已修复）：Server 与现有 Gateway 的 HMAC 头及代次 schema 不兼容
+
+证据：
+
+- [server/src/services/hermes-notification-channel.ts](/home/yj/xiansuo/server/src/services/hermes-notification-channel.ts:18) 始终向 Gateway 发送 `generation`。
+- [poc/ilink-gateway/src/types.ts](/home/yj/xiansuo/poc/ilink-gateway/src/types.ts:11) 的严格 `deliveryRequestSchema` 未声明 `generation`。
+- Server 发送 `x-hermes-gateway-timestamp/nonce/signature`，而 [poc/ilink-gateway/src/auth.ts](/home/yj/xiansuo/poc/ilink-gateway/src/auth.ts:4) 仅接受 `x-ilink-gateway-timestamp/nonce/signature`。
+- 最小复现输出：`withoutGeneration: true`，`withGeneration: false`，错误为 `Unrecognized key: "generation"`。
+- 实际隔离 HTTP Gateway 复现：以 Server 的 HMAC canonical 值和 `x-hermes-gateway-*` 发送，返回 `401 ILINK_SIGNATURE_INVALID`；仅替换为 `x-ilink-gateway-*` 后返回 `400 ILINK_REQUEST_INVALID`，adapter 未被调用。
+
+复现：启动隔离 Gateway，使用与 Server 相同的 `POST /deliveries` 正文、HMAC canonical 和 `x-hermes-gateway-*` 头；再只替换为 `x-ilink-gateway-*` 头。前者为 401，后者因 generation 为 400。
+
+预期：Gateway HMAC 验证后接收并将 `recipientUserId + generation` 原样作为 Hermes 路由约束。
+
+实际：请求先在 HTTP 认证层被拒绝；即便只修正头名称，仍在 schema 层被拒绝。Server 只能把这些无 `data` 的响应归为 `result_unknown`，Worker 随即终结且不重试。真实负责人变更通知不能送达。
+
+建议：统一 Server/Gateway 的受版本控制 HMAC header 名称与 canonical contract；然后在 Gateway 请求 schema、服务路由、幂等指纹、recipient resolver 和 adapter request 中显式加入并强制校验 generation。代次必须参与路由与幂等冲突判断，而非仅由 Server 出队前校验。
+
+#### 历史 P1-2（已修复）：capture-only 未实现可运行长轮询 daemon
+
+证据：
+
+- [poc/hermes-weixin-transport/src/hermes_weixin_transport/cli.py](/home/yj/xiansuo/poc/hermes-weixin-transport/src/hermes_weixin_transport/cli.py:55) 仅提供 `capture` 和 `send`。
+- [poc/hermes-weixin-transport/src/hermes_weixin_transport/multi_user.py](/home/yj/xiansuo/poc/hermes-weixin-transport/src/hermes_weixin_transport/multi_user.py:87) 只有注入式 `capture_inbound` 原语；仓库没有调用它的 poll/daemon。
+- CLI 的 `capture` 使用旧 `TokenState` 静态 allowlist，不调用 `MultiUserVault`，也不向 Server 的 prepare/commit/refresh 内部端点发起 HMAC 请求。
+
+复现：搜索 `daemon`、`poll`、`MultiUserVault`、`capture_inbound`；或运行 `python -m hermes_weixin_transport --help`，命令集只有 `capture|send`。
+
+预期：在明确启用后，有一个受控、可启动、可停止的 capture-only 长轮询进程，将 allowlist DM 的绑定命令经 HMAC prepare/commit/refresh 写入外部 vault；不回复任何消息。
+
+实际：人工把一份入站 JSON 喂给一次性 CLI 只能写旧单配置状态，不能完成当前 Server 多用户绑定闭环。
+
+建议：实现并测试独立 capture daemon（包括启动/停止、网络/异常恢复、cursor、限流、进程权限）；它必须使用 `MultiUserVault`，并以 HMAC 调用 Server 内部绑定协议。完成前不要开启 `HERMES_BINDING_ENABLED`。
+
+#### 历史 P1-3（已修复）：Gateway 未使用 binding generation 做 recipient/vault 隔离
+
+证据：
+
+- [poc/ilink-gateway/src/gateway-service.ts](/home/yj/xiansuo/poc/ilink-gateway/src/gateway-service.ts:24) 仅以 `recipientUserId` 从静态 peer map 取目标。
+- [poc/ilink-gateway/src/adapters/hermes-adapter.ts](/home/yj/xiansuo/poc/ilink-gateway/src/adapters/hermes-adapter.ts:54) 只把 peer、text、idempotencyKey 传给 overlay。
+
+预期：Gateway/overlay 以 `(recipientUserId, generation)` 查询同一外部绑定 vault，并拒绝过期或不匹配的代次。
+
+实际：即使修复 P1-1 的 schema，Gateway 仍没有把 generation 交给 overlay，也不会依据代次解析 token/cursor；重绑与 Worker 检查之间的竞态无法在下游关闭。
+
+建议：用只含 userId + generation 的受控 overlay 请求替换静态 raw peer map 路由；在 Gateway 和 overlay 两侧再次精确核对代次。
+
+#### P2
+
+无已确认 P2；该描述仅保留初测时的风险分级，最终状态以本报告顶部结论为准。
+
+#### 历史 P3（已修复）：内部 HMAC replay Set 没有容量上限
+
+[server/src/routes/hermes-bindings.ts](/home/yj/xiansuo/server/src/routes/hermes-bindings.ts:11) 使用进程级 `Set` 保存 nonce，60 秒后删除，但没有总量限制。拥有内部 secret 的异常调用方可在窗口内制造大量唯一 nonce，占用内存。
+
+建议：使用有界 TTL replay cache（最大容量、拒绝策略和安全计数日志）；不要记录 nonce/原始请求正文。
+
+### 数据完整性、迁移与回滚前提
+
+- `001`–`007` 的 checksum 未变；008 通过重建 `notification_logs` 增加 `recipient_binding_generation` 和 `hermes` channel。隔离迁移回归验证了记录/外键/索引及事务回滚。
+- 008 是前向 schema 变更，没有实现降级迁移。上线前仍需以生产副本进行备份、完整性校验、升级演练和明确回滚策略；不得直接在生产库试错。
+
+### 测试阶段产生的文件变化
+
+- 更新：[TEST_REPORT.md](/home/yj/xiansuo/docs/03-测试验证/TEST_REPORT.md)。
+- 新增独立验证测试：[test_daemon_verifier.py](/home/yj/xiansuo/poc/hermes-weixin-transport/test/test_daemon_verifier.py)，仅覆盖 daemon HMAC、`item_list`、群聊拒绝和 generation 隔离；未改业务实现。
+- 构建产物、`/tmp` 隔离数据库和临时安全文件均为工具生成或已删除；没有修改 `app/src`、`server/src`、`scripts`、`deploy` 或 `server/data`。
+- 除本报告外，`git status --short` 与测试开始前一致；现有未提交实现改动不归因于测试阶段。
+
+### 放行结论
+
+**允许进入验收阶段。** 历史 P1-1/P1-2/P1-3/P1-4 与 P3 已按本报告复验通过；`result_unknown` 重启后不重试、OpenClaw/Mock 回归、daemon 无 Agent/AI/reply/typing/media、敏感标识不落业务 DB/日志和 008 迁移契约均已复验。上线仍需单独授权真实微信 Pilot，并以生产副本完成备份与迁移演练。
+
+### 34.1 最终加固复测追加记录（2026-08-08，当前工作区）
+
+本追加记录为第 34 节的**最新结论**，保留上述历史测试轨迹但覆盖其“允许进入验收”的放行判断。
+
+**结论：FAIL，不允许进入验收阶段。** 发现 1 个 P1 和 1 个 P2；四端构建、既有自动化回归及其余加固项均通过。
+
+#### 测试环境、基线与范围
+
+- 工作目录：`/home/yj/xiansuo`；Node `v24.18.0`、Python `python3`。开始前记录 `git status --short`、`git diff --name-only` 与 `server/data` SHA-256。实现相关未提交改动和此前报告均已存在；未恢复、覆盖或清理。
+- 仅更新本报告；没有修改 `app/src`、`server/src`、`scripts`、`deploy` 或 `server/data`。`git diff --check` 通过。生产依赖/lockfile 无差异，依赖审计不适用。
+- 覆盖：vault 跨进程锁/容量/peer 冲突，prepared→commit→activate 崩溃恢复，nonce 持久化与容量，停用事务，XYY 码，008 迁移，Server/Gateway/overlay/H5 回归，以及敏感数据与禁用能力静态检查。
+- 未覆盖：真实微信登录、扫码、联网收发和生产备份演练；这些不是本次授权范围，且不能替代下列 P1 修复。
+
+#### 已执行命令及结果
+
+| 命令/隔离复现 | 结果 |
+| --- | --- |
+| `cd server && npm run build && npm test` | PASS，命令退出码 0；含 Hermes 绑定、迁移、OpenClaw/Mock、`result_unknown` 不重试回归。 |
+| `cd poc/ilink-gateway && npm run build && npm test` | PASS，59/59。Hermes user+generation 下传、OpenClaw/Mock、并发/重启和 unknown 单次尝试均通过。 |
+| `cd poc/hermes-weixin-transport && ./run-tests.sh` | PASS，18/18。含 daemon mock `getUpdates`、`item_list`、群聊拒绝、prepared 崩溃恢复和 send-bound 代次隔离。 |
+| `cd app && npm run build:h5` | PASS；仅 H5，未验收小程序。 |
+| 11 个独立 Python 进程对同一 vault `put` | PASS：`capacity_ok=10`、`capacity_blocked=1`；另一组 2 个进程同 peer 为 `conflict_ok=1`、`peer_conflict=1`。所有公开 vault 读写均经同一 `fcntl.flock` 临界区。 |
+| nonce 隔离库容量/清理 | PASS：连续插入 10,000 个不同 nonce 后第 10,001 个拒绝；65 秒 TTL 后可再次插入；表仅存 SHA-256 `nonce_hash`，不含原 nonce。 |
+| 008 迁移差异核对 | PASS：仅 `008`，无 `009`；`git diff --unified=0 HEAD -- server/src/db.ts` 没有 001–007 的删除/替换行，008 新增 66 行；既有 fresh、007→008、重复、checksum 和失败回滚回归均通过。 |
+
+#### 通过项
+
+- `MultiUserVault` 的 `put/get/cursor/set_cursor/activate/user_for_peer/binding_for_peer/prepared_entries` 均在 lock 内读写；跨进程容量和同 peer 冲突复现 fail-closed，最多 10 个非 cursor 条目。
+- daemon 先持久化 prepared（含 activationId），向 Server commit 后再 activate；进程在两者之间崩溃时，重启会先对 prepared 条目重放 commit 并 activate。正确 activationId 的 Server commit 重放通过且不改变既有绑定。
+- 用户主停用路由在 `BEGIN IMMEDIATE` 中更新用户、禁用绑定、取消 pending/retry_wait Hermes 任务；服务层在外层事务失败回滚时三者保持原状。
+- 绑定码格式为 `XYY-[A-Z2-7]{26}`；26 个 Base32 字符承载 128-bit 随机字节。公开 API/业务 DB 不保存 raw peer、context token、cursor 或 raw nonce；H5 统一使用 `app/src/utils/request.ts`。
+- daemon/overlay 静态路径未发现 Agent/model/AI 调用、自动 reply、typing 或 media 发送；群聊在提取文本之前拒绝。server/data 五个文件哈希复测前后相同：`app.db=8b8bc326…`、`app.db-shm=42a2baf3…`、`app.db-wal=194c0753…`、`leads.db/xiansuo.db=e3b0c442…`。
+
+#### 失败项与最小复现
+
+##### P1：active 状态 commit 重放未绑定 activationId
+
+位置：[hermes-binding.ts](/home/yj/xiansuo/server/src/services/hermes-binding.ts:68)。active fast-path 只比较 `userId + generation + peer_fingerprint`，未比较请求中的 `activationId`；但 commit 的 prepared 路径会比较它，二者契约不一致。
+
+最小复现：在隔离 SQLite 中生成 code、prepare，使用正确 activationId commit 成功；再以随机 UUID、相同 userId/generation/peerFingerprint 调用 `commitHermesBinding`。输出为：
+
+```json
+{"wrongActivationAccepted":true,"status":"active"}
+```
+
+预期：只有原 activationId 的崩溃恢复重放可被幂等接受；随机/错误 activationId 必须返回 `HERMES_BINDING_GENERATION_CONFLICT`。
+
+实际：随机 activationId 被 200/成功语义接受，破坏 activationId 作为 prepared→commit→activate 关联凭证的完整性。建议 active 幂等分支也持久化并校验已提交 activationId（或采用等价的不可变 committed activationId），并补充“正确 ID 通过、错误随机 ID 拒绝”的单元和 HTTP 测试。
+
+##### P2：内部 disable 路由不是原子事务
+
+位置：[hermes-bindings.ts](/home/yj/xiansuo/server/src/routes/hermes-bindings.ts:35) 调用的 [hermes-binding.ts](/home/yj/xiansuo/server/src/services/hermes-binding.ts:85)。`/internal/hermes-bindings/disable/:userId` 没有包裹事务；`disableHermesBinding` 分别执行 binding 更新和通知取消。
+
+最小复现：在隔离库对 `notification_logs` 的 cancelled 更新安装 `RAISE(ABORT,'forced')` trigger，再调用 `disableHermesBinding`。输出：
+
+```json
+{"thrown":true,"binding":"disabled","task":"pending"}
+```
+
+预期：失败时 binding 与待发任务均回滚。
+
+实际：第一条更新已自动提交，第二条失败，留下 disabled binding 和 pending Hermes 任务。用户 `PATCH /api/users/:id` 主停用路径已自行使用 `BEGIN IMMEDIATE`，该路径通过；但内部 disable 仍会留下部分状态。建议将 disable 服务操作自身封装为可组合事务，或由该 internal route 显式包 `BEGIN IMMEDIATE/COMMIT/ROLLBACK`，并增加触发器失败回滚测试。
+
+#### 放行与修复方向
+
+在 P1 修复并重新验证前，**不得进入验收或开启 Hermes 绑定**。P2 应与 P1 一并修复，避免运维/内部清理路径产生不可恢复的待发任务。修复后至少重跑本节四端命令、错误/正确 activationId 双断言、internal disable 注入失败回滚，以及 10,000 nonce 和多进程 vault 压力复现。
+
+#### 测试阶段文件变化
+
+- 更新：[TEST_REPORT.md](/home/yj/xiansuo/docs/03-测试验证/TEST_REPORT.md)（本追加记录）。
+- 除本报告外，测试后 `git status --short` 与开始基线一致；构建和隔离数据库均未写入业务数据目录。
+
+### 34.2 P1/P2 修复后最终独立复测（2026-08-08，当前工作区）
+
+本记录是第 34 节的**最终结论**；34.1 的 P1/P2 失败证据保留用于追溯，已由本次实际复测关闭。
+
+**结论：PASS，允许进入验收阶段。** 本轮无遗留 P1、P2 或 P3。
+
+#### 修复复测结果
+
+| 验证项 | 独立实际结果 |
+| --- | --- |
+| P1：active commit 与 activationId | PASS。正确 activationId 在 active 状态的重放保持幂等；同一 userId/generation/peerFingerprint 配随机 UUID 被拒绝。隔离输出：`{"correctReplayAccepted":true,"wrongReplayRejected":true}`。active 记录仅保存 activationId 的 SHA-256 派生哈希，不保存原 ID。 |
+| P2：internal disable 失败回滚 | PASS。对通知取消安装 `RAISE(ABORT,'forced')` trigger 后，standalone `disableHermesBinding` 抛错并回滚：`{"active":1,"binding":"active","task":"pending"}`。 |
+| 用户停用主事务 | PASS。在同一强制第二步失败条件下，用户状态、binding、pending task 全部回滚为 `1/active/pending`；`PATCH /api/users/:id` 保持 `BEGIN IMMEDIATE`，调用 transaction 内 disable 函数，不出现嵌套事务。 |
+| fresh / 007→008 / 重复迁移 | PASS。fresh 和从仅含 001–007 的库升级均得到 `001…008`；重复运行 ledger 不变，新增 `active_activation_id_hash` 列存在。隔离输出 `repeatStable:true`。 |
+| 迁移边界 | PASS。MIGRATIONS 无 `009`；`git diff --unified=0 HEAD -- server/src/db.ts` 未出现 001–007 的 version/checksum/description 删除或替换行，`git diff --check` 通过。 |
+| 完整回归 | PASS：`cd server && npm run build && npm test` 退出码 0；`cd poc/ilink-gateway && npm run build && npm test` 59/59；`cd poc/hermes-weixin-transport && ./run-tests.sh` 18/18；`cd app && npm run build:h5` 通过（仅 H5）。 |
+
+#### 兼容性、安全与数据复核
+
+- Gateway/OpenClaw/Mock、`result_unknown` 单次终态、user+generation overlay 隔离、daemon prepared 崩溃恢复、flock 多进程容量与 peer 冲突、durable nonce 哈希/10,000 容量/清理、XYY 26 位 Base32、无 Agent/AI/reply/typing/media 的先前独立复测仍适用，且本轮相关四端回归未回归。
+- 测试前后 `server/data` SHA-256 一致：`app.db=8b8bc326…`、`app.db-shm=42a2baf3…`、`app.db-wal=194c0753…`、`leads.db/xiansuo.db=e3b0c442…`。隔离 SQLite 均在内存或 `/tmp`，未写业务数据目录。
+- 生产依赖和 lockfile 无差异，生产依赖审计不适用。真实微信登录、扫码、联网收发及生产副本备份/升级演练仍未执行，须在上线授权后单独进行受控 Pilot；它们不阻塞代码验收。
+
+#### 测试阶段文件变化与放行
+
+- 本轮仅更新：[TEST_REPORT.md](/home/yj/xiansuo/docs/03-测试验证/TEST_REPORT.md)。未修改业务源码、部署文件或 `server/data`；开始前存在的未提交实现改动保持原状。
+- **允许进入验收阶段。** 上线前仍应执行已批准的真实微信 Pilot 与生产备份/迁移演练。

@@ -13,6 +13,8 @@ export const deliveryRequestSchema = z.object({
   deliveryId: z.string().uuid(),
   idempotencyKey: z.string().min(16).max(200),
   recipientUserId: z.number().int().positive(),
+  /** Required only by the Hermes transport; OpenClaw keeps its published shape. */
+  recipientBindingGeneration: z.number().int().positive().optional(),
   title: z.string().min(1).max(40),
   body: z.string().min(1).max(500),
   detailUrl: z.literal('https://xs.tomatopia.top/'),
@@ -24,7 +26,7 @@ export const deliveryRequestSchema = z.object({
 }).strict()
 
 export type ChannelDeliveryRequest = z.infer<typeof deliveryRequestSchema>
-export type AdapterDeliveryRequest = { recipientExternalId: string; message: { title: string; body: string; detailUrl: string }; idempotencyKey: string }
+export type AdapterDeliveryRequest = { recipientExternalId: string; recipientUserId?: number; recipientBindingGeneration?: number; message: { title: string; body: string; detailUrl: string }; idempotencyKey: string }
 
 export const deliveryStatusSchema = z.enum([
   'sent', 'deduplicated', 'retryable_failure', 'permanent_failure', 'result_unknown'

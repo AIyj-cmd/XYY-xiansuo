@@ -171,3 +171,42 @@
 ### 下一次真实单条门禁
 
 只有取得新的、明确的一次性授权后，才可做一条新 Pilot；授权需冻结账号、唯一接收人、固定正文、新幂等键、执行窗口、人工观察人和停止条件。执行时必须证明 adapter 调用 **1 次**、技术状态 `sent`、用户端实际收到 **1 条**、自动重试 **0**、其他渠道发送 **0**。任何 `result_unknown`、超时、断连、非法响应或技术/人工结果不一致都立即停止，不换 key、不重发、不 fallback，并保留账本与人工事实供核对。该门禁通过前不得接入 Worker 或生产。
+
+## 10. Hermes 1–10 用户网站绑定与 `owner_changed` 定向通知验收（2026-08-08）
+
+### 结论
+
+**离线实现 PASS：P1=0、P2=0、P3=0。真实 Pilot 与生产上线未授权，结论为 NO-GO。** 本结论不授权提交、推送、部署、生产数据库迁移、登录、扫码、联网、微信发送或后台进程启动。
+
+本节以主代理明确批准的当前目标覆盖早期文档中的单接收人冻结历史，但只覆盖离线实现验收；早期真实渠道限制不会因此自动解除。
+
+### 需求与实现核对
+
+| 验收目标 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| H5 登录用户一次性绑定码 | 通过 | JWT 鉴权接口生成 `XYY-[A-Z2-7]{26}` 格式的 128-bit 随机码，10 分钟有效、60 秒发码间隔、提交后清除；H5 展示精确 `绑定 <code>` 命令，所有请求走统一 request 工具。 |
+| 同一 Hermes 账号 capture-only | 通过 | daemon 只轮询固定账号；群聊先拒绝，未知 peer 只为精确绑定命令提取文本，已绑定 peer 只刷新 token；源码与测试桩无 Agent、AI、reply、typing、media 能力。 |
+| 数据最小化和隔离 | 通过 | 业务库不含 raw peer/context token/cursor/raw nonce/入站正文，只含不透明指纹、状态/代次、挑战控制、prepared 激活凭证、active activationId 派生哈希及 nonce 派生哈希；raw peer/token/cursor 仅进入仓库外 `0700/0600` 加密 vault。公开 API 不返回指纹或秘密。 |
+| 1–10 容量与跨进程互斥 | 通过 | Server 在 `BEGIN IMMEDIATE` 下限制 active + prepared 最多 10；vault 所有公开读写经同一 `fcntl.flock`，容量和 peer 冲突在锁内失败关闭。独立 11 进程结果为 10 成功/1 拒绝，同 peer 仅 1 成功。 |
+| 精确代次路由与崩溃恢复 | 通过 | outbox 固化 `recipient_binding_generation`，Worker 发送前复核；Gateway 无 raw peer map，overlay 只在 vault 精确 active 代次时调用上游。prepared→commit 后崩溃可用原 activationId 恢复；错误 activationId 重放被拒绝。 |
+| 持久重放防护与事务停用 | 通过 | 内部 nonce 只以派生哈希持久化，跨重启拒绝重放，10,000 容量且 65 秒到期清理；用户停用和 internal disable 均原子更新绑定并取消 pending/retry_wait/sending Hermes 任务，注入失败时完整回滚。 |
+| 无 fallback/未知结果不重试 | 通过 | 管理规则仍限定单渠道；Hermes Adapter `single_attempt`，Gateway 持久账本烧毁 unknown key，Worker 将 Hermes `result_unknown` 终结为不可重试。 |
+| 默认关闭和兼容性 | 通过 | Binding、channel、Gateway transport/live 及通知规则默认关闭；OpenClaw/Mock、既有迁移和 H5 回归通过，无依赖或技术栈变化。 |
+
+### 验收阶段复测
+
+| 命令 | 最终结果 |
+| --- | --- |
+| `cd server && npm run build && npm test` | PASS，`156/156`。 |
+| `cd poc/ilink-gateway && npm run build && npm test` | PASS，`59/59`。 |
+| `cd poc/hermes-weixin-transport && ./run-tests.sh` | PASS，`18/18`。 |
+| `cd app && npm run build:h5` | PASS；仅有未配置 Appid/可选版本提示。 |
+
+测试报告 34.1 的 P1（active 重放未校验 activationId）和 P2（internal disable 非原子）均已按 34.2 修复，并在验收复跑中以正确/错误 activationId 双断言及注入失败回滚关闭；早期 P1-1～P1-4 与 P3 也保持关闭。本阶段没有仍可复现且获确认的范围内问题，因此没有修改业务源码。未执行真实微信登录、扫码、session/context token 时效、真实网络异常、供应商回执、用户端送达、生产副本迁移或恢复演练，不能把这些项目写成通过。
+
+### 残余风险与上线建议
+
+- 当前代码具备离线可验证性，但缺少真实运行授权、生产副本迁移/恢复演练、真实 session 与送达证据、运行监控和操作责任人；这些是外部上线门禁，不计为本轮离线代码 P 项。
+- 迁移 `008` 是前向表重建且无降级迁移，最终 checksum 为 `f26b25fe25e8cb5f21da92f06eb9f0303f27d8649299be4b35697ea2af17005a`。fresh、007→008、重复执行、checksum 冲突与失败回滚均通过；生产应用前仍必须备份并在一致性副本完成升级/恢复演练。
+- capture daemon/vault/Gateway 必须保持单实例、仓库外私有路径与默认关闭。只允许批准的 `owner_changed` Hermes 规则；任何范围扩展需重新审计。
+- **上线建议：离线交付可进入本地评审收口；真实 Pilot 和生产上线均 NO-GO，待用户另行明确授权并完成部署门禁后重新验收。**

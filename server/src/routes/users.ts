@@ -4,6 +4,8 @@ import { getDb } from '../db.js';
 import { hashPassword } from '../utils/password.js';
 import { requireAdmin, authenticate } from '../middleware/auth.js';
 import type { SQLInputValue } from 'node:sqlite';
+import { disableHermesBindingInTransaction } from '../services/hermes-binding.js';
+import { nowDatetime } from '../utils/datetime.js';
 
 const createUserSchema = z.object({
   username: z.string().min(2, '用户名至少2位').max(50),
@@ -101,7 +103,18 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     if (fields.length === 0) return reply.send({ code: 1, msg: '没有要更新的字段', data: null });
 
     values.push(id);
-    db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    // User deactivation, binding disablement and cancellation of queued Hermes
+    // delivery are a single state transition.  A partial update could otherwise
+    // leave an inactive account reachable by a previously queued notification.
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+      if (data.is_active === 0) disableHermesBindingInTransaction(db, targetId, nowDatetime());
+      db.exec('COMMIT');
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* transaction was not opened */ }
+      throw error;
+    }
     return reply.send({ code: 0, msg: '更新成功', data: null });
   });
 

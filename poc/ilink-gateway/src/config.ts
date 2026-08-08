@@ -47,6 +47,9 @@ const configSchema = z.object({
   ILINK_HERMES_SOURCE_DIR: absolutePath.optional(),
   ILINK_HERMES_CONFIG_FILE: absolutePath.optional(),
   ILINK_HERMES_STATE_DIR: absolutePath.optional(),
+  /** External 0700 vault, never a business DB or static peer map. */
+  ILINK_HERMES_VAULT_DIR: absolutePath.optional(),
+  /** Deprecated and ignored: retained only so an old environment fails closed at routing, not config parsing. */
   ILINK_HERMES_RECIPIENT_MAP_FILE: absolutePath.optional()
 }).strict()
 
@@ -67,6 +70,7 @@ export type GatewayConfig = z.output<typeof configSchema> & {
   hermesConfigPath?: string
   hermesStateDir?: string
   hermesLauncherPath?: string
+  hermesVaultDir?: string
   deprecatedWarnings: string[]
 }
 
@@ -112,7 +116,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
 
 function loadHermesConfig(parsed: z.output<typeof configSchema>, stateDir: string, gatewaySecret: string, warnings: string[]): GatewayConfig {
   if (!parsed.ILINK_HERMES_TRANSPORT_ENABLED) throw new Error('iLink Gateway 配置无效：Hermes transport 必须显式启用')
-  if (!parsed.ILINK_HERMES_SOURCE_DIR || !parsed.ILINK_HERMES_CONFIG_FILE || !parsed.ILINK_HERMES_STATE_DIR || !parsed.ILINK_HERMES_RECIPIENT_MAP_FILE) throw new Error('iLink Gateway 配置无效：Hermes transport 缺少固定源码、配置、状态或接收人映射路径')
+  if (!parsed.ILINK_HERMES_SOURCE_DIR || !parsed.ILINK_HERMES_CONFIG_FILE || !parsed.ILINK_HERMES_STATE_DIR) throw new Error('iLink Gateway 配置无效：Hermes transport 缺少固定源码、配置或状态路径')
   // The Gateway ledger is itself persistent Hermes-mode state.  Unlike the
   // long-standing OpenClaw compatibility path, Hermes must never put it in
   // the checkout (or reach it through an ancestor link).
@@ -121,10 +125,11 @@ function loadHermesConfig(parsed: z.output<typeof configSchema>, stateDir: strin
   const hermesConfigPath = requirePrivateExternalFile(parsed.ILINK_HERMES_CONFIG_FILE, 'ILINK_HERMES_CONFIG_FILE')
   const hermesStateDir = requireSafeDirectory(parsed.ILINK_HERMES_STATE_DIR, 'ILINK_HERMES_STATE_DIR', true, true)
   ensurePrivateDirectory(hermesStateDir, 'ILINK_HERMES_STATE_DIR')
-  const recipientMap = readHermesRecipientMapFile(parsed.ILINK_HERMES_RECIPIENT_MAP_FILE)
+  const hermesVaultDir = requireSafeDirectory(parsed.ILINK_HERMES_VAULT_DIR ?? parsed.ILINK_HERMES_STATE_DIR, 'ILINK_HERMES_VAULT_DIR', true, true)
+  if (parsed.ILINK_HERMES_RECIPIENT_MAP_FILE) warnings.push('ILINK_HERMES_RECIPIENT_MAP_FILE 已废弃且被忽略；Hermes 仅按 userId+generation 查询 vault')
   const hermesLauncherPath = join(repositoryRoot, 'poc/hermes-weixin-transport/run-hermes-weixin-transport.sh')
   requireRepositoryLauncher(hermesLauncherPath)
-  return { ...parsed, stateDir, gatewaySecret, recipientMap, hermesSourceDir, hermesConfigPath, hermesStateDir, hermesLauncherPath, openclawConfigPath: '', deprecatedWarnings: warnings }
+  return { ...parsed, stateDir, gatewaySecret, hermesSourceDir, hermesConfigPath, hermesStateDir, hermesVaultDir, hermesLauncherPath, openclawConfigPath: '', deprecatedWarnings: warnings }
 }
 
 function readSecretFile(path: string): string {

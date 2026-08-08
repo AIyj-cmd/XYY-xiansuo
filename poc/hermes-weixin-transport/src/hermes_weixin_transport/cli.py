@@ -9,9 +9,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import ConfigError, load_config
+from .config import ConfigError, load_config, load_daemon_config
 from .state import StateError, TokenState
 from .transport import RequestError, parse_send_request, send_once
+from .transport import send_bound_once
+from .multi_user import MultiUserVault
+from .daemon import InternalClient, run_capture_daemon
 from .upstream_gate import UpstreamGateError, verify_upstream
 
 
@@ -52,9 +55,12 @@ def _capture(config, state: TokenState, inbound: dict[str, Any]) -> dict[str, st
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hermes-weixin-transport")
-    parser.add_argument("command", choices=("capture", "send"))
+    parser.add_argument("command", choices=("capture", "send", "send-bound", "daemon"))
     parser.add_argument("--config", required=True, help="0600 JSON 配置文件")
     parser.add_argument("--state-dir", required=True, help="0700、绝对路径的状态目录")
+    parser.add_argument("--vault-dir", help="多人绑定 vault（0700、绝对路径）")
+    parser.add_argument("--server-url", help="本机内部绑定 API 根地址")
+    parser.add_argument("--internal-secret-file", help="0600 内部 HMAC 密钥文件")
     return parser
 
 
@@ -68,11 +74,31 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = _parser().parse_args(argv)
     try:
-        config = load_config(args.config)
+        config = load_daemon_config(args.config) if args.command == "daemon" else load_config(args.config)
         state = TokenState(Path(args.state_dir), config)
+        if args.command == "daemon":
+            if not args.vault_dir or not args.server_url or not args.internal_secret_file:
+                raise RequestError("daemon 配置无效")
+            from .security import require_private_file
+            secret = require_private_file(Path(args.internal_secret_file), kind="内部密钥").read_text().strip()
+            if len(secret.encode()) < 32: raise RequestError("内部密钥无效")
+            stop = asyncio.Event()
+            try: asyncio.run(run_capture_daemon(source_root, config, MultiUserVault(args.vault_dir, config.hmac_key), InternalClient(args.server_url, secret), stop))
+            except KeyboardInterrupt: pass
+            return 0
         inbound_or_request = _input_object()
         if args.command == "capture":
             outcome = _capture(config, state, inbound_or_request)
+        elif args.command == "send-bound":
+            if not args.vault_dir or set(inbound_or_request) != {"userId", "generation", "text", "idempotencyKey"}:
+                raise RequestError("多人投递参数无效")
+            user_id, generation, text, key = inbound_or_request["userId"], inbound_or_request["generation"], inbound_or_request["text"], inbound_or_request["idempotencyKey"]
+            if not isinstance(user_id, int) or user_id < 1 or not isinstance(generation, int) or generation < 1:
+                raise RequestError("多人投递代次无效")
+            # Reuse strict text/key validation without exposing a static peer.
+            if not isinstance(text, str) or not text or len(text) > 2000 or not isinstance(key, str) or not 1 <= len(key) <= 256:
+                raise RequestError("多人投递正文无效")
+            outcome = asyncio.run(send_bound_once(source_root, config, MultiUserVault(args.vault_dir, config.hmac_key), user_id, generation, text, key))
         else:
             request = parse_send_request(inbound_or_request, config.allowed_from)
             outcome = asyncio.run(send_once(source_root, config, state, request))

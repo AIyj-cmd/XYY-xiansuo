@@ -1,5 +1,20 @@
 # 当前版本部署手册
 
+> **2026-08-08 Hermes 多用户交付覆盖说明：** 本轮仅完成离线代码验收，不授权部署、真实 Pilot、登录、扫码、联网或微信发送。以下新增步骤是未来另获明确授权后的硬门禁，不得据此直接操作生产。
+
+## Hermes 1–10 用户部署前置门禁
+
+1. 保持 `HERMES_CHANNEL_ENABLED=false`、`HERMES_BINDING_ENABLED=false`、`ILINK_HERMES_TRANSPORT_ENABLED=false` 和 `ILINK_POC_LIVE_ENABLED=false`；所有通知规则继续关闭。当前只允许验收 `owner_changed` Hermes 路径，不启用其他 Hermes 事件。
+2. 先形成经评审、可追溯的发布 commit/制品；当前未提交工作区不是生产制品。任何部署、迁移、PM2/systemd/Nginx 操作或真实发送都需单独授权。
+3. 使用生产数据库的一致性副本演练迁移 `001`–`008`；`008` checksum 必须为 `f26b25fe25e8cb5f21da92f06eb9f0303f27d8649299be4b35697ea2af17005a`。核对记录数、`active_activation_id_hash`、持久 nonce 表、`integrity_check=ok`、`foreign_key_check` 为空，并完成可恢复备份演练；禁止先在生产主库试跑 `008`。
+4. 在仓库外建立当前服务 UID 所有的 `0700` Gateway ledger、Hermes state 和 vault 目录；Gateway Secret、内部 HMAC Secret、overlay 配置文件必须为仓库外 `0600` 单硬链接普通文件，且所有祖先不得是符号链接。vault 的 `bindings.lock` 必须保持私有并由同一服务 UID 使用，不能绕过 `flock` 直接编辑 `bindings.json`。raw peer、context token、cursor、Secret 不得进入 Git、业务 DB、环境示例实值、argv 或日志。
+5. Server→Gateway 只允许回环 HTTP 与现有 `x-ilink-gateway-*` HMAC 合同；capture daemon→Server 使用独立 `x-hermes-*` HMAC Secret。Gateway→overlay 只传 `userId + generation + 受控文本 + idempotencyKey`，禁止 peer map、fallback、自由正文和第二次尝试。
+6. 若未来获批启动，顺序为 API（完成迁移）→ Hermes capture-only daemon → Hermes Gateway → notification-worker；只对批准的 `owner_changed` 规则、小范围批准用户和固定窗口启用。停止顺序为先关规则及 Hermes 两个 Server 开关，再停 Worker、Gateway、capture daemon。
+7. 监控至少覆盖：迁移失败/checksum 冲突、绑定 prepare/commit/refresh 拒绝、activationId 冲突与 prepared 恢复反复失败、容量/peer 冲突、停用事务失败、持久 nonce 容量/清理异常、代次取消、`recipient_not_bound`、`binding_generation_changed`、Gateway HMAC/重放拒绝、幂等冲突、`result_unknown`、overlay timeout/kill/reap、vault lock/权限/完整性失败、进程重启循环。监控和日志不得记录绑定码、raw nonce、activationId、peer、token、cursor、正文或 Secret。
+8. 任一 `result_unknown`、代次不一致、vault 不可读、HMAC/权限失败、错误接收人、重复发送或真实结果与账本不一致时立即停用，不换 key、不重发、不 fallback；保留 Gateway ledger、vault 和脱敏日志供人工确认。
+
+离线复验基线：`server` build + `156/156`，`poc/ilink-gateway` build + `59/59`，`poc/hermes-weixin-transport` `18/18`，`app` H5 build。未构建微信小程序，未执行生产依赖审计（依赖/lockfile无变化）。
+
 日期：2026-08-02
 当前状态：仓库内离线收尾完成；本手册不授权任何生产操作。
 

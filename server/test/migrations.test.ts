@@ -47,7 +47,9 @@ test('空库创建完整版本化 schema，并强制外键', () => {
   const database = open('empty.db');
   runMigrations(database);
   const versions = database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>;
-  assert.deepEqual(versions.map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007']);
+  assert.deepEqual(versions.map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007', '008']);
+  const bindingColumns = database.prepare('PRAGMA table_info(hermes_bindings)').all() as Array<{ name: string }>;
+  assert.ok(bindingColumns.some((column) => column.name === 'active_activation_id_hash'));
   assert.equal((database.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys, 1);
   assert.throws(() => database.prepare("INSERT INTO follow_ups (lead_id, user_id, content) VALUES (999, 999, 'invalid')").run(), /FOREIGN KEY constraint failed/);
   database.close();
@@ -71,6 +73,17 @@ test('旧结构可迁移、保留记录、索引和外键，并可重复执行',
     VALUES ('可空手机号客户', NULL, '官网', '停止跟进', '2026-01-02')`).run());
   assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
   assert.equal(database.prepare("SELECT name FROM sqlite_master WHERE name IN ('leads_new', 'leads_old')").all().length, 0);
+  database.close();
+});
+
+test('007 升级到唯一的 008 时创建 active activation 凭证列且可重复执行', () => {
+  const database = open('upgrade-007-to-008.db');
+  runMigrations(database, MIGRATIONS.slice(0, 7), { log: () => undefined });
+  runMigrations(database, MIGRATIONS, { log: () => undefined });
+  runMigrations(database, MIGRATIONS, { log: () => undefined });
+  const columns = database.prepare('PRAGMA table_info(hermes_bindings)').all() as Array<{ name: string }>;
+  assert.ok(columns.some((column) => column.name === 'active_activation_id_hash'));
+  assert.equal((database.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='008'").get() as { count: number }).count, 1);
   database.close();
 });
 

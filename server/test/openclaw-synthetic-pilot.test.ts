@@ -48,13 +48,13 @@ test('synthetic 入队拒绝上级符号链接、hardlink 与 DB/WAL/SHM 非0600
   } finally { try { rmSync(parentLink); } catch {} rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('synthetic 入队迁移001-007并只创建一个用户和一个严格快照任务，重复键不新增', () => {
+test('synthetic 入队迁移001-008并只创建一个用户和一个严格快照任务，重复键不新增', () => {
   const directory = privateDirectory(); const filename = databasePath(directory);
   try {
     const first = enqueueOpenClawSyntheticPilot(input(directory)); assert.equal(first.result, 'created');
     const database = new DatabaseSync(filename, { readOnly: true, enableForeignKeyConstraints: true });
     const versions = database.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((row: any) => row.version);
-    assert.deepEqual(versions, ['001','002','003','004','005','006','007']);
+    assert.deepEqual(versions, ['001','002','003','004','005','006','007','008']);
     assert.equal((database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }).count, 1);
     assert.equal((database.prepare('SELECT COUNT(*) AS count FROM notification_logs').get() as { count: number }).count, 1);
     assert.equal((database.prepare('SELECT COUNT(*) AS count FROM openclaw_synthetic_pilot_control').get() as { count: number }).count, 1);

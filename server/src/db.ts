@@ -303,6 +303,66 @@ function allowOpenClawNotificationChannel(database: DatabaseSync): void {
   // explicit prior choices without enabling any rule.
 }
 
+/**
+ * Hermes deliberately keeps contact identifiers out of the business database.
+ * This migration only records an opaque fingerprint and the binding generation;
+ * the peer, context token and poll cursor live in the external encrypted vault.
+ */
+function addHermesMultiUserBindings(database: DatabaseSync): void {
+  database.exec(`
+CREATE TABLE IF NOT EXISTS hermes_bindings (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  peer_fingerprint TEXT UNIQUE,
+  status TEXT NOT NULL DEFAULT 'unbound' CHECK (status IN ('unbound','pending','active','disabled')),
+  generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+  active_activation_id_hash TEXT CHECK (active_activation_id_hash IS NULL OR length(active_activation_id_hash)=64),
+  binding_code_hash TEXT,
+  binding_code_expires_at TEXT,
+  last_code_issued_at TEXT,
+  prepared_generation INTEGER CHECK (prepared_generation IS NULL OR prepared_generation > 0),
+  prepared_code_hash TEXT CHECK (prepared_code_hash IS NULL OR length(prepared_code_hash)=64),
+  prepared_peer_fingerprint TEXT CHECK (prepared_peer_fingerprint IS NULL OR length(prepared_peer_fingerprint)=64),
+  prepared_activation_id TEXT CHECK (prepared_activation_id IS NULL OR length(prepared_activation_id)=36),
+  prepared_at TEXT,
+  last_bound_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  CHECK ((status='active' AND peer_fingerprint IS NOT NULL AND generation > 0) OR status != 'active')
+);
+CREATE INDEX IF NOT EXISTS idx_hermes_bindings_status ON hermes_bindings(status, generation);
+CREATE INDEX IF NOT EXISTS idx_hermes_bindings_prepared ON hermes_bindings(prepared_generation) WHERE prepared_generation IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_binding_prepared_peer ON hermes_bindings(prepared_peer_fingerprint) WHERE prepared_peer_fingerprint IS NOT NULL;
+CREATE TABLE IF NOT EXISTS hermes_internal_nonces (
+  nonce_hash TEXT PRIMARY KEY CHECK (length(nonce_hash)=64),
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hermes_internal_nonces_expiry ON hermes_internal_nonces(expires_at);
+`);
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='notification_logs'").get() as { sql?: string } | undefined;
+  if (!table?.sql) throw new Error('迁移008缺少 notification_logs，拒绝继续');
+  if (table.sql.includes('recipient_binding_generation INTEGER')) return;
+  const sourceColumns = (database.prepare("PRAGMA table_info('notification_logs')").all() as Array<{ name: string }>).map((row) => row.name);
+  const indexes = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='notification_logs' AND sql IS NOT NULL ORDER BY name").all() as Array<{ sql: string }>;
+  const oldChannelCheck = "channel IS NULL OR channel IN ('mock','openclaw')";
+  if (!table.sql.includes(oldChannelCheck)) throw new Error('迁移008发现未知 notification_logs channel 约束，拒绝继续');
+  const rebuilt = table.sql
+    .replace(/^CREATE TABLE(?: IF NOT EXISTS)? "?notification_logs"?/i, 'CREATE TABLE notification_logs_008_new')
+    .replace(oldChannelCheck, "channel IS NULL OR channel IN ('mock','openclaw','hermes')")
+    .replace('recipient_user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,', 'recipient_user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,\n  recipient_binding_generation INTEGER,');
+  if (rebuilt === table.sql || !rebuilt.includes('recipient_binding_generation INTEGER')) throw new Error('迁移008无法生成 notification_logs 新定义');
+  const before = (database.prepare('SELECT COUNT(*) AS count FROM notification_logs').get() as { count: number }).count;
+  database.exec(rebuilt);
+  const targetColumns = (database.prepare("PRAGMA table_info('notification_logs_008_new')").all() as Array<{ name: string }>).map((row) => row.name);
+  const targetExisting = targetColumns.filter((name) => name !== 'recipient_binding_generation');
+  if (sourceColumns.join(',') !== targetExisting.join(',')) throw new Error('迁移008字段定义不一致');
+  const columns = sourceColumns.map((name) => `"${name}"`).join(',');
+  database.exec(`INSERT INTO notification_logs_008_new (${columns}) SELECT ${columns} FROM notification_logs;`);
+  const copied = (database.prepare('SELECT COUNT(*) AS count FROM notification_logs_008_new').get() as { count: number }).count;
+  if (before !== copied) throw new Error(`迁移008记录数不一致：${before}/${copied}`);
+  database.exec('DROP TABLE notification_logs; ALTER TABLE notification_logs_008_new RENAME TO notification_logs;');
+  for (const index of indexes) database.exec(index.sql);
+  database.exec('CREATE INDEX IF NOT EXISTS idx_notification_hermes_generation ON notification_logs(recipient_user_id, recipient_binding_generation) WHERE channel=\'hermes\';');
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: '001',
@@ -529,6 +589,13 @@ CREATE INDEX IF NOT EXISTS idx_ai_request_retention ON ai_request_logs(retain_un
     checksum: 'c09175e80d010ea056c3e93e5f4fdfc61c4b2f4c08c885d0a6b4e96b1f5242da',
     requiresForeignKeysOff: true,
     up: allowOpenClawNotificationChannel,
+  },
+  {
+    version: '008',
+    description: 'add Hermes multi-user opaque bindings and delivery generation',
+    checksum: 'f26b25fe25e8cb5f21da92f06eb9f0303f27d8649299be4b35697ea2af17005a',
+    requiresForeignKeysOff: true,
+    up: addHermesMultiUserBindings,
   },
 ];
 

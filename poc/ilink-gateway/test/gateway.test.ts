@@ -42,7 +42,7 @@ function hermesConfig(dir: string, mapping: unknown = { '1': { peer: 'peer-a', e
     ILINK_HERMES_RECIPIENT_MAP_FILE: map, ...extra
   })
 }
-function request() { return { deliveryId: randomUUID(), idempotencyKey: `phase5a-test-${randomUUID()}`, recipientUserId: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' as const, gatewaySendTimeoutMs: 30_000, workerTimeoutMs: 40_000 } }
+function request() { return { deliveryId: randomUUID(), idempotencyKey: `phase5a-test-${randomUUID()}`, recipientUserId: 1, recipientBindingGeneration: 1, ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' as const, gatewaySendTimeoutMs: 30_000, workerTimeoutMs: 40_000 } }
 function adapterRequest() { return { recipientExternalId: 'test-recipient-1', idempotencyKey: `phase5a-test-${randomUUID()}`, message: { ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' } } }
 function result(stdout = '', exitCode = 0): CommandResult { return { stdout, stderr: '', exitCode } }
 const openClawMessageSendSuccessFixture = readFileSync(new URL('./fixtures/openclaw-2026.7.1-message-send-success.json', import.meta.url), 'utf8').trim()
@@ -612,12 +612,12 @@ test('Hermes adapter uses only bounded JSON stdin/stdout and never exposes peer 
       const payload = JSON.parse(stdin) as Record<string, string>
       return { exitCode: 0, stdout: JSON.stringify({ status: 'sent', code: 'ILINK_SENT', responseShape: 'ret_zero', idempotencyKey: payload.idempotencyKey }) }
     } }
-    const item = { ...adapterRequest(), recipientExternalId: 'peer-a' }
+    const item = { ...adapterRequest(), recipientExternalId: 'hermes:1:1', recipientUserId: 1, recipientBindingGeneration: 1 }
     const result = await new HermesAdapter(cfg, fakeCli).send(item, new AbortController().signal)
     assert.equal(result.status, 'sent'); assert.match(result.providerMessageId ?? '', /^hermes-local:[a-f0-9]{64}$/); assert.equal(calls.length, 1)
     assert.equal(calls[0].command, cfg.hermesLauncherPath)
-    assert.deepEqual(calls[0].args, ['send', '--config', cfg.hermesConfigPath!, '--state-dir', cfg.hermesStateDir!])
-    assert.deepEqual(JSON.parse(calls[0].stdin), { peer: 'peer-a', text: `${item.message.title}\n${item.message.body}`, idempotencyKey: item.idempotencyKey })
+    assert.deepEqual(calls[0].args, ['send-bound', '--config', cfg.hermesConfigPath!, '--state-dir', cfg.hermesStateDir!, '--vault-dir', cfg.hermesVaultDir!])
+    assert.deepEqual(JSON.parse(calls[0].stdin), { userId: 1, generation: 1, text: `${item.message.title}\n${item.message.body}`, idempotencyKey: item.idempotencyKey })
     assert.equal(calls[0].args.join(' ').includes('peer-a'), false)
     assert.equal(calls[0].env.HERMES_SOURCE_DIR, cfg.hermesSourceDir); assert.equal(calls[0].env.HERMES_HOME, cfg.hermesStateDir)
     assert.equal(calls[0].env.HOME, cfg.hermesStateDir); assert.equal(calls[0].env.PYTHONPATH, '')
@@ -626,7 +626,7 @@ test('Hermes adapter uses only bounded JSON stdin/stdout and never exposes peer 
 
 test('Hermes adapter treats startup, timeout and illegal output as unknown and never retryable', async () => {
   const dir = directory(); try {
-    const cfg = hermesConfig(dir); const item = { ...adapterRequest(), recipientExternalId: 'peer-a' }
+    const cfg = hermesConfig(dir); const item = { ...adapterRequest(), recipientExternalId: 'hermes:1:1', recipientUserId: 1, recipientBindingGeneration: 1 }
     const variants = [
       { exitCode: null, stdout: '', spawnError: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) },
       { exitCode: null, stdout: '', timedOut: true },
@@ -650,7 +650,7 @@ test('Hermes adapter treats startup, timeout and illegal output as unknown and n
 
 test('Hermes strict stdout contract accepts only the atomic fixed response-shape enum without leaking values', async () => {
   const dir = directory(); try {
-    const cfg = hermesConfig(dir); const item = { ...adapterRequest(), recipientExternalId: 'peer-a' }
+    const cfg = hermesConfig(dir); const item = { ...adapterRequest(), recipientExternalId: 'hermes:1:1', recipientUserId: 1, recipientBindingGeneration: 1 }
     const valid = [
       { exitCode: 0, status: 'sent', code: 'ILINK_SENT', responseShape: 'empty_object' },
       { exitCode: 0, status: 'sent', code: 'ILINK_SENT', responseShape: 'ret_zero_errcode_zero' },
@@ -693,13 +693,13 @@ test('Hermes command runner SIGKILLs and reaps timeout or oversized-output child
   try { await runHostileChild('timeout'); await runHostileChild('oversize') } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('Hermes Gateway selection maps peer outside HTTP and preserves one terminal attempt across concurrent and restart calls', async () => {
+test('Hermes Gateway forwards only user and generation to the vault overlay and preserves one terminal attempt across concurrent and restart calls', async () => {
   const dir = directory(); const item = request(); let calls = 0; let release: (() => void) | undefined
   const delayed = new Promise<void>((resolve) => { release = resolve })
   const adapter = {
     name: 'hermes' as const, attemptPolicy: 'single_attempt' as const,
     health: async () => ({ status: 'degraded' as const, channelStatus: 'enabled' as const }),
-    send: async (request: { recipientExternalId: string }) => { calls += 1; assert.equal(request.recipientExternalId, 'peer-a'); await delayed; return { status: 'sent' as const, providerMessageId: 'hermes-receipt' } }
+    send: async (request: { recipientExternalId: string; recipientUserId?: number; recipientBindingGeneration?: number }) => { calls += 1; assert.equal(request.recipientExternalId, 'hermes:1:1'); assert.equal(request.recipientUserId, 1); assert.equal(request.recipientBindingGeneration, 1); await delayed; return { status: 'sent' as const, providerMessageId: 'hermes-receipt' } }
   }
   try {
     const state = new StateStore(dir); const service = new GatewayService(hermesConfig(dir), adapter, new IdempotencyStore(state)); const first = service.deliver(item); const second = service.deliver(item); release!()

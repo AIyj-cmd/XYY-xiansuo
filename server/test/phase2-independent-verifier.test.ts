@@ -221,7 +221,7 @@ test('跟进创建、编辑、删除及导入使用同一派生规则；删除�
 });
 
 test('006 可重复执行且不改变既有 001 至 005 checksum、完整性或禁止对象边界', () => {
-  assert.deepEqual(MIGRATIONS.map((migration) => migration.version), ['001', '002', '003', '004', '005', '006', '007']);
+  assert.deepEqual(MIGRATIONS.map((migration) => migration.version), ['001', '002', '003', '004', '005', '006', '007', '008']);
   assert.equal(MIGRATIONS[0].checksum, 'c10d4871046168fe4d264341112454eba9983c979ba5ec16098f54ae0f0e57a0');
   assert.equal(MIGRATIONS[1].checksum, 'db94974c385bf625457d12c33ee42c95b0c2e6c951d262dd0b9784fe8112b0d9');
   const database = new DatabaseSync(':memory:', { enableForeignKeyConstraints: true });
@@ -229,7 +229,7 @@ test('006 可重复执行且不改变既有 001 至 005 checksum、完整性或�
   runMigrations(database);
   runMigrations(database);
   assert.equal(MIGRATIONS[4].checksum, '8636bf2723aa6991e2f8aa66b14b1232a16ea644d15954284e74acdbfa1a6346');
-  assert.deepEqual((database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>).map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007']);
+  assert.deepEqual((database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>).map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007', '008']);
   assert.deepEqual((database.prepare('PRAGMA integrity_check').all() as object[]).map((row) => ({ ...row })), [{ integrity_check: 'ok' }]);
   assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);

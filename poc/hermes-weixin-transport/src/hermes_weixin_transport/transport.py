@@ -186,3 +186,20 @@ async def send_once(
     except Exception as exc:  # status classification must never leak credentials
         return _classify_exception(exc, request)
     return _classify_response(response, request)
+
+
+async def send_bound_once(source_root: Path, config: TransportConfig, vault: Any, user_id: int, generation: int, text: str, idempotency_key: str, *, post_once: PostOnce = _call_upstream_once) -> dict[str, str]:
+    """Send only after resolving an exact user/generation from the private vault."""
+    try:
+        binding = vault.get(user_id, generation)
+    except Exception:
+        binding = None
+    request = SendRequest(peer="", text=text, idempotency_key=idempotency_key)
+    if not binding or not isinstance(binding.get("peer"), str) or not isinstance(binding.get("token"), str):
+        return _result("permanent_failure", "ILINK_STALE_CONTEXT_TOKEN", "not_attempted", request)
+    request = SendRequest(peer=binding["peer"], text=text, idempotency_key=idempotency_key)
+    try:
+        response = await post_once(source_root, config, request, binding["token"])
+    except Exception as exc:
+        return _classify_exception(exc, request)
+    return _classify_response(response, request)

@@ -14,10 +14,10 @@ const previewSchema = z.object({ rule: ruleUpdateSchema, sample: z.object({ lead
 const retrySchema = z.object({ expected_version: z.number().int().positive(), reason: z.string().min(1).max(200) }).strict();
 const idSchema = z.coerce.number().int().positive();
 function bad(reply: any, msg: string, code = 'RULE_CONFIG_INVALID', status = 400) { return reply.code(status).send({ code: 1, msg, data: { error_code: code } }); }
-function allowedSingleChannel(channelOrder: readonly string[]): 'mock' | 'openclaw' | undefined {
-  return channelOrder.length === 1 && (channelOrder[0] === 'mock' || channelOrder[0] === 'openclaw') ? channelOrder[0] : undefined;
+function allowedSingleChannel(channelOrder: readonly string[]): 'mock' | 'openclaw' | 'hermes' | undefined {
+  return channelOrder.length === 1 && (channelOrder[0] === 'mock' || channelOrder[0] === 'openclaw' || channelOrder[0] === 'hermes') ? channelOrder[0] : undefined;
 }
-function validateRuleTarget(eventType: string, recipientStrategy: string, channelOrder: readonly string[]): { channel: 'mock' | 'openclaw' } | undefined {
+function validateRuleTarget(eventType: string, recipientStrategy: string, channelOrder: readonly string[]): { channel: 'mock' | 'openclaw' | 'hermes' } | undefined {
   const aiEvent = eventType === 'scheduled_follow_overdue' || eventType === 'daily_report';
   const channel = allowedSingleChannel(channelOrder);
   if ((eventType === 'owner_changed' && recipientStrategy !== 'new_owner') || (aiEvent && recipientStrategy !== 'reserved') || !channel) return undefined;
@@ -44,7 +44,7 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
     const target = validateRuleTarget(event.data, body.recipient_strategy, body.channel_order);
     if (!target) return bad(reply, '该事件只允许一个受控渠道，禁止 fallback', 'CHANNEL_NOT_ALLOWED');
     const notificationConfig = resolveNotificationConfig();
-    if (body.enabled && ((target.channel === 'mock' && !notificationConfig.mockEnabled) || (target.channel === 'openclaw' && !notificationConfig.openclawEnabled))) return bad(reply, '所选通知渠道未启用，不能启用规则', 'CHANNEL_NOT_ALLOWED');
+    if (body.enabled && ((target.channel === 'mock' && !notificationConfig.mockEnabled) || (target.channel === 'openclaw' && !notificationConfig.openclawEnabled) || (target.channel === 'hermes' && !notificationConfig.hermesEnabled))) return bad(reply, '所选通知渠道未启用，不能启用规则', 'CHANNEL_NOT_ALLOWED');
     const candidate = { event_type: event.data, enabled: body.enabled ? 1 : 0, recipient_strategy: body.recipient_strategy, channel_order_json: JSON.stringify(body.channel_order), config_schema_version: 1, config_json: JSON.stringify(body.config), version: body.expected_version };
     try { if (event.data === 'owner_changed') parseOwnerRule(candidate); else parseAiRule(candidate, event.data as 'scheduled_follow_overdue' | 'daily_report'); } catch { return bad(reply, '规则配置不合法'); }
     const db = getDb(); const now = nowDatetime(); db.exec('BEGIN IMMEDIATE;');
@@ -81,12 +81,12 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
     else if (!recipient?.is_active) { decision = 'suppressed'; suppressionReason = 'recipient_inactive'; }
     else {
       const channel = rule.channel_order[0]; const config = resolveNotificationConfig();
-      if ((channel === 'mock' && !config.mockEnabled) || (channel === 'openclaw' && !config.openclawEnabled)) { decision = 'suppressed'; suppressionReason = 'no_usable_channel'; }
+      if ((channel === 'mock' && !config.mockEnabled) || (channel === 'openclaw' && !config.openclawEnabled) || (channel === 'hermes' && !config.hermesEnabled)) { decision = 'suppressed'; suppressionReason = 'no_usable_channel'; }
     }
     return reply.send({ code: 0, msg: 'ok', data: { decision, suppression_reason: suppressionReason, recipient_user_id: sample.new_owner_id, available_at: availableAt, message: { title: '负责人已变更', detail_path: `/pages/leads/detail?id=${sample.lead_id}` } } });
   });
   app.get('/api/admin/notification-logs', { preHandler: requireAdmin }, async (request, reply) => {
-    const q = z.object({ page: z.coerce.number().int().min(1).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(20), event_type: z.string().optional(), status: z.string().optional(), channel: z.enum(['mock','openclaw']).optional(), recipient_user_id: z.coerce.number().int().optional(), lead_id: z.coerce.number().int().optional(), operation_id: z.string().max(100).optional(), from: z.string().optional(), to: z.string().optional() }).safeParse(request.query);
+    const q = z.object({ page: z.coerce.number().int().min(1).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(20), event_type: z.string().optional(), status: z.string().optional(), channel: z.enum(['mock','openclaw','hermes']).optional(), recipient_user_id: z.coerce.number().int().optional(), lead_id: z.coerce.number().int().optional(), operation_id: z.string().max(100).optional(), from: z.string().optional(), to: z.string().optional() }).safeParse(request.query);
     if (!q.success) return bad(reply, q.error.issues[0].message, 'QUERY_INVALID'); const parts: string[] = []; const values: any[] = [];
     for (const [key, column] of [['event_type','event_type'],['status','status'],['channel','channel'],['recipient_user_id','recipient_user_id'],['lead_id','lead_id'],['operation_id','operation_id']] as const) if ((q.data as any)[key] !== undefined) { parts.push(`${column}=?`); values.push((q.data as any)[key]); }
     if (q.data.from) { parts.push('created_at >= ?'); values.push(q.data.from); } if (q.data.to) { parts.push('created_at <= ?'); values.push(q.data.to); }
@@ -115,7 +115,7 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
       }
       const channel = parseSingleNotificationChannel(rule.channel_order_json);
       const config = resolveNotificationConfig();
-      ruleUsable = Boolean(rule?.enabled) && ((channel === 'mock' && config.mockEnabled) || (channel === 'openclaw' && config.openclawEnabled));
+      ruleUsable = Boolean(rule?.enabled) && ((channel === 'mock' && config.mockEnabled) || (channel === 'openclaw' && config.openclawEnabled) || (channel === 'hermes' && config.hermesEnabled));
     } catch { ruleUsable = false; contextUsable = false; }
     if (row.status !== 'failed' || !row.retry_allowed || row.expires_at <= now || row.provider_message_id || !contextUsable || !ruleUsable) return bad(reply, '该任务当前不符合人工重试条件', 'RETRY_NOT_ALLOWED', 409);
     const result = db.prepare(`UPDATE notification_logs SET status='pending', available_at=?, manual_retry_count=manual_retry_count+1, failed_at=NULL, retain_until=NULL, failure_class=NULL, last_error_code=NULL, last_error_message=NULL, management_audit_json=json_insert(management_audit_json, '$[#]', json_object('action','manual_retry','by',?,'reason',?,'at',?)), row_version=row_version+1, updated_at=? WHERE id=? AND row_version=?`).run(now, request.user.id, body.data.reason, now, now, id.data, body.data.expected_version);
