@@ -1474,3 +1474,85 @@ P2：无。
 用户确认普通成员查看公司级工作台及工作台导出属于当前接受的产品行为，不要求按负责人隔离。因此第 37 节第 3 项保留为真实行为和历史测试证据，但自本确认起不再计入 P1/P2/P3，也不构成发布修复门禁。普通 `/api/export` 仍保持只导出 member 本人负责线索；README 已同步明确两类导出的权限差异。
 
 按该产品决定重新统计：运行时/契约 P1=2、P2=2、P3=1；Hermes 部署链缺失另列部署硬门禁，Server/App 依赖风险和生产迁移演练继续作为独立门禁/残余风险。其他测试事实与 NO-GO 范围不变。
+
+## 38. `chore/project-health-remediation-v2` 独立复验测试计划（2026-08-09）
+
+### 38.1 测试环境与开始基线
+
+- 工作目录：`/home/yj/xiansuo`；分支：`chore/project-health-remediation-v2`；HEAD：`ebf6d44`。
+- 开始前已执行 `git status --short`、`git diff --name-only`、`git diff --check`；三者均为空。不存在需要保护的未提交用户改动。
+- 已完整核验根 `AGENTS.md`、`docs/03-测试验证/PROJECT_FINAL_AUDIT_REPORT.md`、`docs/01-审计与设计/PROJECT_HEALTH_REMEDIATION_LOOP_PROMPT.md`，并审阅从 `364f761` 至 HEAD 的整改提交历史。工作范围仅允许追加本报告。
+
+### 38.2 计划与验收矩阵
+
+1. 记录 `server/data` 逐文件 SHA-256 与迁移 001–009 的 Git blob/object hash；使用全新 `/tmp` SQLite fixture 验证空库、历史升级、重复执行、checksum 冲突、注入失败回滚、`integrity_check`/`foreign_key_check`，并证明 001–009 字节不变。
+2. 运行 Server `npm ci`、`npm run build`、`npm test`、`npm audit --omit=dev`；对通知 capability 矩阵、Hermes fail-closed、旧 JWT 失效、安全头、上传内容签名/staging 清理实施定向黑盒或现有测试复核。
+3. 运行 Gateway `npm ci`、build、完整测试连续至少三轮与生产依赖审计；确认 timeout 子进程竞争回归受到断言保护。
+4. 运行 Hermes overlay `run-tests.sh`，检查 deployment dry-run、preflight、PM2/wrapper 的环境边界：不得读取业务数据库/DeepSeek key、不得访问网络或启动常驻进程。
+5. 运行 App `npm ci`、`build:h5`、`test:h5`、`test:e2e`、生产依赖审计；仅 H5，不构建小程序。用运行或静态/测试证据复核关闭态入口、深链和二维码请求 fail-closed。
+6. 扫描受控敏感信息（真实微信、DeepSeek、生产 DB、部署密钥/二维码/target），并在测试前后比较 Git 状态、差异、`server/data` 哈希。保留用户批准的 member 公司级 dashboard/export 行为，不作为越权缺陷。
+
+任何失败均记录命令、最小复现、预期/实际、证据路径和 P 级；无法运行的测试将标为环境阻塞而非通过。结束时根据关键门禁给出是否允许进入验收阶段的结论。
+
+### 38.3 实际执行命令与结果
+
+| 范围 | 命令 | 结果 |
+| --- | --- | --- |
+| Server 安装/构建 | `cd server && npm ci && npm run build` | PASS；`npm ci` 退出 0，TypeScript 构建退出 0。 |
+| Server 全量 | `cd server && npm test` | PASS，**170/170**，无 skip/cancel。 |
+| Server 迁移定向 | `cd server && npx tsx --test test/migrations.test.ts` | PASS，**10/10**；覆盖空库、历史升级、重复、冲突、失败回滚、完整性/外键和 009→010。 |
+| Server 闭环定向 | `cd server && npx tsx --test test/notification-capabilities.test.ts test/auth-db.test.ts test/security-upload.test.ts test/hermes-binding-route.test.ts` | PASS，**12/12**。 |
+| Server 生产审计 | `cd server && npm audit --omit=dev --json` | PASS，0 vulnerabilities。 |
+| Gateway 安装/构建 | `cd poc/ilink-gateway && npm ci && npm run build` | PASS。 |
+| Gateway 连续回归 | `cd poc/ilink-gateway && npm test`（连续 3 轮） | PASS，**62/62、62/62、62/62**；timeout PID/SIGKILL 断言三轮均稳定。 |
+| Gateway 生产审计 | `cd poc/ilink-gateway && npm audit --omit=dev --json` | PASS，0 vulnerabilities。 |
+| Hermes overlay | `cd poc/hermes-weixin-transport && ./run-tests.sh` | PASS，**33/33**。 |
+| Hermes 离线部署检查 | `./run-hermes-weixin-transport.sh dry-run` | PASS：`offline=true`、`network=not_used`、`businessDatabase=not_used`、`residentProcess=not_started`。 |
+| App 安装/H5 构建 | `cd app && npm ci && npm run build:h5` | PASS；仅构建 H5，未构建微信小程序。 |
+| App H5 回归 | `cd app && npm run test:h5` | PASS，Playwright **17/17**，其中含 CSP、关闭态深链、二维码请求次数为零、解绑/重绑、改密登出。 |
+| App 生产审计 | `cd app && npm audit --omit=dev --json` | 退出码 1：29 high、1 moderate；保留为已批准的 R-1 残余依赖风险，见下。 |
+| 静态/隔离 | `bash -n`（部署与 wrapper）、PM2 配置只读载入、`ps`、`git diff --check` | PASS；两套 Hermes 单元仅 loopback，未继承 DB/DeepSeek；无相关常驻进程。 |
+
+`npm ci` 的安装期 advisory 摘要与 `--omit=dev` 审计的生产树统计不同；本报告保留显式生产审计的原始退出码与 effect graph 统计，不把安装期“已安装成功”误记为依赖安全通过，也不把 graph 的 29 个 effect 节点误计为 29 个独立新根因。
+
+### 38.4 通过项与证据
+
+#### 整改闭环
+
+- **通知 capability 矩阵：PASS。** `server/test/notification-capabilities.test.ts` 证明唯一矩阵允许 `owner_changed + hermes`，拒绝 `daily_report/scheduled_follow_overdue + hermes`，并同时约束管理保存、preview、AI 入队、Worker 领取和人工重试；不支持任务会被 suppressed，不形成可领取的 pending Hermes outbox。
+- **Hermes 关闭态 H5/API：PASS。** Server 路由测试显示关闭开关优先于 DB/manager fail-closed；`app/test/h5-runtime.spec.ts` 的浏览器回归证明 capability 关闭或请求失败时菜单和深链均不展示可操作内容，且 QR 创建/解绑/轮询调用数为零。API 开启时既有绑定路径仍由同一 17 条 H5 回归覆盖。
+- **改密 JWT 失效：PASS。** `server/test/auth-db.test.ts` 覆盖用户改密与管理员重置均递增 `token_version`；旧 token 立即为 401，新 token 可用，账号停用/删除/角色变更的实时校验未回归。
+- **浏览器安全头：PASS。** `server/test/security-upload.test.ts` 验证 API、H5 和上传响应包含同一组安全头；HTTP 应用未伪造 HSTS，CSP 已由 H5 浏览器启动回归验证没有违规。
+- **上传签名与 staging：PASS。** 定向测试覆盖 MIME 与 PNG/JPEG/GIF/WebP 真实内容签名匹配、0600 原子发布、伪造/错配/空文件/短签名/超限拒绝、失败清理以及私有 staging 无静态映射。
+- **Gateway timeout 竞态：PASS。** 连续三轮全量 62/62；`Hermes command runner SIGKILLs and reaps timeout or oversized-output children` 每轮通过，未再出现 `timeout.pid` ENOENT。
+- **Hermes D-1 离线部署链：PASS（仅离线）。** `deploy/deploy.sh` 已打包 overlay 与固定上游；account-manager/Gateway 为独立 PM2 单元。只读载入证明 Gateway 固定 `127.0.0.1:38116`、`live=false`、`transport=false`，两个单元的 PM2 `env` 均不含 `DB_PATH` 或 `DEEPSEEK_API_KEY`；Gateway wrapper 使用 `env -i` 清除继承变量，此行为也由 Gateway 全量测试覆盖。dry-run 未触发网络、业务 DB 或常驻进程。
+
+#### 迁移、数据与权限
+
+- 001–009 在 `82c15dc..HEAD` 的 `server/src/db.ts` diff 中字节不变；唯一迁移变更为新增 010（`token_version`）。没有重写历史 migration checksum。
+- 迁移定向 10/10 证明：空库完整应用 001–010；已有账本重复执行为 skipped；旧库升级保持数据；checksum 冲突拒绝；注入的失败 migration 不写完成账本并回滚；`PRAGMA integrity_check=ok`、`foreign_key_check=[]`。
+- `server/data` 全量 SHA-256 测试前后完全一致；包含 app DB、WAL/SHM、备份和空的历史 DB 文件。测试仅使用隔离临时 SQLite 库。
+- 普通成员公司级 dashboard 与 dashboard export 的可见行为按用户批准口径保留，**未作为越权缺陷或失败项**；普通 `/api/export` 的负责人限制由现有 Server 回归覆盖。
+
+#### 敏感信息与外部边界
+
+- 受控源扫描未发现疑似真实 JWT、DeepSeek key、微信标识或三段式 token；三个受跟踪 `.env.example` 的密钥赋值均为空。扫描排除了测试 fixture 与依赖目录，不能替代托管平台密钥审计。
+- 未访问生产数据库，未扫码/登录/发送真实微信，未调用真实 DeepSeek；本轮 npm 安装/审计访问包注册表属于依赖验证，不是业务网络调用。
+- 无 `hermes_weixin_transport`、Gateway、notification worker 或 PM2 常驻进程遗留。
+
+### 38.5 已批准残余风险、复现与后续条件
+
+#### R-1：App 的 Vite/uni-app 兼容性残余依赖风险（已批准保留，非 P2）
+
+- **最小复现：** `cd app && npm audit --omit=dev --json`。
+- **实际证据：** npm 返回退出码 1，统计为 `high=29`、`moderate=1`、`critical=0`。该数是当前 uni-app/Vite/PostCSS/Vue 传递依赖的 effect graph 节点数；已确认根因仍为既有 Vite 5.2.8 与 nanoid/postcss/uni-app 传递链，并非 29 个独立的新缺陷。
+- **已批准边界与补偿措施：** 本次仅发布静态 H5；Vite 开发服务器继续仅监听 loopback；CI 的依赖门禁仅以 critical 阻断。该口径与 `PROJECT_FINAL_AUDIT_REPORT.md` 记录的 App 2 项 high 根因和已批准 Loop 第六节 R-1 一致。
+- **未来关闭条件：** 只有找到与当前 uni-app 兼容的升级路径，并通过 H5 构建、17 条 Playwright 与生产审计后，才能单独提交升级；禁止 `--force`、`--legacy-peer-deps` 或跨 major 升级伪造修复。
+
+本轮复验结论为 **P1=0、P2=0、P3=0**；未发现仍可复现的业务、权限、迁移、Hermes 离线部署或 Gateway 竞态问题。真实微信、生产迁移/恢复和生产部署仍属于授权外未覆盖范围，不得因离线通过而视为已完成。
+
+### 38.6 测试阶段文件变化与放行结论
+
+- 测试开始时工作区干净；结束时 `git status --short` 与 `git diff --name-only` 仅有本报告 `docs/03-测试验证/TEST_REPORT.md`。没有新增业务源码、迁移、脚本、部署、锁文件或 `server/data` 改动；构建/依赖/临时产物均未进入 Git 状态。
+- 已关闭复验：历史 P1（通知能力矩阵、Hermes 关闭态）、P2（旧 JWT、安全头/上传）、P3（Gateway timeout）及 D-1 的**离线**服务链要求均通过。
+- **结论：允许进入验收阶段（代码验收放行）。** R-1 已按用户批准保留，并继续保持生产静态 H5、开发服务器 loopback 与 critical 依赖门禁；真实 Hermes/微信开关必须保持关闭。此结论不授权生产部署、生产迁移、扫码、真实发送或多人开放。
