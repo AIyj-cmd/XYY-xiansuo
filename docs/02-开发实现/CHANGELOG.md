@@ -2,7 +2,9 @@
 
 ## Unreleased — Hermes 1–10 用户网站绑定与定向通知（2026-08-08）
 
-- H5 登录用户可生成 `XYY-` + 26 位 Base32 的 128-bit、10 分钟有效、单次使用绑定码，并查看不含 peer/token/cursor 的绑定状态与代次；前端请求继续统一使用 `app/src/utils/request.ts`。
+- H5 登录用户可生成 `XYY-` + 26 位 Base32 的 128-bit、10 分钟有效、单次使用绑定码，并查看不含 peer/token/cursor 的绑定状态与代次；绑定页可复制完整 `绑定 XYY-…` 命令、显示倒计时/过期状态，并轮询既有状态 API 自动显示绑定成功。前端请求继续统一使用 `app/src/utils/request.ts`。
+- H5 不生成或展示 Hermes/iLink 登录二维码。经人工核验的长期机器人联系人入口可通过构建环境的公开 `VITE_HERMES_BOT_ENTRY_URL`/`VITE_HERMES_BOT_ENTRY_IMAGE_URL` 显示；未配置或非法 URL 时安全降级为人工索取提示，任何 token、peer、会话或登录二维码均不得进入 Git 或静态制品。
+- 2026-08-09 验收修复 active 用户重新发码时把“旧绑定仍为 active”误当“新码已绑定”的问题；只有当状态为 active 且服务端已清空本次码的 `expires_at` 时才显示成功并停止轮询。新增 active→新命令可见→下一代 prepare/commit→轮询成功回归，H5 全量 **11/11** 通过。
 - 新增唯一迁移 `008`：业务库只保存 Hermes 不透明 peer 指纹、绑定状态/代次、绑定挑战控制、prepared 激活凭证、active activationId 派生哈希、nonce 派生哈希/时限及通知接收代次；raw peer、context token、轮询 cursor、raw nonce 和入站正文不进入业务库。`001`–`007` 的版本与 checksum 保持不变。
 - capture-only daemon 仅处理同一 Hermes 账号收到的精确 `绑定 XYY-<26位Base32>` 私聊命令，或为已绑定 peer 刷新 context token；群聊和其他未知消息忽略，无 Agent、AI、自动回复、typing 或媒体路径。
 - raw peer、context token 与 cursor 仅保存在仓库外当前用户所有的 `0700` 加密 vault；所有公开 vault 读写使用同一个跨进程 `fcntl.flock` 临界区，并在锁内执行最多 10 项容量及 peer 唯一性检查。Gateway 不读取 Hermes peer map，只把 `recipientUserId + recipientBindingGeneration` 交给 overlay 精确解析。

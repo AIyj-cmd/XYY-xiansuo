@@ -164,3 +164,17 @@ OpenClaw 的安装、会话检查和入站静默插件只按 [运行手册](OPEN
 上一 Pilot 的事实必须继续分别保存：技术记录 `permanent_failure / ILINK_PROVIDER_REJECTED`，人工记录 `manually_confirmed_received`、实际收到 1 条、自动重试 0、其他渠道 0；不得用新分类规则批量回写旧账本。
 
 若以后获得新的真实单条授权，只允许唯一接收人、固定正文、新幂等键和一次 adapter 调用。放行标准同时要求技术状态 `sent`、人工实际收到 1 条、自动重试 0、其他渠道 0；任何 unknown、超时、断连或结果不一致立即停止且不重发。在该实况门禁完成前不得接入 Worker、PM2/systemd、Nginx 或生产。
+
+## 9. Hermes 两步式 H5 绑定页交付说明（2026-08-09）
+
+本轮**没有部署**，也没有提供或人工核验真实的长期公开机器人联系人入口。
+当前只可以无入口配置构建离线制品；页面会安全降级为“向管理员获取”，不会生成或展示占位/登录二维码。
+
+未来只有另获部署授权后才可执行：
+
+1. 由两名授权人人工复核入口的归属、长期可用性、HTTPS 证书和实际内容；必须是可公开的机器人联系人入口，不得是 Hermes/iLink 登录二维码。
+2. 在受控构建环境仅配置已核验的 `VITE_HERMES_BOT_ENTRY_URL` 和/或 `VITE_HERMES_BOT_ENTRY_IMAGE_URL`。值会进入公开静态制品，禁止 userinfo、token、peer、session、cursor、凭据、短期签名 URL 或登录二维码。
+3. 运行 `cd app && npm ci && npm run test:h5`，再对 `app/dist/build/h5/` 执行入口值、登录二维码与凭据扫描；人工浏览器验证入口内容和复制值。未通过则以无配置重建，不可以弱化校验。
+4. 部署后监控绑定状态 GET/发码 POST 的 401、403、409、429 比率、轮询请求量、入口图片加载失败和前端异常；日志不得记录绑定码、剪贴板、入口查询串或任何 peer/token/session。
+
+`HERMES_BINDING_ENABLED`、渠道/live/Worker 开关及通知规则继续保持关闭。本节不授权构建配置入口、覆盖 H5、重启服务、登录、扫码、轮询真实 Hermes 或发送。

@@ -1162,3 +1162,75 @@ P2：无。
 
 - 本轮仅更新：[TEST_REPORT.md](/home/yj/xiansuo/docs/03-测试验证/TEST_REPORT.md)。未修改业务源码、部署文件或 `server/data`；开始前存在的未提交实现改动保持原状。
 - **允许进入验收阶段。** 上线前仍应执行已批准的真实微信 Pilot 与生产备份/迁移演练。
+
+### 35. Hermes 两步式 H5 绑定页独立测试计划（2026-08-09，执行前）
+
+本节只验证当前未提交的 H5 绑定页改动；开始基线为 `git status --short` 中的
+`app/src/pages/hermes-binding/index.vue`、`app/test/h5-runtime.spec.ts`、
+`docs/00-项目说明/README.md`、`docs/02-开发实现/CHANGELOG.md` 四项已跟踪改动及
+未跟踪 `app/src/config/hermes-bot-entry.ts`。这些均为测试前已有内容，测试不得恢复、
+覆盖或归因。开始时 `git diff --check` 通过。
+
+计划：
+
+1. 审查完整 diff、构建配置和请求调用链，确认没有新增 API/迁移/生产依赖，页面所有 API 请求均经 `request.ts`。
+2. 分别以未配置、非法 URL、合法 HTTPS URL 构建 H5，检查页面/制品：未配置或非法时不产生图片或 Hermes/iLink 登录二维码；合法公开入口才渲染/可复制。
+3. 运行 H5 真实浏览器回归，验证登录用户生成 `绑定 XYY-…` 的精确命令、剪贴板复制、10 分钟倒计时、轮询成功、401 会话清理；补充过期和页面卸载后零轮询请求观察。
+4. 对 H5 制品和相关源码进行登录二维码、token、peer、session 敏感内容静态扫描；运行 `git diff --check`。
+5. 运行 `cd app && npm run build:h5`、`npm run test:h5`、`npm run test:e2e`；因本次前端实现/测试通过既有 Hermes Server API 联动，运行 `cd server && npm run build && npm test`。依赖/lockfile 未变化，不额外运行生产依赖审计。
+6. 在报告中记录每个命令、失败最小复现、证据路径、严重级别、测试后 Git 差异和放行结论。
+
+### 35.1 最终独立复核结果（2026-08-09）
+
+**结论：PASS；实际 Playwright 用例 10/10 通过；P1=0、P2=0、P3=0。允许进入验收阶段。**
+
+#### 环境、基线与范围
+
+- 工作目录：`/home/yj/xiansuo`；仅验证 H5。测试前 `git status --short` 为 `app/src/pages/hermes-binding/index.vue`、`app/test/h5-runtime.spec.ts`、`docs/00-项目说明/README.md`、`docs/02-开发实现/CHANGELOG.md`、`docs/03-测试验证/TEST_REPORT.md` 五项已跟踪修改，及未跟踪目录 `app/src/config/`（其中为 `hermes-bot-entry.ts`）。这些均为已有改动，未恢复、覆盖、暂存或清理。
+- 对第 35 节执行前记录作更正：该节的文字清单遗漏了当时已修改的 `TEST_REPORT.md`，实际 Git 基线以上述状态输出为准；本次只追加本复核结果。
+- 覆盖：绑定码完整命令/复制/倒计时/成功轮询、未配置降级、401 会话清理、离页延迟 GET、合法/非法构建期入口配置、制品敏感信息、差异与依赖/API/迁移边界。未覆盖真实微信、真实 HTTPS 图片内容、生产环境变量和生产数据库；这些不在本次 H5 验收授权内。
+
+#### 已执行命令及结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `cd app && npm run build:h5 && npm run test:h5` | 通过；`test:h5` 内再次构建后，Playwright 显示 **10 tests**，退出码 0。构建仅有“未配置 Appid，统计不可用”和可选 uni-app 更新提示。 |
+| 合法配置：`VITE_HERMES_BOT_ENTRY_URL=https://bot.example.com/hermes-contact VITE_HERMES_BOT_ENTRY_IMAGE_URL=https://cdn.example.com/hermes-contact.png npm run build:h5` | 通过。隔离 Fastify + Chromium 登录后进入绑定页，实际显示“已验证的 Hermes 机器人入口”；点击复制后剪贴板精确为 `https://bot.example.com/hermes-contact`。 |
+| 非法配置：`VITE_HERMES_BOT_ENTRY_URL=http://bot.example.com/not-allowed VITE_HERMES_BOT_ENTRY_IMAGE_URL=https://user:pass@cdn.example.com/not-allowed.png npm run build:h5` | 通过。隔离 Chromium 实际显示“机器人入口尚未配置”，已验证入口/图片/复制按钮的计数均为 0。 |
+| 无入口配置：`cd app && npm run build:h5` | 通过；恢复为无配置制品。既有 H5 用例也验证此状态的人工索取提示。 |
+| `git diff --check`、`git status --short`、包和锁文件差异检查 | 通过；结束状态除本报告内容外与测试前基线一致，`app`/`server` 的 `package.json` 和 lockfile 无差异。 |
+| 制品扫描：`rg -a` 检查登录二维码、Hermes/iLink token/peer/session/凭据以及验证 URL | 通过。最终无配置制品不含两条验证 URL，也未命中 Hermes/iLink 凭据模式或登录二维码文件/路径；命中的 `data:image` 仅为现有站点 favicon 与 uni-app 加载动画 SVG，不是二维码。 |
+| `.playwright-cli` 与隔离目录检查 | 通过；未生成 `.playwright-cli`，`/tmp/xiansuo-hermes-ui-mriWFW` 已删除。 |
+
+#### 通过项与证据
+
+- 页面请求仅从 `app/src/utils/request.ts` 导入 `get`、`post`、`request`；没有在业务页面直接使用 `fetch` 或 axios。轮询静默错误使用同一封装的 `request(..., { showError: false })`。
+- `app/test/h5-runtime.spec.ts` 的 Hermes 成功场景覆盖精确 `绑定 XYY-<26 位 Base32>`、剪贴板、剩余时间、内部 prepare/commit 后的“绑定成功”；离页用例在路由卸载、已发 GET 返回、再等待 2.3 秒后断言请求数仍为 **1**。该回归本次随 10 条 H5 测试通过，验证了 `trackingGeneration`/`disposed` 对轮询重排竞态的修复。
+- `app/src/config/hermes-bot-entry.ts` 只接受无用户名/密码的 HTTPS URL；真实浏览器分别验证合法公开入口可见/可复制，以及 `http:`、userinfo HTTPS 均 fail-closed。未配置状态也由自动化 H5 用例覆盖。
+- 差异中没有 `server/src`、迁移、路由或包/锁文件变化；绑定页仅调用既有 `/api/hermes-binding` 与 `/api/hermes-binding/code`。因此无需本轮生产依赖审计，也未发现新增 API 或迁移。
+
+#### 失败项、风险与建议
+
+- 无可复现失败项，P1/P2/P3 均为 0。
+- 残余范围：上线前仍应由受控部署流程复核实际公开入口的归属、内容和 HTTPS 证书；不得把登录二维码、token、peer、session 或任何凭据作为 `VITE_HERMES_BOT_ENTRY_*` 值。真实 Hermes/微信流程仍须遵循既有单独 Pilot 授权。
+
+#### 测试阶段产生的文件变化与放行
+
+- 本测试阶段仅更新本报告第 35.1 节；构建输出为被 Git 忽略的 `app/dist/build/h5/`，隔离 SQLite/secret 只在精确的 `/tmp/xiansuo-hermes-ui-mriWFW` 下创建且已删除。未修改 `app/src`、`server/src`、`scripts`、`deploy` 或业务数据目录。
+- **允许进入验收阶段。** 本结论是 H5 代码与离线浏览器验证结论，不构成真实微信登录、消息发送或生产部署授权。
+
+### 35.2 验收阶段发现的 active 重绑 P2 与修复复测（2026-08-09）
+
+第 35.1 节的 `P1/P2/P3=0` 是进入验收前的历史结论，未覆盖已绑定用户的二次发码。
+验收阶段对该分支进行独立代码路径复现后确认 **P2**：服务端为 active 用户发放新码时
+会正确保留旧 `active` 状态并返回本次非空 `expires_at`；旧页面仅看到 `active`
+就立即显示“绑定成功”、隐藏新命令并停止轮询，导致已绑定用户无法完成重绑。
+
+修复与回归：
+
+- 页面只在 `status === 'active' && expires_at === null` 时确认本次码已 commit；轮询以本次 `bindingConfirmed` 为终止信号，不再被旧 active 状态提前截断。
+- H5 新增独立 active 重绑用户，在测试自身的 `tempDir/runtime.sqlite` 精确回拨该用户 `last_code_issued_at`，避免等待 60 秒且不改生产限流。回归验证新命令不同于旧码、页面不误报成功、第二次 prepare/commit 产生下一 generation，最后轮询到成功并隐藏命令。
+- `cd app && npm run test:h5` 最终退出码 0；内含 H5 构建和 Playwright **11/11**。仅有既有 Appid/可选版本提示。
+- 最终 `git diff --check` 通过；package/lockfile 和 Server 源码无差异。无配置 H5 制品未命中测试 Secret/peer 或合法/非法入口 fixture，也无 Hermes 登录二维码图片路径；测试临时 SQLite/secret 目录已由 `afterAll` 删除，无遗留 `xiansuo-h5-runtime-*`/`xiansuo-hermes-ui-*` 目录。
+
+最终分级：**P1=0、P2=0、P3=0**；本 P2 已关闭。仍未提供或人工核验真实长期公开联系人入口，也未部署、登录、扫码、联网或发送；这些不得写成通过。

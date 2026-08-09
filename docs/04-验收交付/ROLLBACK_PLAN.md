@@ -103,3 +103,13 @@ P3 自定义 HMAC 流加密风险的后续迁移也必须采用新 schema 版本
 5. 若 Hermes 运行路径异常，先关闭 `owner_changed` Hermes 规则及两个 Server Hermes 开关，停止 Worker、Gateway、capture daemon；保留 Gateway ledger、外部 vault/lock、prepared activation 状态、持久 nonce 哈希、烧毁的幂等 key 与脱敏日志。activationId 冲突不得强制 activate；`result_unknown`、超时或不确定投递禁止换 key、重试或 fallback。
 6. 若发生 peer/token/cursor/Secret 泄露或错误接收人/重复发送，按安全事件处理：隔离进程和凭据、保全现场、轮换受影响 Secret；未经调查确认不删除 vault/ledger，不以清理状态掩盖事实。
 7. 回退验证：`integrity_check=ok`、`foreign_key_check` 为空，核心登录/权限/线索 API 正常；正确 activationId 重放幂等、错误 activationId 拒绝、停用注入失败完整回滚、nonce 跨重启拒绝、vault flock 容量/peer 冲突均通过；Server `156/156`、Gateway `59/59`、overlay `18/18` 与 H5 build 通过。全部 Hermes/AI/通知开关仍关闭，无真实发送，仓库/日志不含 raw peer、token、cursor、nonce、activationId、绑定码或 Secret。
+
+## 10. Hermes 两步式 H5 绑定页回退（2026-08-09）
+
+本轮只调整 H5 页面、构建期公开入口配置、H5 回归和文档；无新 API、迁移、生产依赖、部署或真实发送。
+
+1. 提交前不采纳时，仅从拟提交范围排除 `app/src/pages/hermes-binding/index.vue`、`app/src/config/hermes-bot-entry.ts`、`app/test/h5-runtime.spec.ts` 和本轮文档追加；不覆盖或清理其他未提交改动。
+2. 提交后撤回使用正常 Git revert 并保留历史。若 H5 制品已发布，先停止继续切换，用上一个已验证静态制品原子恢复；不操作数据库、vault、Gateway ledger 或迁移记录。
+3. 立即移除未核验的 `VITE_HERMES_BOT_ENTRY_*` 构建值并以无配置重建；若曾把 token/session/登录二维码打入静态制品，按凭据泄露事件处置和轮换，不仅仅删除前端文件。
+4. 继续保持 `HERMES_BINDING_ENABLED=false`、Hermes channel/live/Worker 与通知规则关闭。若出现异常轮询量或页面错误，只回退 H5 制品，不换幂等键、不重发、不启动真实 Hermes。
+5. 回退验证：无配置 H5 构建成功，登录/线索核心回归正常，页面不展示登录二维码或凭据，`git diff --check` 通过；数据库和 Hermes 外部状态未改变，也没有真实发送。
