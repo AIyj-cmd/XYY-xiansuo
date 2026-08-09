@@ -358,3 +358,66 @@
 - R-1 App 依赖风险仍按批准口径保留。按当前锁文件与 npm 11.16.0 重跑 `npm audit --omit=dev --json`，当前为 **2 high / 0 moderate / 0 critical**（`vite@5.2.8` 与间接 `nanoid@3.3.16`）；历史 29 high / 1 moderate 是旧审计对 effect graph 的统计，不是 29 个独立漏洞。生产只发布静态 H5，Vite 开发服务器仅允许 loopback。
 - R-2/G2 上传配额/生命周期产品值、R-3 生产备份/迁移/恢复演练、Hermes 真实 Pilot 与生产监控仍是外部或人工门禁，未被本次离线验收覆盖。
 - **本地提交和本地 RC tag：已完成。远端发布/生产/Hermes 真实启用：NO-GO；生产备份、`009`→`010` 恢复演练及明确部署授权完成前不得推进。**
+
+## 15. Codex Security 九项整改最终验收（2026-08-09）
+
+### 验收结论
+
+**离线代码 GO；P1=0、P2=0、P3=0。部署、PM2 启动与真实 Hermes 渠道仍为 NO-GO。**
+
+本结论对照基线 `5027a76`、批准的九项安全整改、实际 36 个验收前工作区改动和
+`TEST_REPORT.md` 第 41–43 节三轮独立复验得出。它只说明当前未提交代码具备进入提交评审的条件，
+**不等于部署授权、真实渠道授权或生产数据库操作授权**。
+
+### 九项整改核对
+
+| 原安全项 | 结果 | 验收证据 |
+| --- | --- | --- |
+| 1. 公开登录可耗尽内存与密码 KDF | 通过 | 来源 IP 及全局有界 token bucket 位于 DB/scrypt 前；来源表最多 2048；scrypt 为 2 并发 + 8 排队，超限返回受控 503。loopback 代理外的伪造 XFF 不受信任。 |
+| 2. 五次匿名失败可反复锁定受害账号 | 通过 | 删除按 username 锁定；攻击其他来源不会锁死正确登录，统一返回频率限制或通用认证失败。 |
+| 3. 首次管理员密码写日志 | 通过 | 空库在所有环境都要求显式、至少 12 位 `ADMIN_INITIAL_PASSWORD`；日志只记录受控用户名，不记录密码、hash 或随机明文。非空库不读取初始密码。 |
+| 4. 任意登录成员可填满持久存储 | 通过 | 严格解析上传并发、个人/全局字节与文件数、最小余量；旧文件计入全局配额；发布在串行锁内复核，目录/文件保持 `0700/0600`，失败清理 staging。 |
+| 5. CRM 数据库权限依赖环境 umask | 通过 | 写连接前拒绝符号链接祖先/目标，父目录强制 `0700`，DB/WAL/SHM 强制 `0600`；只读检查不改写目标。 |
+| 6. 仓库内备份进入部署归档 | 通过 | 备份脚本 `umask 077`、目录 `0700`、工件 `0600`；tar 与 rsync 同时排除 `data`、`uploads`、`upload-staging`、`backups`。 |
+| 7. AI 上下文漏脱敏常见联系信息与 Secret | 通过 | 统一 detector 覆盖邮箱、国际/分隔手机号、微信号、凭据赋值、JWT、常见 key 和高熵 token；输入递归替换，输出统一拒绝，普通中文业务值/日期/订单号无已知误拒回归。 |
+| 8. Hermes 在 provenance 前执行可预测的未验证解释器并按可变路径 import | 通过 | 必须显式提供仓库外 private root/source/python；Shell、Node、Python 三层校验 owner/mode/link/全部祖先及 dev+inode TOCTOU，拒绝仓库和系统临时目录；`weixin.py` 从已验证 bytes snapshot 编译执行。前两轮发现的 Shell 位运算和外部可写祖先 P1 均已复现关闭。 |
+| 9. 未签名 loopback health 可放大为无限子进程 | 通过 | `/livez`、`/readyz` 只做本地轻量检查且零 adapter/launcher；`/health`、`/session/status` 使用与 delivery 相同的 HMAC、时窗、重放和限流门禁，并使用 2 秒缓存/singleflight。runner 合并 stdout+stderr 上限 64 KiB，TERM→KILL 后等待 close/reap。 |
+
+### 范围、兼容性与不可变项
+
+- 成员手机号读取、展示和导出权限不属于本次批准范围；`users.ts`、`import_export.ts`、
+  `dashboard.ts`、`leads.ts` 相对基线均无差异，既有权限/数据隔离回归随 Server 全量通过。
+- 迁移 `001`–`010` 的定义、版本与 checksum 未改；Server、App、Gateway 的
+  `package.json`/lockfile 无差异，未新增生产依赖。`server/data` 验收前后逐文件 SHA-256 一致。
+- `HERMES_BINDING_ENABLED`、`HERMES_CHANNEL_ENABLED`、`ILINK_POC_LIVE_ENABLED`、
+  `ILINK_HERMES_TRANSPORT_ENABLED` 和真实通知规则仍默认关闭；Hermes Adapter 仍为
+  `single_attempt`，超时、断连、非法输出等仍为不可自动重试的 `result_unknown`。
+- 差异只覆盖九项整改所需的 Server、部署/备份、Hermes overlay、Gateway、测试、环境样例和报告；
+  未发现新功能、schema/API 业务口径变化或无关重构。受控扫描未发现真实密码、JWT、API key、
+  QR、provider credential、target/context/cursor、仓库外测试路径或其他 Secret 实值进入交付代码。
+- 验收开始时已有 36 个受跟踪改动（35 个实施文件及测试报告）；验收阶段未修改业务源码，
+  只追加本报告、CHANGELOG、部署说明和回滚计划。仓库外私有夹具只含公开固定上游和复制解释器。
+
+### 最终验证
+
+| 范围 | 结果 |
+| --- | --- |
+| Server | `npm run build && npm test` PASS，**171/171**；生产依赖审计 **0 vulnerabilities**。 |
+| Gateway | 私有根下 `npm run build && npm test` PASS，**74/74**；生产依赖审计 **0 vulnerabilities**。 |
+| Hermes overlay | 固定 `v2026.8.3` / `3c27eb…` / tree `b21776…` 的仓库外私有 source 下 **34/34**。 |
+| H5 | `npm run build:h5 && npm run test:h5` PASS，Playwright **17/17**；未构建小程序。 |
+| Shell/差异 | 六个受影响 shell 脚本 `bash -n` PASS；`git diff --check` PASS；迁移/lockfile/成员手机号范围检查 PASS。 |
+| 数据 | `app.db`、WAL、SHM 及两个空数据库的 SHA-256 验收前后逐项一致；未访问生产 DB。 |
+
+### 唯一未关闭的部署门禁
+
+当前一次性 private Python 没有安装 `qrcode`。真实 launcher 已通过全部路径/provenance 门禁并到达
+本地 preflight，但在 `import qrcode` 处以 `ModuleNotFoundError` 退出；没有网络、业务数据库、扫码、
+DeepSeek、常驻进程或外部发送。该项是**环境验证缺口**，不重新分类为代码 P 级，也绝不能写成 dry-run 通过。
+
+最终受控环境必须在同一个通过门禁的 private Python 中安装批准版本的 `qrcode`，再独立运行 Hermes
+`dry-run` 并确认 `offline=true`、`network=not_used`、`businessDatabase=not_used`、
+`residentProcess=not_started`。在此之前不得执行 `deploy.sh`、加载 PM2、打开任何 Hermes/live/通知规则、
+登录、扫码或发送。
+
+**提交建议：可按本次 35 个实施文件、测试报告和四份交付文档形成一个范围清晰的本地提交并进入评审；不要混入仓库外夹具或构建产物。上线建议：代码评审 GO，部署/真实 Hermes 启用 NO-GO。**

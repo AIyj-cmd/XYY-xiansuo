@@ -148,3 +148,35 @@ P3 自定义 HMAC 流加密风险的后续迁移也必须采用新 schema 版本
 3. 若未来已制作但未部署制品，废弃该制品并回到上一已批准制品；不修改制品内 launcher 权限后继续冒充原 RC。重新生成时必须重跑 tar 精确权限检查。
 4. 若未来在另行授权下已部署，先保持所有 Hermes/live/通知规则关闭，按 Worker → API → Gateway → manager 停止，保留 ledger/vault/日志；切回上一已验证制品。本修复无 schema 变更，不得恢复或改写数据库作为 launcher 回退手段。
 5. 回退验证：三 launcher 为当前 UID 拥有的非链接普通文件；所选制品内权限与其已批准安全门禁一致；Gateway 受影响测试、`bash -n deploy/deploy.sh`、`git diff --check` 通过；`server/data` 哈希不变；无 PM2/Gateway/manager/Worker 常驻进程。
+
+## 14. Codex Security 九项整改回滚补充（2026-08-09）
+
+本整改尚未部署、未迁移生产数据、未启动真实服务或发送消息，因此当前没有运行时或数据回滚动作。
+提交前不采纳时，仅从拟提交范围排除本次 35 个实施文件、测试报告和四份交付文档；不得清理、覆盖或
+回滚用户其他未提交改动，也不得删除仓库外测试夹具冒充代码回滚。
+
+如未来在另行授权下部署：
+
+1. 先关闭全部真实通知规则及 `HERMES_BINDING_ENABLED`、`HERMES_CHANNEL_ENABLED`、
+   `ILINK_POC_LIVE_ENABLED`、`ILINK_HERMES_TRANSPORT_ENABLED`，按 Worker → API → Gateway → manager
+   顺序停止。保留 Gateway ledger、vault、nonce、outbox、备份和脱敏日志；不重试 `result_unknown`、
+   不换 key、不 fallback。
+2. 本次没有 schema/migration 变化，正常回滚只切换到上一份**已批准且不含这九项已知漏洞**的制品，
+   或保持受影响入口关闭并向前修复。不得直接恢复 `5027a76` 作为生产安全回滚，不操作
+   `schema_migrations`，不以恢复数据库替代应用回滚。
+3. 登录异常时先在反向代理限流并隔离登录入口；不得恢复 username 锁定、无界 Map 或无界 scrypt。
+   初始密码日志若疑似泄露，保全日志并立即轮换密码/相关 token，不删除日志掩盖事件。
+4. 上传异常时暂停上传入口，保全 uploads/staging 文件清单、权限和时间戳；不得关闭全局/个人配额、
+   `statfs` 门禁或批量删除用户文件。需要回退命名/配额行为时先完成数据盘容量和兼容性评估。
+5. DB/备份权限异常时先停写并保存 DB/WAL/SHM 现场；拒绝 symlink 路径，使用 SQLite 一致性备份恢复到
+   新的私有路径后原子切换。不得放宽为 `0644/0755`、直接复制活动 WAL 数据库或把 backups 重新打包。
+6. AI 脱敏异常时关闭 DeepSeek/AI Scheduler，不恢复旧漏脱敏 detector；如怀疑 prompt/output 泄露，
+   按 Secret/个人信息事件处置并轮换受影响凭据。
+7. Hermes/Gateway provenance、dry-run、health 或 runner 任一异常时保持 manager/live/transport 关闭，
+   不以系统 Python、source 内 venv、临时路径或未签名 health 绕过；保留烧毁 key 和 unknown 事实。
+8. 提交后撤回使用正常 `git revert` 并保留历史，不使用 `git reset --hard`。回滚后重跑 Server、Gateway、
+   overlay、H5、生产依赖审计、Shell 语法、迁移/lockfile/data 哈希及 Secret/路径扫描；真实消息不作为冒烟。
+
+回滚完成标准：核心登录/权限/API 可用，上传和数据库私有权限保持，AI 外发关闭或脱敏有效，全部 Hermes
+真实开关为 false，无常驻异常进程，`integrity_check=ok`、`foreign_key_check` 为空，且没有删除测试、放宽
+断言、丢失账本或数据覆盖。

@@ -248,3 +248,25 @@
 - 新增响应分类 fixture、单次调用/脱敏用例和 Gateway 严格消费回归；验收复验为 overlay **26/26**、Gateway **59/59**、Server **146/146**、H5 build 通过。
 - 历史不改写：上一 Pilot 指定接收人实际收到 1 条、自动重试 0、其他渠道 0；旧技术记录仍为 `permanent_failure / ILINK_PROVIDER_REJECTED`，人工事实仍为 `manually_confirmed_received`。
 - 本轮不新增依赖、API 或数据库变更，不接入 Worker，不登录、不联网、不发送；仅适合本地提交，新的真实单条 Pilot 仍需单独明确授权。
+
+## Unreleased — Codex Security 九项整改（2026-08-09）
+
+- 登录入口改为有界来源/全局 token bucket，移除可被匿名攻击者触发的 username 锁定；scrypt 增加
+  2 并发、8 排队硬上限，认证字段增加长度上限，可信代理仅限 loopback。
+- 空库初始化在所有环境要求显式初始管理员密码，启动日志不再输出密码或 hash；非空库不读取该值。
+- 上传增加并发、个人/全局文件数与字节、磁盘最小余量硬配额；发布时串行复核，上传/暂存目录与文件
+  分别强制为 `0700/0600`，部署样例补充严格配置。
+- SQLite 写路径拒绝符号链接祖先/文件并强制数据库目录 `0700`、DB/WAL/SHM `0600`；备份脚本改为
+  私有目录/工件，部署 tar/rsync 排除 `data`、`uploads`、`upload-staging`、`backups`。
+- AI 输入与输出共用敏感检测器：邮箱、国际/分隔手机号、微信号、凭据赋值、JWT、常见 key 和高熵
+  token 在输入递归替换，输出失败关闭。
+- Hermes launcher/Gateway/overlay 要求显式仓库外 private root/source/python，三层校验 owner、mode、link、
+  全部祖先及 dev+inode TOCTOU；拒绝临时/仓库路径和 source 内解释器，并从已验证 `weixin.py` bytes
+  snapshot 加载。独立测试发现并关闭 Shell 位运算及外部可写祖先两个 P1 复现点。
+- Gateway `/livez`/`/readyz` 保持零子进程；`/health`/`/session/status` 增加 HMAC、重放、限流、缓存与
+  singleflight；runner 合并输出硬上限 64 KiB，TERM/KILL 后等待 close/reap。
+- 保持成员手机号权限、迁移 `001`–`010`、依赖/lockfile、默认关闭开关、`single_attempt` 和
+  `result_unknown` 不自动重试语义不变；未部署、未发送、未访问生产数据库。
+- 最终回归：Server **171/171**、Gateway **74/74**、Hermes overlay **34/34**、H5 **17/17**；
+  Server/Gateway 生产依赖审计均为 0。真实受控 private Python 尚需安装 `qrcode` 并重跑 dry-run，
+  完成前部署与真实 Hermes 启用均为 NO-GO。

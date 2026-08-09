@@ -1651,3 +1651,107 @@ P2：无。
 - 本轮测试新增的工作区状态只有本报告追加章节，以及由明确验证动作将三个 launcher 的**未被 Git 追踪**权限从 `775` 规范为 `755`；其余 Git 差异均为开始前已有实施改动。`git diff --check` 通过。
 - **缺陷统计：P1=0、P2=0、P3=0。** 第 39.4 节 P1 已独立复现关闭；R-1 仍为已批准残余依赖风险，不重新分类为 P 级。
 - **结论：允许进入验收阶段，并仅允许创建本地 RC tag。** 不授权 push、PR、远端部署、生产迁移、PM2 启动、真实渠道、扫码、DeepSeek 调用或任何外部发送；真实生产验证仍是未覆盖范围。
+
+## 41. Codex Security 九项整改独立验证（进行中，2026-08-09）
+
+### 41.1 测试环境、基线与计划
+
+- 工作目录：`/home/yj/xiansuo`；分支：`fix/codex-security-remediation`；对照基线：`5027a76`。已阅读根 `AGENTS.md`、用户给出的九项官方安全整改验收条件、现有开发变更及本报告历史结论。
+- 开始前 `git status --short` 与 `git diff --name-only` 均为 34 个既有未提交整改文件：部署 4、Hermes 10、iLink Gateway 5、备份 1、Server 源码 9、Server 测试 4、环境样例 1；本报告在测试计划落盘前不在其中。所有这些改动均视为开始前存在，绝不恢复、覆盖或清理。
+- 开始前 `server/data` SHA-256：`app.db=8b8bc326ab3ac27a553b22ea7cacf6e34681d1f471246277907a8ed0a061d5f2`、`app.db-shm=42a2baf333a04f32142eed5a6b9eb477ae1a8c1ffc38e7124e0342c561b74c38`、`app.db-wal=194c0753141ffbc228cc791ef5627e5a1e4da3dbad325296547b25b32a839c4e`、三个备份工件分别为 `bed2dc…f22`、`fd4c9f…389`、`e3b0c4…b855`，`leads.db`、`xiansuo.db` 均为空 SHA-256。后续只使用 `/tmp` 临时目录/数据库。
+- 计划： (1) 静态核对锁文件、迁移、成员手机号读取/导出权限及部署排除；(2) 执行 Server/Gateway/Hermes/App H5 全量基线、生产依赖审计、Shell 语法与差异检查；(3) 以现有测试和独立临时夹具复现认证、初始化、上传/文件权限、AI 脱敏、Hermes/iLink 安全边界；(4) 再次核对 Git/数据哈希并追加通过、失败、最小复现与放行结论。不会构建或验收小程序，不会执行真实渠道、DeepSeek、生产 DB 或部署。
+
+### 41.2 已执行命令与结果
+
+| 范围 | 命令/证据 | 结果 |
+| --- | --- | --- |
+| Server 基线 | `cd server && npm run build && npm test` | PASS；TypeScript 构建通过，**171/171**，无 skip/cancel。 |
+| Server 生产依赖 | `cd server && npm audit --omit=dev --json` | PASS；0 vulnerabilities。锁文件未变；此次审计作为独立复核执行。 |
+| 登录/哈希独立夹具 | `cd server && npx tsx /tmp/xiansuo-security-remediation-auth.mts` | PASS；临时 DB；5 次失败不影响不同 IP 正确登录，单源与分布式全局 bucket 均 429，username=51/password=1025 为 400，非 loopback 伪造 XFF 不绕过而 loopback XFF 正常区分，scrypt 12 个并发为 10 完成 + 2 `PASSWORD_HASH_BUSY`。429 请求耗时为 0–1ms，佐证位于 DB/scrypt 前。 |
+| DB 独立夹具 | `cd server && npx tsx /tmp/xiansuo-db-security.mts` | PASS；在子进程 `umask 000` 下父目录 `0700`，DB/WAL/SHM `0600`，只读打开保留既有 `0644`，父路径符号链接拒绝。 |
+| 上传 | `server/test/security-upload.test.ts`（随 Server 全量）与 `UPLOAD_MAX_CONCURRENT=bad/0/33 npx tsx -e "import './src/routes/upload.ts'"` | PASS；签名/MIME、原子发布、目录 `0700`、文件 `0600`、失败清理、静态隔离和非法配置拒绝均通过。现有夹具未以独立内核级 `statfs` mock 覆盖磁盘余量分支，见未覆盖范围。 |
+| AI 脱敏 | `npx tsx -e …` + `server/test/config.test.ts` | PASS；邮箱、国际/分隔手机号、凭据赋值、JWT、API key、高熵 token 均被输入替换且输出拒绝；中文公司名、日期、`L1`、普通订单号、低熵重复字串均不误拒。受控输出及 Provider 异常不记录 fixture 原文。 |
+| Gateway/iLink | `cd poc/ilink-gateway && npm run build && npm test && npm audit --omit=dev --json` | PASS；**72/72**，生产依赖 0。覆盖 `/livez`/`readyz` 零 adapter/launcher、HMAC/过期/重放/限流 fail-closed、成功签名、并发单飞、stdout+stderr 大于 64KiB、忽略 TERM 后 SIGKILL/reap、close 后完成与 `result_unknown`。 |
+| Hermes overlay | `cd poc/hermes-weixin-transport && ./run-tests.sh && ./run-hermes-weixin-transport.sh dry-run` | BLOCKED；脚本正确要求显式 `HERMES_SOURCE_DIR`。本机没有满足清单固定 `v2026.8.3`/`3c27eb…` 的仓库外私有源码副本（现有 `~/.hermes/hermes-agent` 为 `fbf748…`），故不可误记为通过。另发现 P1，见 41.3。 |
+| 前端 H5 | `cd app && npm run build:h5 && npm run test:h5` | PASS；仅 H5；构建完成，Playwright **17/17**。未构建小程序。 |
+| Shell/部署/变更 | `bash -n deploy/deploy.sh scripts/backup.sh …`、`git diff 5027a76 -- server/migrations *lock*`、`git diff --check` | PASS；001–010/三份锁文件无差异；部署 tar/rsync 均排除 `data`、`uploads`、`upload-staging`、`backups`；备份脚本为 `umask 077`、目标目录 `0700`、工件 `0600`。 |
+
+### 41.3 失败项与最小复现
+
+- **P1 — Hermes 上游来源目录不具备明确的私有路径边界，发布阻断。**
+  - **预期：** `HERMES_SOURCE_DIR`（以及由 launcher 使用的 source/python）必须显式、绝对、私有，并拒绝 `/tmp`、仓库内、可由非受控方写入和符号链接路径；验证后的快照替换磁盘 `weixin.py` 后仍只使用已验证 bytes 或拒绝。
+  - **实际：** [upstream_gate.py](/home/yj/xiansuo/poc/hermes-weixin-transport/src/hermes_weixin_transport/upstream_gate.py:86) 只检查根目录非符号链接、Git/provenance 和受控文件哈希；没有检查 `root` 是否位于 `/tmp`/overlay 仓库、是否私有 `0700`，也没有逐级祖先的 owner/mode 检查。launcher 的 [run-hermes-weixin-transport.sh](/home/yj/xiansuo/poc/hermes-weixin-transport/run-hermes-weixin-transport.sh:10) 同样只检查绝对、非链接和 mode，未实现上述路径拒绝。因此只要攻击者可使一个恰好满足 Git 哈希的来源树位于这些不可信位置，门禁会放行。
+  - **最小复现：** 静态可复现：`sed -n '86,150p' poc/hermes-weixin-transport/src/hermes_weixin_transport/upstream_gate.py` 和 `sed -n '7,16p' …/run-hermes-weixin-transport.sh`；两段均无 `/tmp`、overlay repo、祖先私有权限或目录 owner 判定。该结论不依赖真实渠道，也不需要伪造上游。
+  - **建议修复：** 在 `verify_upstream` 实施 source 及全部祖先的 realpath/`lstat`/当前 UID/`0700` 私有门禁，显式拒绝 `/tmp`、overlay/worktree 和可写祖先；对解释器使用同等路径与 inode/权限门禁。补充 `/tmp`、仓库、可写祖先和 race-after-gate 负例，随后用固定的仓库外私有 source 重跑 overlay 33 项与 dry-run。不得通过放宽 test 或改为默认路径修复。
+
+### 41.4 通过项、范围与数据/权限核对
+
+- 成员手机号读取/导出权限相关路由没有出现在相对 `5027a76` 的业务差异中；既有 Server 权限/数据隔离回归随 171 项通过。001–010 迁移的字节/checksum 没有改动，迁移全量、外键与回滚测试均在 Server 基线中通过。
+- 登录、初始化、DB、上传、AI 和 iLink 的核心整改均按上述独立夹具或全量回归通过；初始化在空库所有环境缺 `ADMIN_INITIAL_PASSWORD` 时拒绝，非空库不会读取/输出密码或 hash（`bootstrap`、`independent-baseline-verification` 回归）。
+- 未执行真实渠道/二维码/DeepSeek、生产数据库、网络部署或真实备份；没有使用任何生产凭据。Gateway/Hermes 的离线测试亦未授权这些外部动作。
+- 未覆盖：因 P1 和固定 upstream 副本缺失，Hermes 完整 overlay/dry-run 无法运行；上传的 `statfs` 低余量与多请求真实文件系统并发仅有源码/现有回归审查，缺独立 mock；不因此标为通过。
+
+### 41.5 测试阶段变化与结论
+
+- 结束前 `server/data` 7 项 SHA-256 与 41.1 基线逐项相同；`git diff --check` 通过。开始前 34 个整改文件仍在，测试阶段新增的唯一受跟踪变更是本报告第 41 节。`/tmp` 临时 DB、脚本、日志和中断的上传副本均未进入 Git，且无遗留测试进程。
+- **缺陷统计：P1=1、P2=0、P3=0。结论：不允许进入验收阶段。** 修复 41.3 的 provenance 路径门禁并提供固定、仓库外私有 upstream 后，必须由独立测试重新运行 Hermes overlay/dry-run、Gateway 和受影响的部署门禁；通过前不应发布、部署、启动 PM2 或启用真实渠道。
+
+## 42. Hermes provenance 路径门禁 P1 修复复测（进行中，2026-08-09）
+
+### 42.1 新基线与测试计划
+
+- 本轮开始时已有 36 个受跟踪改动（包含第 41 节报告和实施方新增 `HERMES_PRIVATE_ROOT` 相关实现/测试/PM2 样例），均为开始前存在；本轮不恢复、覆盖或清理。`server/data` 的八项 SHA-256 与第 41 节完全一致。
+- 可用无敏感临时根：`/home/yj/.local/share/xiansuo-hermes-test.zdpPeP`；根、`source` 与候选 `python` 均为当前 UID 的 `0700`，候选 Python 是根内、source 外的单硬链接普通可执行文件。该目录只用于本轮离线复测。
+- 计划：静态核对 Shell/Node/Python 三层契约；独立构造 `/tmp`、仓库、符号链接、`0775` 祖先、source 外/内解释器、多硬链接解释器等反例，验证 shell 拒绝前不执行候选文件；运行私有正例、overlay 和 Gateway 受影响全量；验证快照在 gate 后替换磁盘 `weixin.py` 仍保持已验证 bytes 语义，并复核 remote/tag/commit/tree/clean/hash 门禁和最终工作区/数据哈希。
+
+### 42.2 已执行命令与结果
+
+| 范围 | 命令/证据 | 结果 |
+| --- | --- | --- |
+| Overlay Python 层 | `HERMES_PRIVATE_ROOT=… HERMES_SOURCE_DIR=…/source HERMES_PYTHON=…/python ./run-tests.sh` | PASS；**34/34**。包括 `/tmp`/仓库/链接/内部 `0775` 祖先/source 内 Python 拒绝、坏 source 时 trap Python 零执行、固定 remote/tag/commit/tree/clean/hash。注意 `run-tests.sh` 不调用 production shell launcher，不能替代其正例。 |
+| Gate 后快照 | `/tmp/xiansuo-hermes-snapshot-check.py`（仅测试副本，修改后立即恢复） | PASS；`verify_upstream` 捕获 bytes 后，磁盘 `gateway/platforms/weixin.py` 被替换为会抛异常的内容，`load_verified_weixin(snapshot)` 仍成功加载已验证 bytes；随后 Git status 为空、HEAD=`3c27eb…`、tag=`v2026.8.3`。 |
+| Gateway Node 层 | `XIANSUO_TEST_HERMES_PRIVATE_ROOT=… npm test` | PASS；**73/73**，包含临时目录、仓库、链接、私有根内部 `0775` 祖先及 source-local Python 拒绝。 |
+| Gateway 构建/Shell 语法 | `cd poc/ilink-gateway && npm run build`；`bash -n` 四个受影响 launcher；`git diff --check` | PASS。 |
+| Shell 私有正例 | 安全的 current-UID、`0700`、nlink=1 root/source/python 直接调用 `run-hermes-weixin-transport.sh --help`；并以 `bash -x` 定位 | **FAIL / P1**；见 42.3。 |
+| 外部 `0775` 祖先 | 仅调用 Python `validate_runtime_paths()`，私有根自身 `0700` 但其父目录 `0775` | **FAIL / P1**；函数返回该根而非拒绝。夹具为本轮新建的无害 `outer0775`，验证后已删除。 |
+
+### 42.3 P1 未关闭：Shell 正例不可用且私有根上游祖先未受保护
+
+- **现象 1（可用性与门禁正确性）：** [run-hermes-weixin-transport.sh](/home/yj/xiansuo/poc/hermes-weixin-transport/run-hermes-weixin-transport.sh:43) 使用 `(( 8#$mode & 8#022 == 0 ))`。Bash 将比较与位运算按该表达式解析为失败值；xtrace 显示安全的 `mode=700` 在该行返回 1，launcher 输出 `Hermes Python 不安全`、退出 2。因此任何候选 Python 都不能通过 Shell 正例，且实际 dry-run 不可执行。
+- **最小复现：** 使用 42.1 已列的 `700` 私有 root/source/python，执行 `HERMES_PRIVATE_ROOT=… HERMES_SOURCE_DIR=… HERMES_PYTHON=… poc/hermes-weixin-transport/run-hermes-weixin-transport.sh --help`，得到 `Hermes Python 不安全`。`bash -x` 证实拒绝发生于上述算术行，未执行候选解释器。
+- **现象 2（路径替换窗口）：** Shell [assert_private_root](/home/yj/xiansuo/poc/hermes-weixin-transport/run-hermes-weixin-transport.sh:18)、Python [_private_root](/home/yj/xiansuo/poc/hermes-weixin-transport/src/hermes_weixin_transport/upstream_gate.py:31) 与 Gateway [requireHermesPrivateRoot](/home/yj/xiansuo/poc/ilink-gateway/src/config.ts:231) 只校验 private root 本身；均未遍历其父级至受信任锚点。独立 `validate_runtime_paths()` 对 `…/outer0775/private`（`outer0775=0775`，其余为 `0700`）返回成功。这不满足“拒绝 0775 祖先”的验收条件，也允许可写父目录替换 private root。
+- **修复方向：** 修正 Shell 表达式为有明确括号的 `(( (8#$mode & 8#022) == 0 ))`，并新增生产 launcher 的安全私有正例（必须真正执行一个无害解释器）及 `0775` 拒绝反例。三层都应从 private root 向上逐级 `lstat`、拒绝链接/组或其他可写的祖先，或明确限制至已验证安全锚点。修复后必须独立重跑 Shell safe dry-run、overlay、Gateway build/test 和 snapshot/provenance 回归。
+
+### 42.4 结束基线与结论
+
+- `server/data` SHA-256 与 41.1/42.1 完全相同；迁移 001–010 与 lockfile 无差异；`git diff --check` 通过。开始前 36 个既有改动仍保留，测试阶段本轮仅追加本报告；已删除我创建的外部无害 `outer0775` 夹具，没有后台进程、生产 DB 或真实渠道动作。
+- **缺陷统计：P1=1、P2=0、P3=0。结论仍为：不允许进入验收阶段。** P1 的原始路径边界设计已有显著改善，Python overlay、Gateway Node 门禁与快照回归均通过，但 42.3 的 Shell 正例和 private-root 外部祖先缺陷使其不能声明关闭。
+
+## 43. Hermes P1 第三轮修复复测（进行中，2026-08-09）
+
+### 43.1 基线与测试计划
+
+- 本轮开始时仍为 36 个已有受跟踪改动（包含第 42 节报告与第三轮实现），均不归因于测试。`server/data` 八项 SHA-256 与第 41/42 节完全一致，`git diff --check` 通过。
+- 计划：在新的仓库外无敏感私有根中创建精确 `0700` source、单硬链接可执行 Python/stub 与固定 upstream 副本；验证 Shell 实际执行 safe stub、`0755` 安全上游祖先允许、`0775`/`0722`/链接/临时路径拒绝且 trap 不执行；验证 Node load/readiness 与 Python runtime/verify gate 的同一语义与 device/inode TOCTOU 重验；复跑 overlay、Gateway、Server 与 App H5 全量基线、生产依赖审计、Shell 语法、迁移/锁文件/数据哈希检查。
+
+### 43.2 独立 P1 复现结果
+
+| 验证项 | 独立方法 | 结果 |
+| --- | --- | --- |
+| Shell safe 正例 | 新建仓库外 `0700` root/source、nlink=1 `0700` shell stub；`run-hermes-weixin-transport.sh --help` | PASS；返回帮助文本，stub marker 已创建，证明 Shell gate 后确实 `exec` 候选解释器。 |
+| Shell 祖先边界/零执行 | private root 上游祖先为 `0755`、`0775`、`0722` 三组；后两组候选为会写 marker 的 trap | PASS；`0755` 放行并执行；`0775`/`0722` 均退出 2、marker 不存在。 |
+| Python TOCTOU | monkeypatch provenance 最后一个 Git 调用后原子替换 `HERMES_PYTHON`，再调用 `verify_upstream()` | PASS；捕获 `Hermes 路径在校验期间发生变化`。替换后的候选被恢复。 |
+| Node TOCTOU | `loadConfig()` 捕获 identity 后原子替换 Python，调用 `hermesGatewayReadiness()` | PASS；readiness 拒绝路径发生变化，候选被恢复。 |
+| Python/Gateway 全量 | 新私有根下 `./run-tests.sh`；`XIANSUO_TEST_HERMES_PRIVATE_ROOT=… npm run build && npm test` | PASS；overlay **34/34**，Gateway build 与 **74/74**。覆盖 `/tmp`/仓库/链接、source-local Python、`0755` 正例、`0775`/`0722` 祖先反例和 Shell trap 零执行。 |
+| 固定 provenance 与快照 | gate 后将测试副本 `weixin.py` 改为抛错内容，调用 `load_verified_weixin(snapshot)` 后恢复 | PASS；仍执行已验证 bytes；副本恢复后 Git clean、HEAD `3c27eb…`、tag `v2026.8.3`。 |
+| 完整项目基线 | Server build/test/audit；Gateway build/test/audit；App `build:h5 && test:h5`；受影响 launcher/deploy `bash -n` | PASS；Server **171/171**、Server/Gateway 生产审计均 0、Gateway **74/74**、App H5 **17/17**；仅 H5，未构建小程序。 |
+
+### 43.3 未覆盖的环境项
+
+- 以私有候选解释器直接执行 `dry-run` 已到达 CLI，但该独立 fixture 的 Python 运行时没有 `qrcode`，在预检本地导入时失败；未调用网络、渠道、DeepSeek 或业务数据库。它是测试环境缺少受控依赖，不得记为 dry-run 通过。生产/验收环境须使用满足相同路径门禁且已安装该受控依赖的 private Python 重跑 dry-run。
+- 本轮创建的 `/home/yj/.local/share/xiansuo-hermes-third.E9XNb2` 仅含公开固定上游、复制解释器、安全/trap stub、marker 与 TOCTOU 夹具；所有改动均已恢复后删除。
+
+### 43.4 结束基线与最终结论
+
+- 迁移 `001`–`010`、Server/Gateway/App 锁文件相对 `5027a76` 无差异；`server/data` SHA-256 与第 41 节逐项一致；`git diff --check` 通过。开始前 36 个改动仍保留，本验证阶段唯一受跟踪改动是本报告第 43 节。
+- **缺陷统计：P1=0、P2=0、P3=0。允许带条件进入验收阶段。** 条件：在最终受控环境提供合法 private Python 及其 `qrcode` 依赖，并独立重跑 Hermes `dry-run`；在此之前不启动 PM2、不部署、不启用真实渠道、扫码、DeepSeek 或外部发送。该条件是环境验证缺口，不是对已通过的 Shell/Node/Python provenance、TOCTOU 或快照门禁的放宽。

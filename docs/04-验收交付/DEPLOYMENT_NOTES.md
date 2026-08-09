@@ -235,3 +235,45 @@ Git 只能保存三个 launcher 的可执行位，不能保存去除组写位的
 - 监控仍须包含 Gateway 启动权限门禁失败、制品 launcher 权限偏离、manager/Gateway readiness、`result_unknown`、超时子进程回收和三元组不匹配取消；日志不得含 Secret、QR、accountRef 原值、target/context/cursor 或正文。
 
 **本地提交与本地 RC tag 已完成。push/远程 tag/部署/真实渠道：NO-GO；生产数据库备份、`009`→`010` 恢复演练和明确部署授权完成前不得推进。**
+
+## 14. Codex Security 九项整改部署门禁（2026-08-09）
+
+### 当前判定
+
+当前仅为**离线代码 GO**，不是部署授权。禁止执行 `deploy/deploy.sh`、PM2 load/reload、生产数据库操作、
+Hermes 登录/扫码/发送或 DeepSeek 调用。即使代码提交或合并，也不得据此自动打开任何真实开关。
+
+### 部署前必须全部满足
+
+1. 使用获批准的 commit/制品，确认只包含九项整改、测试报告和四份交付文档；三份 lockfile 与迁移
+   `001`–`010` 必须和 `5027a76` 一致，不得夹带 `server/data`、uploads、staging 或 backups。
+2. 在运行 UID 拥有的仓库外 private root 中提供 source 和 Python：private root/source 精确 `0700`，
+   Python 单硬链接普通可执行文件，全部祖先不得组/其他用户可写，不得位于仓库、`/tmp`、`/var/tmp`、
+   `/dev/shm`，Python 不得位于 source checkout。
+3. 固定 source 必须保持 remote `https://github.com/NousResearch/hermes-agent.git`、tag `v2026.8.3`、
+   commit `3c27eb6234bf91b8ceee9e9071591b31e9b148cb`、tree
+   `b217767ccb994605dad522e693fa1b4cdbc2f352`、干净工作树和 manifest 文件哈希一致。
+4. 在同一个受控 private Python 中按批准的运行时依赖清单安装并核验 `qrcode`；不得改为系统 PATH
+   上的任意 Python、source 内 venv、仓库脚本默认值或临时解释器。
+5. 使用三个显式变量运行 `run-hermes-weixin-transport.sh dry-run`，必须退出 0，并只返回
+   `offline=true`、`network=not_used`、`businessDatabase=not_used`、
+   `residentProcess=not_started`。当前验收环境在 `import qrcode` 处失败，因此本项尚未完成。
+6. dry-run 通过后仍保持 `HERMES_BINDING_ENABLED=false`、`HERMES_CHANNEL_ENABLED=false`、
+   `ILINK_POC_LIVE_ENABLED=false`、`ILINK_HERMES_TRANSPORT_ENABLED=false`、manager `enabled=false` 和
+   全部真实通知规则关闭。真实启用需要新的明确授权及单独 Pilot。
+7. 核对 `DB_PATH`、uploads/staging/backups 均为仓库外或被部署明确排除；目标目录/文件权限分别为
+   `0700/0600`。本次无 schema 变更，不执行迁移作为部署步骤；若目标环境仍需历史迁移，沿用既有
+   R-3 备份/副本演练门禁，不能借本次整改获得授权。
+
+### 部署后监控（未来另获授权时）
+
+- 登录：按来源/全局 429、`PASSWORD_HASH_BUSY` 503、认证延迟与来源 bucket 容量异常。
+- 上传：并发 503、个人 413、全局 507、磁盘余量 503、staging 遗留、目录/文件权限漂移和总量趋势。
+- 数据/备份：DB/WAL/SHM 权限或 symlink 拒绝、备份失败/权限漂移、部署制品误含运行数据。
+- AI：`AI_OUTPUT_REJECTED` 数量及 provider 错误；日志不得记录被拒绝原文、prompt、token 或 Secret。
+- Gateway/Hermes：HMAC 401、重放/限流、health singleflight 失败、runner timeout/64 KiB/TERM-KILL-reap、
+  provenance/TOCTOU/readiness 失败、`result_unknown` 和三元组不匹配；不得记录正文、QR、accountRef、
+  target/context/cursor、路径中的敏感租户信息或 Secret 实值。
+
+**停止条件：任一 dry-run 门禁未完成、权限/provenance 漂移、真实开关意外为 true、Secret/路径泄露、
+重复/错投或 `result_unknown` 被自动重试，立即保持或恢复 NO-GO，停止下游单元并保全证据。**
