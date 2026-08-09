@@ -303,6 +303,161 @@ function allowOpenClawNotificationChannel(database: DatabaseSync): void {
   // explicit prior choices without enabling any rule.
 }
 
+/**
+ * Hermes deliberately keeps contact identifiers out of the business database.
+ * This migration only records an opaque fingerprint and the binding generation;
+ * the peer, context token and poll cursor live in the external encrypted vault.
+ */
+function addHermesMultiUserBindings(database: DatabaseSync): void {
+  database.exec(`
+CREATE TABLE IF NOT EXISTS hermes_bindings (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  peer_fingerprint TEXT UNIQUE,
+  status TEXT NOT NULL DEFAULT 'unbound' CHECK (status IN ('unbound','pending','active','disabled')),
+  generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+  active_activation_id_hash TEXT CHECK (active_activation_id_hash IS NULL OR length(active_activation_id_hash)=64),
+  binding_code_hash TEXT,
+  binding_code_expires_at TEXT,
+  last_code_issued_at TEXT,
+  prepared_generation INTEGER CHECK (prepared_generation IS NULL OR prepared_generation > 0),
+  prepared_code_hash TEXT CHECK (prepared_code_hash IS NULL OR length(prepared_code_hash)=64),
+  prepared_peer_fingerprint TEXT CHECK (prepared_peer_fingerprint IS NULL OR length(prepared_peer_fingerprint)=64),
+  prepared_activation_id TEXT CHECK (prepared_activation_id IS NULL OR length(prepared_activation_id)=36),
+  prepared_at TEXT,
+  last_bound_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  CHECK ((status='active' AND peer_fingerprint IS NOT NULL AND generation > 0) OR status != 'active')
+);
+CREATE INDEX IF NOT EXISTS idx_hermes_bindings_status ON hermes_bindings(status, generation);
+CREATE INDEX IF NOT EXISTS idx_hermes_bindings_prepared ON hermes_bindings(prepared_generation) WHERE prepared_generation IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_binding_prepared_peer ON hermes_bindings(prepared_peer_fingerprint) WHERE prepared_peer_fingerprint IS NOT NULL;
+CREATE TABLE IF NOT EXISTS hermes_internal_nonces (
+  nonce_hash TEXT PRIMARY KEY CHECK (length(nonce_hash)=64),
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hermes_internal_nonces_expiry ON hermes_internal_nonces(expires_at);
+`);
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='notification_logs'").get() as { sql?: string } | undefined;
+  if (!table?.sql) throw new Error('迁移008缺少 notification_logs，拒绝继续');
+  if (table.sql.includes('recipient_binding_generation INTEGER')) return;
+  const sourceColumns = (database.prepare("PRAGMA table_info('notification_logs')").all() as Array<{ name: string }>).map((row) => row.name);
+  const indexes = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='notification_logs' AND sql IS NOT NULL ORDER BY name").all() as Array<{ sql: string }>;
+  const oldChannelCheck = "channel IS NULL OR channel IN ('mock','openclaw')";
+  if (!table.sql.includes(oldChannelCheck)) throw new Error('迁移008发现未知 notification_logs channel 约束，拒绝继续');
+  const rebuilt = table.sql
+    .replace(/^CREATE TABLE(?: IF NOT EXISTS)? "?notification_logs"?/i, 'CREATE TABLE notification_logs_008_new')
+    .replace(oldChannelCheck, "channel IS NULL OR channel IN ('mock','openclaw','hermes')")
+    .replace('recipient_user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,', 'recipient_user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,\n  recipient_binding_generation INTEGER,');
+  if (rebuilt === table.sql || !rebuilt.includes('recipient_binding_generation INTEGER')) throw new Error('迁移008无法生成 notification_logs 新定义');
+  const before = (database.prepare('SELECT COUNT(*) AS count FROM notification_logs').get() as { count: number }).count;
+  database.exec(rebuilt);
+  const targetColumns = (database.prepare("PRAGMA table_info('notification_logs_008_new')").all() as Array<{ name: string }>).map((row) => row.name);
+  const targetExisting = targetColumns.filter((name) => name !== 'recipient_binding_generation');
+  if (sourceColumns.join(',') !== targetExisting.join(',')) throw new Error('迁移008字段定义不一致');
+  const columns = sourceColumns.map((name) => `"${name}"`).join(',');
+  database.exec(`INSERT INTO notification_logs_008_new (${columns}) SELECT ${columns} FROM notification_logs;`);
+  const copied = (database.prepare('SELECT COUNT(*) AS count FROM notification_logs_008_new').get() as { count: number }).count;
+  if (before !== copied) throw new Error(`迁移008记录数不一致：${before}/${copied}`);
+  database.exec('DROP TABLE notification_logs; ALTER TABLE notification_logs_008_new RENAME TO notification_logs;');
+  for (const index of indexes) database.exec(index.sql);
+  database.exec('CREATE INDEX IF NOT EXISTS idx_notification_hermes_generation ON notification_logs(recipient_user_id, recipient_binding_generation) WHERE channel=\'hermes\';');
+}
+
+/**
+ * QR binding is intentionally a new generation model.  Version 008 used one
+ * Hermes account with many peers; those rows cannot be inferred to own a
+ * separate provider account, so active legacy rows are exposed as requiring
+ * an explicit rebind rather than being silently upgraded. Provider identifiers
+ * and credentials never enter this database.
+ */
+function addHermesPerUserQrBindings(database: DatabaseSync): void {
+  const bindingColumns = new Set((database.prepare("PRAGMA table_info('hermes_bindings')").all() as Array<{ name: string }>).map((row) => row.name));
+  if (!bindingColumns.has('account_ref')) database.exec("ALTER TABLE hermes_bindings ADD COLUMN account_ref TEXT CHECK (account_ref IS NULL OR length(account_ref) BETWEEN 16 AND 128);");
+  if (!bindingColumns.has('target_fingerprint')) database.exec("ALTER TABLE hermes_bindings ADD COLUMN target_fingerprint TEXT CHECK (target_fingerprint IS NULL OR length(target_fingerprint)=64);");
+  if (!bindingColumns.has('prepared_account_ref')) database.exec("ALTER TABLE hermes_bindings ADD COLUMN prepared_account_ref TEXT CHECK (prepared_account_ref IS NULL OR length(prepared_account_ref) BETWEEN 16 AND 128);");
+  if (!bindingColumns.has('prepared_target_fingerprint')) database.exec("ALTER TABLE hermes_bindings ADD COLUMN prepared_target_fingerprint TEXT CHECK (prepared_target_fingerprint IS NULL OR length(prepared_target_fingerprint)=64);");
+  if (!bindingColumns.has('prepared_lifecycle')) database.exec("ALTER TABLE hermes_bindings ADD COLUMN prepared_lifecycle TEXT CHECK (prepared_lifecycle IS NULL OR prepared_lifecycle IN ('prepared','active','retired'));");
+  database.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_binding_account_ref ON hermes_bindings(account_ref) WHERE account_ref IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_binding_prepared_account_ref ON hermes_bindings(prepared_account_ref) WHERE prepared_account_ref IS NOT NULL;
+CREATE TABLE IF NOT EXISTS hermes_login_attempts (
+  id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 16 AND 128),
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  attempt_hash TEXT NOT NULL UNIQUE CHECK (length(attempt_hash)=64),
+  status TEXT NOT NULL CHECK (status IN ('waiting','scanned','awaiting_context','active','expired','failed','cancelled')),
+  generation INTEGER NOT NULL CHECK (generation > 0),
+  account_ref TEXT NOT NULL UNIQUE CHECK (length(account_ref) BETWEEN 16 AND 128),
+  qr_fingerprint TEXT CHECK (qr_fingerprint IS NULL OR length(qr_fingerprint)=64),
+  activation_id_hash TEXT CHECK (activation_id_hash IS NULL OR length(activation_id_hash)=64),
+  error_code TEXT CHECK (error_code IS NULL OR length(error_code) <= 100),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  confirmed_at TEXT,
+  context_ready_at TEXT,
+  terminal_at TEXT,
+  updated_at TEXT NOT NULL,
+  CHECK ((status IN ('waiting','expired','failed','cancelled')) OR confirmed_at IS NOT NULL),
+  CHECK ((status='active') = (context_ready_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_single_live_attempt ON hermes_login_attempts((1)) WHERE status IN ('waiting','scanned','awaiting_context');
+CREATE INDEX IF NOT EXISTS idx_hermes_attempt_owner ON hermes_login_attempts(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hermes_attempt_expiry ON hermes_login_attempts(status, expires_at);
+`);
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='notification_logs'").get() as { sql?: string } | undefined;
+  if (!table?.sql) throw new Error('迁移009缺少 notification_logs，拒绝继续');
+  if (table.sql.includes('recipient_account_ref TEXT')) return;
+  const sourceColumns = (database.prepare("PRAGMA table_info('notification_logs')").all() as Array<{ name: string }>).map((row) => row.name);
+  const indexes = database.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='notification_logs' AND sql IS NOT NULL ORDER BY name").all() as Array<{ sql: string }>;
+  // SQLite drops table triggers with the table. They are invariants, not
+  // optional indexes; any invalid restoration throws and rolls back 009.
+  const triggers = database.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='notification_logs' AND sql IS NOT NULL ORDER BY name").all() as Array<{ sql: string }>;
+  const rebuilt = table.sql
+    .replace(/^CREATE TABLE(?: IF NOT EXISTS)? \"?notification_logs\"?/i, 'CREATE TABLE notification_logs_009_new')
+    .replace('recipient_binding_generation INTEGER,', 'recipient_binding_generation INTEGER,\n  recipient_account_ref TEXT CHECK (recipient_account_ref IS NULL OR length(recipient_account_ref) BETWEEN 16 AND 128),');
+  if (rebuilt === table.sql) throw new Error('迁移009无法生成 notification_logs 新定义');
+  const before = (database.prepare('SELECT COUNT(*) AS count FROM notification_logs').get() as { count: number }).count;
+  database.exec(rebuilt);
+  const target = (database.prepare("PRAGMA table_info('notification_logs_009_new')").all() as Array<{ name: string }>).map((row) => row.name).filter((name) => name !== 'recipient_account_ref');
+  if (sourceColumns.join(',') !== target.join(',')) throw new Error('迁移009字段定义不一致');
+  const columns = sourceColumns.map((name) => `"${name}"`).join(',');
+  database.exec(`INSERT INTO notification_logs_009_new (${columns}) SELECT ${columns} FROM notification_logs;`);
+  const copied = (database.prepare('SELECT COUNT(*) AS count FROM notification_logs_009_new').get() as { count: number }).count;
+  if (before !== copied) throw new Error(`迁移009记录数不一致：${before}/${copied}`);
+  database.exec('DROP TABLE notification_logs; ALTER TABLE notification_logs_009_new RENAME TO notification_logs;');
+  for (const index of indexes) database.exec(index.sql);
+  for (const trigger of triggers) database.exec(trigger.sql);
+  database.exec("CREATE INDEX IF NOT EXISTS idx_notification_hermes_account ON notification_logs(recipient_user_id,recipient_binding_generation,recipient_account_ref) WHERE channel='hermes';");
+}
+
+/**
+ * The ledger can be lost on a restored database.  In that case an already
+ * present column is accepted only when it is exactly the contract introduced
+ * by 010; accepting a lookalike column could silently weaken token revocation.
+ */
+function addUserTokenVersion(database: DatabaseSync): void {
+  const columns = database.prepare("PRAGMA table_info('users')").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>;
+  const tokenVersion = columns.find((column) => column.name === 'token_version');
+  if (!tokenVersion) {
+    database.exec(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0
+      CHECK (typeof(token_version) = 'integer' AND token_version >= 0);`);
+    return;
+  }
+
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'")
+    .get() as { sql?: string } | undefined;
+  const normalizedSql = table?.sql?.replace(/\s+/g, ' ').toLowerCase() ?? '';
+  const hasRequiredCheck = normalizedSql.includes("check (typeof(token_version) = 'integer' and token_version >= 0)");
+  if (tokenVersion.type.toUpperCase() !== 'INTEGER' || tokenVersion.notnull !== 1
+      || tokenVersion.dflt_value !== '0' || !hasRequiredCheck) {
+    throw new Error('迁移010恢复状态不完整，拒绝将未知 token_version 结构标记为已迁移');
+  }
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: '001',
@@ -529,6 +684,26 @@ CREATE INDEX IF NOT EXISTS idx_ai_request_retention ON ai_request_logs(retain_un
     checksum: 'c09175e80d010ea056c3e93e5f4fdfc61c4b2f4c08c885d0a6b4e96b1f5242da',
     requiresForeignKeysOff: true,
     up: allowOpenClawNotificationChannel,
+  },
+  {
+    version: '008',
+    description: 'add Hermes multi-user opaque bindings and delivery generation',
+    checksum: 'f26b25fe25e8cb5f21da92f06eb9f0303f27d8649299be4b35697ea2af17005a',
+    requiresForeignKeysOff: true,
+    up: addHermesMultiUserBindings,
+  },
+  {
+    version: '009',
+    description: 'replace shared Hermes binding with per-user QR account references',
+    checksum: 'bd830c4f4812cde2ecff9e4d9c3d77d718d221eef357a040badad2e9f00b84d3',
+    requiresForeignKeysOff: true,
+    up: addHermesPerUserQrBindings,
+  },
+  {
+    version: '010',
+    description: 'add user token version for password-change revocation',
+    checksum: '8291d5d9a1aff8d0dc76cf5195440d9e13b911e9f8af6fde223e45a1b3589767',
+    up: addUserTokenVersion,
   },
 ];
 

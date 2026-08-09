@@ -437,7 +437,7 @@ test('五个阶段三开关默认关闭且拒绝非法值', () => {
   const keys = ['LEAD_POOL_CLAIM_ENABLED', 'NOTIFICATION_CAPTURE_ENABLED', 'NOTIFICATION_WORKER_ENABLED', 'NOTIFICATION_MOCK_ENABLED', 'NOTIFICATION_SCHEDULER_ENABLED'] as const;
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
-  assert.deepEqual(resolveNotificationConfig(), { leadPoolClaimEnabled: false, captureEnabled: false, workerEnabled: false, mockEnabled: false, schedulerEnabled: false, openclawEnabled: false, openclawGatewaySendTimeoutMs: 30000, openclawGatewayTimeoutMs: 40000, openclawMaxAttempts: 2 });
+  assert.deepEqual(resolveNotificationConfig(), { leadPoolClaimEnabled: false, captureEnabled: false, workerEnabled: false, mockEnabled: false, schedulerEnabled: false, openclawEnabled: false, openclawGatewaySendTimeoutMs: 30000, openclawGatewayTimeoutMs: 40000, openclawMaxAttempts: 2, hermesEnabled: false, hermesBindingEnabled: false });
   for (const key of keys) {
     process.env[key] = 'invalid';
     assert.throws(() => resolveNotificationConfig(), new RegExp(`${key}.*true.*false`));

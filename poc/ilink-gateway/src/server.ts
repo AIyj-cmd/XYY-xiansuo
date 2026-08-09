@@ -1,13 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { URL } from 'node:url'
-import { loadConfig, ensurePrivateStateDirectory, type GatewayConfig } from './config.js'
+import { loadConfig, ensurePrivateStateDirectory, hermesGatewayReadiness, type GatewayConfig } from './config.js'
 import { canonicalRequest, sha256, SIGNATURE_HEADERS, verifySignature } from './auth.js'
 import { StateStore } from './state-store.js'
 import { ReplayStore } from './replay-store.js'
 import { IdempotencyStore } from './idempotency-store.js'
 import { deliveryRequestSchema, type ChannelAdapter } from './types.js'
-import { ILinkAdapter } from './adapters/ilink-adapter.js'
+import { createConfiguredAdapter } from './adapters/factory.js'
 import { GatewayService } from './gateway-service.js'
 
 const MAX_BODY_BYTES = 16 * 1024
@@ -26,7 +26,7 @@ async function readBody(request: IncomingMessage): Promise<Buffer> {
 export function createGateway(config: GatewayConfig = loadConfig(), adapter?: ChannelAdapter) {
   ensurePrivateStateDirectory(config)
   const store = new StateStore(config.stateDir)
-  const service = new GatewayService(config, adapter ?? new ILinkAdapter(config), new IdempotencyStore(store), store)
+  const service = new GatewayService(config, adapter ?? createConfiguredAdapter(config), new IdempotencyStore(store), store)
   const replay = new ReplayStore(store)
   const rate = new Map<string, number[]>()
   const secretList = [config.gatewaySecret]
@@ -47,6 +47,16 @@ export function createGateway(config: GatewayConfig = loadConfig(), adapter?: Ch
   }
   const server = createServer(async (request, response) => {
     const method = request.method ?? 'GET'; const path = new URL(request.url ?? '/', 'http://localhost').pathname
+    const loopback = request.socket.remoteAddress === '127.0.0.1' || request.socket.remoteAddress === '::1' || request.socket.remoteAddress === '::ffff:127.0.0.1'
+    if (method === 'GET' && path === '/livez') {
+      if (!loopback) return json(response, 403, { code: 'ILINK_LOOPBACK_ONLY' })
+      return json(response, 200, { service: 'xiansuo-hermes-gateway', status: 'live', transport: config.ILINK_POC_TRANSPORT })
+    }
+    if (method === 'GET' && path === '/readyz') {
+      if (!loopback) return json(response, 403, { code: 'ILINK_LOOPBACK_ONLY' })
+      try { return json(response, 200, hermesGatewayReadiness(config)) }
+      catch { return json(response, 503, { service: 'xiansuo-hermes-gateway', status: 'not_ready', transport: config.ILINK_POC_TRANSPORT }) }
+    }
     if ((method === 'GET' && (path === '/health' || path === '/session/status'))) {
       // Read-only observability remains bound to loopback; clients still need no secret for liveness only.
       return json(response, 200, await service.health())

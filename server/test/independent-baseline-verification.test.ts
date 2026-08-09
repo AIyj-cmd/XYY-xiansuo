@@ -143,7 +143,7 @@ test('迁移兼容当前无记录库、遗留约束、外键、索引和事务�
   runMigrations(database);
   assert.equal((database.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number }).count, 1);
   assert.equal((database.prepare('SELECT COUNT(*) AS count FROM leads').get() as { count: number }).count, 1);
-  assert.deepEqual((database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>).map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007']);
+  assert.deepEqual((database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>).map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007', '008', '009', '010']);
   const tables = new Set((database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name));
   assert.ok(tables.has('memos'));
   assert.ok(tables.has('favorites'));

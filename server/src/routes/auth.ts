@@ -87,7 +87,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     }
 
     clearFailure(username);
-    const token = await signToken({ id: user.id, username: user.username, name: user.name, role: user.role });
+    const token = await signToken({ id: user.id, tokenVersion: user.token_version, username: user.username, name: user.name, role: user.role });
     return reply.send({
       code: 0, msg: '登录成功', data: {
         token,
@@ -111,7 +111,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const newHash = await hashPassword(new_password);
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, request.user.id);
+    // Compare the old hash in the same statement so concurrent successful
+    // requests cannot each increment the version from a stale password check.
+    const updated = db.prepare(`UPDATE users
+      SET password_hash = ?, token_version = token_version + 1
+      WHERE id = ? AND password_hash = ?`).run(newHash, request.user.id, user.password_hash);
+    if (updated.changes !== 1) {
+      return reply.send({ code: 1, msg: '旧密码错误', data: null });
+    }
     return reply.send({ code: 0, msg: '密码修改成功', data: null });
   });
 }

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { resolveNotificationConfig } from '../config.js';
-import { parseAiRule, parseSingleNotificationChannel } from '../services/notification.js';
+import { isNotificationEventChannelSupported, parseAiRule, parseSingleNotificationChannel } from '../services/notification.js';
 import { nowDatetime } from '../utils/datetime.js';
 import { dailySnapshotSchema, scheduledSnapshotSchema } from './snapshot.js';
 import { validateDigestContext } from '../ai/permission-query.js';
@@ -29,7 +29,8 @@ export function createScheduledNotification(db: DatabaseSync, event: AiNotificat
   if (!capture) return { status: 'suppressed', reason: 'NOTIFICATION_CAPTURE_DISABLED' };
   let status: 'pending' | 'suppressed' = 'pending'; let reason: string | undefined;
   const notificationConfig = resolveNotificationConfig(); const channel = parseSingleNotificationChannel(rule.channel_order_json);
-  if (!rule.enabled) { status = 'suppressed'; reason = 'rule_disabled'; }
+  if (!isNotificationEventChannelSupported(event.eventType, channel)) { status = 'suppressed'; reason = 'channel_not_supported'; }
+  else if (!rule.enabled) { status = 'suppressed'; reason = 'rule_disabled'; }
   else if ((channel === 'mock' && !notificationConfig.mockEnabled) || (channel === 'openclaw' && !notificationConfig.openclawEnabled)) { status = 'suppressed'; reason = 'no_usable_channel'; }
   const dedupe = sha(`v1|${event.eventType}|operation_id=${event.operationId}|recipient_user_id=${event.recipientUserId}|business_date=${event.businessDate}`);
   const delivery = sha(`v1|channel=${channel}|event=${dedupe}`);

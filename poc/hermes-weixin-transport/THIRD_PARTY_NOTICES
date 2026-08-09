@@ -1,0 +1,9 @@
+This transport-only overlay invokes a small, verified portion of Hermes Agent.
+
+Upstream: NousResearch/hermes-agent
+Pinned release: v2026.8.3 (commit 3c27eb6234bf91b8ceee9e9071591b31e9b148cb)
+License: MIT (see LICENSE.hermes-agent)
+
+The precise source and metadata hashes accepted by this overlay are recorded in
+UPSTREAM_MANIFEST.json and are checked before any Hermes import, state access,
+or network operation.

@@ -98,6 +98,14 @@
         "navigationBarBackgroundColor": "#ffffff",
         "navigationBarTextStyle": "black"
       }
+    },
+    {
+      "path": "pages/hermes-binding/index",
+      "style": {
+        "navigationBarTitleText": "微信通知绑定",
+        "navigationBarBackgroundColor": "#ffffff",
+        "navigationBarTextStyle": "black"
+      }
     }
   ],
   "tabBar": {

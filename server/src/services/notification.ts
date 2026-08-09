@@ -2,6 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { resolveNotificationConfig } from '../config.js';
+import { NOTIFICATION_CHANNELS, isNotificationEventChannelSupported, type SupportedNotificationChannel } from './notification-capabilities.js';
+
+export { NOTIFICATION_EVENT_CHANNEL_CAPABILITIES, isNotificationEventChannelSupported, type SupportedNotificationChannel } from './notification-capabilities.js';
 
 export const NOTIFICATION_EVENT_TYPES = [
   'owner_changed', 'scheduled_follow_overdue', 'visit_reminder', 'status_changed', 'daily_report', 'weekly_report', 'inactive_lead',
@@ -35,11 +38,10 @@ export type NotificationRule = {
   config_schema_version: number; config_json: string; version: number;
 };
 
-export type SupportedNotificationChannel = 'mock' | 'openclaw';
 export function parseSingleNotificationChannel(value: string): SupportedNotificationChannel {
   let channels: unknown;
   try { channels = JSON.parse(value); } catch { throw new Error('RULE_CONFIG_INVALID'); }
-  const parsed = z.array(z.enum(['mock', 'openclaw'])).length(1).safeParse(channels);
+  const parsed = z.array(z.enum(NOTIFICATION_CHANNELS)).length(1).safeParse(channels);
   if (!parsed.success) throw new Error('RULE_CONFIG_INVALID');
   return parsed.data[0];
 }
@@ -48,7 +50,7 @@ export function parseOwnerRule(rule: NotificationRule): OwnerRuleConfig {
   if (rule.event_type !== 'owner_changed' || rule.recipient_strategy !== 'new_owner') throw new Error('RULE_CONFIG_INVALID');
   // Empty owner rules are retained for legacy disabled/no-channel rows and
   // safely suppress delivery; new admin writes require exactly one channel.
-  const channels = z.array(z.enum(['mock', 'openclaw'])).max(1).safeParse(JSON.parse(rule.channel_order_json));
+  const channels = z.array(z.enum(NOTIFICATION_CHANNELS)).max(1).safeParse(JSON.parse(rule.channel_order_json));
   const config = ownerRuleSchema.safeParse(JSON.parse(rule.config_json));
   if (!channels.success || !config.success) throw new Error('RULE_CONFIG_INVALID');
   return config.data;
@@ -56,7 +58,7 @@ export function parseOwnerRule(rule: NotificationRule): OwnerRuleConfig {
 export function parseAiRule(rule: NotificationRule | undefined, eventType: 'scheduled_follow_overdue' | 'daily_report'): AiRuleConfig {
   if (!rule || rule.event_type !== eventType || rule.recipient_strategy !== 'reserved') throw new Error('RULE_CONFIG_INVALID');
   try {
-    z.array(z.enum(['mock', 'openclaw'])).length(1).parse(JSON.parse(rule.channel_order_json));
+    z.array(z.enum(NOTIFICATION_CHANNELS)).length(1).parse(JSON.parse(rule.channel_order_json));
     return aiRuleSchema.parse(JSON.parse(rule.config_json));
   } catch { throw new Error('RULE_CONFIG_INVALID'); }
 }
@@ -165,19 +167,24 @@ export function captureOwnerChanged(database: DatabaseSync, event: OwnerChangedE
   const deliveryKey = hash(`v1|channel=${channel ?? 'none'}|event=${dedupeKey}`);
   const now = event.occurredAt;
   let status = 'pending'; let suppression: string | null = null;
-  if (!rule.enabled) { status = 'suppressed'; suppression = 'rule_disabled'; }
+  if (channel && !isNotificationEventChannelSupported(event.eventType, channel)) { status = 'suppressed'; suppression = 'channel_not_supported'; }
+  else if (!rule.enabled) { status = 'suppressed'; suppression = 'rule_disabled'; }
   else if (!recipient?.is_active) { status = 'suppressed'; suppression = 'recipient_inactive'; }
-  else if (!channel || (channel === 'mock' && !config.mockEnabled) || (channel === 'openclaw' && !config.openclawEnabled)) { status = 'suppressed'; suppression = 'no_usable_channel'; }
+  else if (!channel || (channel === 'mock' && !config.mockEnabled) || (channel === 'openclaw' && !config.openclawEnabled) || (channel === 'hermes' && !config.hermesEnabled)) { status = 'suppressed'; suppression = 'no_usable_channel'; }
+  const hermesBinding = channel === 'hermes'
+    ? database.prepare("SELECT status,generation,account_ref FROM hermes_bindings WHERE user_id=?").get(event.newOwnerId) as { status: string; generation: number; account_ref: string | null } | undefined
+    : undefined;
+  if (channel === 'hermes' && (!hermesBinding || hermesBinding.status !== 'active' || hermesBinding.generation < 1 || !hermesBinding.account_ref)) { status = 'suppressed'; suppression = 'recipient_not_bound'; }
   const terminalAt = status === 'suppressed' ? now : null;
   const availableAt = status === 'pending' ? ownerRuleAvailableAt(ruleConfig, now) : now;
   try {
     database.prepare(`INSERT INTO notification_logs (
       event_type,event_source,operation_id,subject_type,subject_id,lead_id,actor_user_id,old_owner_id,new_owner_id,recipient_user_id,occurred_at,
-      dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,
+      dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,recipient_binding_generation,recipient_account_ref,message_snapshot_json,status,max_attempts,available_at,
       suppression_reason,suppressed_at,retain_until,expires_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       'owner_changed', event.source, event.operationId, 'lead', event.leadId, event.leadId, event.actorUserId, event.oldOwnerId, event.newOwnerId, event.newOwnerId, now,
-      dedupeKey, deliveryKey, rule.version, JSON.stringify({ enabled: Boolean(rule.enabled), config: ruleConfig }), rule.channel_order_json, status === 'pending' ? channel! : null,
+      dedupeKey, deliveryKey, rule.version, JSON.stringify({ enabled: Boolean(rule.enabled), config: ruleConfig }), rule.channel_order_json, status === 'pending' ? channel! : null, status === 'pending' && channel === 'hermes' ? hermesBinding!.generation : null, status === 'pending' && channel === 'hermes' ? hermesBinding!.account_ref : null,
       JSON.stringify(messageSnapshot), status, channel === 'openclaw' ? config.openclawMaxAttempts : ruleConfig.max_attempts, availableAt,
       suppression, terminalAt, terminalAt ? isoPlusMinutes(terminalAt, 180 * 24 * 60) : null, isoPlusMinutes(now, ruleConfig.ttl_minutes),
     );
@@ -249,6 +256,12 @@ export function finishNotificationTask(database: DatabaseSync, task: ClaimedTask
 }
 
 export function validateClaimedNotificationTask(database: DatabaseSync, task: ClaimedTask, now: string): 'valid' | 'cancelled' | 'lease_lost' {
+  if (!isNotificationEventChannelSupported(task.event_type, task.channel)) {
+    const cancelled = database.prepare(`UPDATE notification_logs SET status='cancelled', cancellation_reason='channel_not_supported', cancelled_at=?, retain_until=?, lease_token=NULL,lease_owner=NULL,lease_until=NULL,updated_at=?,row_version=row_version+1 WHERE id=? AND status='sending' AND lease_token=?`).run(
+      now, isoPlusMinutes(now, 180 * 24 * 60), now, task.id, task.lease_token,
+    );
+    return cancelled.changes === 1 ? 'cancelled' : 'lease_lost';
+  }
   if (task.event_type === 'scheduled_follow_overdue' || task.event_type === 'daily_report') {
     let snapshot: { subject_lead_ids?: unknown; scope?: unknown };
     try { snapshot = JSON.parse(task.message_snapshot_json); } catch { snapshot = {}; }
@@ -272,6 +285,10 @@ export function validateClaimedNotificationTask(database: DatabaseSync, task: Cl
   let reason: string | null = null;
   if (!state || state.is_deleted || state.owner_id !== task.recipient_user_id) reason = 'owner_changed';
   else if (!state.is_active) reason = 'recipient_inactive';
+  else if (task.channel === 'hermes') {
+    const binding = database.prepare('SELECT status,generation,account_ref FROM hermes_bindings WHERE user_id=?').get(task.recipient_user_id) as { status: string; generation: number; account_ref: string | null } | undefined;
+    if (!Number.isInteger(task.recipient_binding_generation) || typeof task.recipient_account_ref !== 'string' || !binding || binding.status !== 'active' || binding.generation !== task.recipient_binding_generation || binding.account_ref !== task.recipient_account_ref) reason = 'binding_generation_changed';
+  }
   if (!reason) return 'valid';
   const result = database.prepare(`UPDATE notification_logs SET status='cancelled', cancellation_reason=?, cancelled_at=?, retain_until=?,
     lease_token=NULL,lease_owner=NULL,lease_until=NULL,updated_at=?,row_version=row_version+1

@@ -47,7 +47,17 @@ test('空库创建完整版本化 schema，并强制外键', () => {
   const database = open('empty.db');
   runMigrations(database);
   const versions = database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>;
-  assert.deepEqual(versions.map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007']);
+  assert.deepEqual(versions.map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007', '008', '009', '010']);
+  const tokenVersion = database.prepare("PRAGMA table_info('users')").all() as Array<{ name: string; type: string; notnull: number; dflt_value: string | null }>;
+  const versionColumn = tokenVersion.find((column) => column.name === 'token_version');
+  assert.deepEqual(versionColumn && {
+    name: versionColumn.name, type: versionColumn.type, notnull: versionColumn.notnull, dflt_value: versionColumn.dflt_value,
+  }, {
+    name: 'token_version', type: 'INTEGER', notnull: 1, dflt_value: '0',
+  });
+  assert.throws(() => database.prepare("INSERT INTO users(username,name,password_hash,token_version) VALUES ('bad-version','坏版本','hash',-1)").run(), /CHECK constraint failed/);
+  const bindingColumns = database.prepare('PRAGMA table_info(hermes_bindings)').all() as Array<{ name: string }>;
+  assert.ok(bindingColumns.some((column) => column.name === 'active_activation_id_hash'));
   assert.equal((database.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys, 1);
   assert.throws(() => database.prepare("INSERT INTO follow_ups (lead_id, user_id, content) VALUES (999, 999, 'invalid')").run(), /FOREIGN KEY constraint failed/);
   database.close();
@@ -72,6 +82,83 @@ test('旧结构可迁移、保留记录、索引和外键，并可重复执行',
   assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
   assert.equal(database.prepare("SELECT name FROM sqlite_master WHERE name IN ('leads_new', 'leads_old')").all().length, 0);
   database.close();
+});
+
+test('007 升级到唯一的 008 时创建 active activation 凭证列且可重复执行', () => {
+  const database = open('upgrade-007-to-008.db');
+  runMigrations(database, MIGRATIONS.slice(0, 7), { log: () => undefined });
+  runMigrations(database, MIGRATIONS, { log: () => undefined });
+  runMigrations(database, MIGRATIONS, { log: () => undefined });
+  const columns = database.prepare('PRAGMA table_info(hermes_bindings)').all() as Array<{ name: string }>;
+  assert.ok(columns.some((column) => column.name === 'active_activation_id_hash'));
+  assert.equal((database.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='008'").get() as { count: number }).count, 1);
+  database.close();
+});
+
+test('008 活跃共享 Hermes 绑定升级到 009 时完整保留历史与 pending 任务，仅以 account_ref 缺失要求重绑', () => {
+  const database = open('upgrade-008-to-009.db');
+  runMigrations(database, MIGRATIONS.slice(0, 8), { log: () => undefined });
+  database.prepare("INSERT INTO users(username,name,password_hash,role) VALUES ('legacy-hermes','旧 Hermes 用户','hash','member')").run();
+  database.prepare("INSERT INTO hermes_bindings(user_id,peer_fingerprint,status,generation,active_activation_id_hash,updated_at) VALUES (1,?,'active',1,?,?)").run('a'.repeat(64), 'b'.repeat(64), '2026-08-08 09:00:00');
+  database.exec("CREATE TABLE migration_009_trigger_probe (id INTEGER NOT NULL);");
+  database.exec("CREATE TRIGGER migration_009_notification_trigger AFTER INSERT ON notification_logs BEGIN INSERT INTO migration_009_trigger_probe(id) VALUES (NEW.id); END;");
+  database.prepare(`INSERT INTO notification_logs(event_type,event_source,operation_id,subject_type,subject_id,recipient_user_id,recipient_binding_generation,occurred_at,dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,expires_at)
+    VALUES ('scheduled_follow_overdue','migration','legacy-task','lead',1,1,1,'2026-08-08 09:00:00','legacy-task','legacy-key',1,'{}','["hermes"]','hermes','{}','pending',1,'2026-08-08 09:00:00','2026-08-09 09:00:00')`).run();
+  runMigrations(database, MIGRATIONS, { log: () => undefined });
+  const binding = database.prepare('SELECT status,generation,account_ref FROM hermes_bindings WHERE user_id=1').get() as { status: string; generation: number; account_ref: string | null };
+  assert.deepEqual({ ...binding }, { status: 'active', generation: 1, account_ref: null });
+  assert.equal((database.prepare("SELECT status FROM notification_logs WHERE dedupe_key='legacy-task'").get() as { status: string }).status, 'pending');
+  database.prepare(`INSERT INTO notification_logs(event_type,event_source,operation_id,subject_type,subject_id,recipient_user_id,occurred_at,dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,expires_at)
+    VALUES ('scheduled_follow_overdue','migration','trigger-task','lead',2,1,'2026-08-08 09:00:00','trigger-task','trigger-key',1,'{}','["mock"]','mock','{}','pending',1,'2026-08-08 09:00:00','2026-08-09 09:00:00')`).run();
+  assert.equal((database.prepare('SELECT COUNT(*) AS count FROM migration_009_trigger_probe').get() as { count: number }).count, 2);
+  const columns = database.prepare('PRAGMA table_info(notification_logs)').all() as Array<{ name: string }>;
+  assert.ok(columns.some((column) => column.name === 'recipient_account_ref'));
+  assert.equal((database.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='009'").get() as { count: number }).count, 1);
+  assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
+  database.close();
+});
+
+test('009 升级至 010、重复执行、严格恢复与故障回滚均保持 token_version 合约', () => {
+  const upgrade = open('upgrade-009-to-010.db');
+  runMigrations(upgrade, MIGRATIONS.slice(0, 9), { log: () => undefined });
+  upgrade.prepare("INSERT INTO users(username,name,password_hash,role) VALUES ('version-upgrade','版本升级','hash','member')").run();
+  runMigrations(upgrade, MIGRATIONS, { log: () => undefined });
+  runMigrations(upgrade, MIGRATIONS, { log: () => undefined });
+  assert.equal((upgrade.prepare("SELECT token_version FROM users WHERE username='version-upgrade'").get() as { token_version: number }).token_version, 0);
+  assert.equal((upgrade.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='010'").get() as { count: number }).count, 1);
+  assert.throws(
+    () => runMigrations(upgrade, [{ ...MIGRATIONS[9], checksum: 'conflicting-010-checksum' }], { log: () => undefined }),
+    /校验和不匹配/,
+  );
+  upgrade.close();
+
+  const recovered = open('recover-existing-010-column.db');
+  runMigrations(recovered, MIGRATIONS.slice(0, 9), { log: () => undefined });
+  recovered.exec("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0 CHECK (typeof(token_version) = 'integer' AND token_version >= 0)");
+  runMigrations(recovered, [MIGRATIONS[9]], { log: () => undefined });
+  assert.equal((recovered.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='010'").get() as { count: number }).count, 1);
+  recovered.close();
+
+  const malformed = open('reject-existing-malformed-010-column.db');
+  runMigrations(malformed, MIGRATIONS.slice(0, 9), { log: () => undefined });
+  malformed.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
+  assert.throws(() => runMigrations(malformed, [MIGRATIONS[9]], { log: () => undefined }), /迁移010恢复状态不完整/);
+  assert.equal((malformed.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='010'").get() as { count: number }).count, 0);
+  malformed.close();
+
+  const rollback = open('rollback-010.db');
+  runMigrations(rollback, MIGRATIONS.slice(0, 9), { log: () => undefined });
+  const failing010: Migration = {
+    ...MIGRATIONS[9],
+    up(database) {
+      MIGRATIONS[9].up(database);
+      throw new Error('010 rollback injection');
+    },
+  };
+  assert.throws(() => runMigrations(rollback, [failing010], { log: () => undefined }), /010 rollback injection/);
+  assert.equal((rollback.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='010'").get() as { count: number }).count, 0);
+  assert.equal((rollback.prepare("PRAGMA table_info('users')").all() as Array<{ name: string }>).some((column) => column.name === 'token_version'), false);
+  rollback.close();
 });
 
 test('迁移校验和冲突或迁移失败时拒绝继续且不写完成记录', () => {

@@ -13,6 +13,10 @@ export const deliveryRequestSchema = z.object({
   deliveryId: z.string().uuid(),
   idempotencyKey: z.string().min(16).max(200),
   recipientUserId: z.number().int().positive(),
+  /** Required only by the Hermes transport; OpenClaw keeps its published shape. */
+  recipientBindingGeneration: z.number().int().positive().optional(),
+  /** Opaque per-user Hermes account reference; never a provider account id. */
+  recipientAccountRef: z.string().regex(/^hr_[A-Za-z0-9_-]{16,96}$/).optional(),
   title: z.string().min(1).max(40),
   body: z.string().min(1).max(500),
   detailUrl: z.literal('https://xs.tomatopia.top/'),
@@ -24,7 +28,7 @@ export const deliveryRequestSchema = z.object({
 }).strict()
 
 export type ChannelDeliveryRequest = z.infer<typeof deliveryRequestSchema>
-export type AdapterDeliveryRequest = { recipientExternalId: string; message: { title: string; body: string; detailUrl: string }; idempotencyKey: string }
+export type AdapterDeliveryRequest = { recipientExternalId: string; recipientUserId?: number; recipientBindingGeneration?: number; recipientAccountRef?: string; message: { title: string; body: string; detailUrl: string }; idempotencyKey: string }
 
 export const deliveryStatusSchema = z.enum([
   'sent', 'deduplicated', 'retryable_failure', 'permanent_failure', 'result_unknown'
@@ -43,7 +47,9 @@ export type GatewayHealthStatus = 'healthy' | 'degraded' | 'offline' | 'login_re
 export type AdapterHealth = { status: GatewayHealthStatus; code?: string; sessionStatus?: 'authenticated' | 'login_required' | 'expired' | 'restricted' | 'unsupported' | 'unknown' | 'offline'; channelStatus?: 'enabled' | 'disabled' }
 
 export interface ChannelAdapter {
-  readonly name: 'fake' | 'ilink'
+  readonly name: 'fake' | 'ilink' | 'hermes'
+  /** A Hermes CLI execution is never safe to retry once a key is acquired. */
+  readonly attemptPolicy?: 'single_attempt'
   send(request: AdapterDeliveryRequest, signal: AbortSignal): Promise<ChannelDeliveryResult>
   health(): Promise<AdapterHealth>
 }
@@ -58,6 +64,8 @@ export type ErrorDisposition = {
 export const ERROR_DISPOSITIONS: Record<string, ErrorDisposition> = {
   ILINK_CHANNEL_DISABLED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
   ILINK_LIVE_DISABLED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
+  ILINK_HERMES_DISABLED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: false },
+  ILINK_HERMES_SESSION_UNCHECKED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
   ILINK_GATEWAY_OFFLINE: { retryable: true, mayDuplicate: false, level: 'warn', requiresHuman: false },
   ILINK_SESSION_EXPIRED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },
   ILINK_LOGIN_REQUIRED: { retryable: false, mayDuplicate: false, level: 'warn', requiresHuman: true },

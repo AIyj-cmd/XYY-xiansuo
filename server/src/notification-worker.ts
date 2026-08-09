@@ -5,6 +5,7 @@ import { resolveNotificationConfig } from './config.js';
 import { cleanupNotificationRetention, claimNotificationTasks, finishNotificationTask, validateClaimedNotificationTask } from './services/notification.js';
 import { MockNotificationChannel } from './services/mock-notification-channel.js';
 import { OpenClawNotificationChannel, openClawMessage, type NotificationChannelMessage } from './services/openclaw-notification-channel.js';
+import { HermesNotificationChannel } from './services/hermes-notification-channel.js';
 import { SYNTHETIC_PILOT_EVENT_SOURCE, assertSyntheticDatabasePath, assertSyntheticDatabaseSafety, assertSyntheticWorkerBatchSafety, isSyntheticPilotTask, openClawSyntheticPilotMessage, readSyntheticPilotControl, type SyntheticPilotTask } from './openclaw-synthetic-pilot.js';
 import { nowDatetime } from './utils/datetime.js';
 import { parseNotificationSnapshot, toChannelMessage } from './notifications/snapshot.js';
@@ -22,12 +23,12 @@ export function mapChannelResult(task: { channel: string; delivery_idempotency_k
         ? { kind: 'sent' as const, receipt: result.providerMessageId }
         : { kind: 'permanent' as const, code: 'OPENCLAW_DEDUPLICATED_RECEIPT_MISSING', retryAllowed: 0 as const }
       : result.status === 'result_unknown'
-        ? { kind: 'permanent' as const, code: 'OPENCLAW_SEND_RESULT_UNKNOWN', message: result.errorCode, retryAllowed: 0 as const }
+        ? { kind: 'permanent' as const, code: task.channel === 'hermes' ? 'HERMES_SEND_RESULT_UNKNOWN' : 'OPENCLAW_SEND_RESULT_UNKNOWN', message: result.errorCode, retryAllowed: 0 as const }
         : result.status === 'permanent_failure'
-          ? { kind: 'permanent' as const, code: result.errorCode, retryAllowed: task.channel === 'openclaw' ? 0 as const : undefined }
+          ? { kind: 'permanent' as const, code: result.errorCode, retryAllowed: task.channel === 'openclaw' || task.channel === 'hermes' ? 0 as const : undefined }
           : { kind: 'temporary' as const, code: result.errorCode };
 }
-async function processTask(db: ReturnType<typeof getDb>, channels: { mock: MockNotificationChannel; openclaw?: OpenClawNotificationChannel }, task: Record<string, any>): Promise<void> {
+async function processTask(db: ReturnType<typeof getDb>, channels: { mock: MockNotificationChannel; openclaw?: OpenClawNotificationChannel; hermes?: HermesNotificationChannel }, task: Record<string, any>): Promise<void> {
   const validation = validateClaimedNotificationTask(db, task, nowDatetime());
   if (validation !== 'valid') {
     console.log(JSON.stringify({ event: validation === 'cancelled' ? 'notification.worker.cancelled' : 'notification.worker.lease_lost', id: task.id }));
@@ -66,6 +67,11 @@ async function processTask(db: ReturnType<typeof getDb>, channels: { mock: MockN
         ? toChannelMessage(task.event_type, parseNotificationSnapshot(task.event_type, task.message_snapshot_json))
         : undefined;
       result = await channels.openclaw.send({ userId: task.recipient_user_id }, controlledSyntheticMessage ?? ownerMessage ?? openClawMessage(task.event_type), task.delivery_idempotency_key, controller.signal);
+    } else if (task.channel === 'hermes' && channels.hermes) {
+      if (!Number.isInteger(task.recipient_binding_generation) || task.recipient_binding_generation < 1 || typeof task.recipient_account_ref !== 'string' || !task.recipient_account_ref) throw Object.assign(new Error('Hermes 任务缺少绑定三元组'), { code: 'HERMES_BINDING_GENERATION_INVALID', permanent: true });
+      const ownerMessage = task.event_type === 'owner_changed' ? toChannelMessage(task.event_type, parseNotificationSnapshot(task.event_type, task.message_snapshot_json)) : undefined;
+      if (!ownerMessage) throw Object.assign(new Error('Hermes 仅支持负责人变更通知'), { code: 'EVENT_NOT_IMPLEMENTED', permanent: true });
+      result = await channels.hermes.send({ userId: task.recipient_user_id, generation: task.recipient_binding_generation, accountRef: task.recipient_account_ref }, ownerMessage, task.delivery_idempotency_key, controller.signal);
     } else throw Object.assign(new Error('渠道任务不允许领取'), { code: 'CHANNEL_NOT_ALLOWED', permanent: true });
     const outcome = mapChannelResult(task as { channel: string; delivery_idempotency_key: string }, result);
     const updated = finishNotificationTask(db, task, outcome, nowDatetime());
@@ -92,9 +98,10 @@ export async function runOnce(): Promise<void> {
   }
   const cleaned = cleanupNotificationRetention(db, now);
   if (cleaned) console.log(JSON.stringify({ event: 'notification.worker.retention_cleaned', count: cleaned }));
-  const available: Array<'mock' | 'openclaw'> = [];
+  const available: Array<'mock' | 'openclaw' | 'hermes'> = [];
   if (config.mockEnabled) available.push('mock');
   if (config.openclawEnabled) available.push('openclaw');
+  if (config.hermesEnabled) available.push('hermes');
   const tasks = claimNotificationTasks(db, `notification-worker:${process.pid}:${randomUUID()}`, now, 10, available);
   if (tasks.length) console.log(JSON.stringify({ event: 'notification.worker.claimed', count: tasks.length }));
   if (tasks.length) {
@@ -104,7 +111,7 @@ export async function runOnce(): Promise<void> {
       return;
     }
   }
-  const channels = { mock: new MockNotificationChannel(), ...(config.openclawEnabled ? { openclaw: new OpenClawNotificationChannel(config) } : {}) };
+  const channels = { mock: new MockNotificationChannel(), ...(config.openclawEnabled ? { openclaw: new OpenClawNotificationChannel(config) } : {}), ...(config.hermesEnabled ? { hermes: new HermesNotificationChannel(config) } : {}) };
   for (let index = 0; index < tasks.length && !stopping; index += WORKER_CONCURRENCY) {
     await Promise.all(tasks.slice(index, index + WORKER_CONCURRENCY).map((task) => processTask(db, channels, task)));
   }

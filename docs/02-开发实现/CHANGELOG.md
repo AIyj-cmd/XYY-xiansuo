@@ -1,5 +1,45 @@
 # 变更日志
 
+## Unreleased — 项目健康整改 v2（2026-08-09）
+
+- `947597c`：建立唯一的通知事件×渠道能力矩阵；Hermes 只支持 `owner_changed`，管理规则、preview、AI 事件、Worker 和人工重试统一 fail-closed。
+- `172f63d`：在受认证 binding status 中暴露 runtime `enabled`；Hermes 关闭或 capability 请求失败时，H5 菜单和深链均不展示可执行动作，QR 相关请求为 0。
+- `4e5a9b7`：以最小兼容依赖更新关闭 Server `brace-expansion`/`minimatch`/`fast-uri` 生产审计门禁，不使用 force 或 legacy peer。
+- `f2136fd`：以可观察文件/进程条件稳定 Gateway timeout PID 回收测试，保留 SIGKILL、reap 和 `result_unknown` 断言。
+- `a015d40`：新增唯一迁移 `010` 和 `users.token_version`；用户改密、管理员重置密码后撤销目标旧 JWT，保留实时角色/停用/删除校验。
+- `e725b9f`：为 API、H5 和上传响应统一添加 CSP、nosniff、frame、Referrer-Policy 和 Permissions-Policy；HSTS 只保留在 HTTPS Nginx 层。
+- `d72ecea`：新增 PNG/JPEG/GIF/WebP/HEIC 内容签名与 MIME 一致性校验，使用不公开的 0700 staging、0600 文件和原子发布，失败时清理。配额/保留周期因缺产品具体值保留为 R-2/G2。
+- `ebf6d44`：打包 Hermes overlay 与固定上游，增加 manager/Gateway 独立单实例 PM2 模板、清空继承环境的 wrapper、loopback 端口、preflight/readiness/dry-run 及回滚文档；部署脚本仍不自动启动真实 Hermes 链。
+- `2d5ce59`：追加项目健康整改独立复验证据；最终独立结论 P1=0、P2=0、P3=0。
+- 验收复测：Server 170/170、Gateway 62/62、Hermes overlay 33/33、H5 17/17，共 282/282；Server/Gateway 生产审计为 0，H5 critical 门禁通过。dashboard/export 公司级口径按用户批准保留，001–009 不变、只新增 010，`server/data` 不变。
+- 明确不包含：上传配额/生命周期产品值、Vite/uni-app 跨版本升级、T-1 大页面重构、生产迁移/恢复、新的 Hermes 真实 Pilot 或部署。
+
+## Unreleased — 每用户 Hermes/iLink QR 账号绑定（2026-08-09）
+
+- 追加唯一迁移 `009`（未改 `001`–`008`）：引入全局唯一活动的 `hermes_login_attempts`、独立 `account_ref`/target 指纹/prepared 生命周期及 notification outbox 的 `recipient_account_ref` 快照。旧 `008` 共享账号 active 与 pending 历史完全保留；`account_ref IS NULL` 仅在公开状态派生为 `rebind_required`，旧路径不自动发送，成功取得新账号上下文后才原子切换并取消旧代次待发。
+- H5 改为认证用户创建、恢复、取消自己的五分钟二维码 attempt；二维码只经 `Cache-Control: no-store` API 的受限 data URL 返回。QR token/payload 仅驻留 manager 进程内存，不进入 vault、SQLite、日志或静态制品。扫码后显示一次性 `确认 <activationId>`，未收到新 Bot 的精确私聊上下文绝不 active 或发送。
+- active/rebind_required 用户只显示“解除机器人”而不再显示生成二维码；自助解绑经二次确认，在一个 owner-only 事务中递增 generation、清除绑定引用并取消本人 live attempt/未完成 Hermes 任务，提交后 best-effort 退役 manager account。确认弹窗与请求全程使用同一互斥 guard，取消或失败保留原绑定页面。
+- 新增 loopback-only Hermes account manager：固定 v2026.8.3 仅调用 `get_bot_qrcode`/`get_qrcode_status` 底层原语，明确不调用 `qr_login`；精确归一化上游 `bot_token/baseurl` 字段，未知状态、凭据缺失和非固定 provider/redirect host 均失败关闭。二维码先在内存渲染，`qrcode` 不可用时不写入 attempt；凭据仅进入仓库外 0700、0600、flock、原子完整性加密 vault。每个 accountRef 独立 cursor/poll/target/context，错误账号、目标或命令零网络发送。
+- Gateway、Worker、Channel 和 overlay 现在将 `userId + generation + accountRef` 作为不可拆分三元组；vault 缺失、prepared/stale/swapped/retired 条目一律永久失败，无默认账号、peer fallback、tokenless 或重试发送。用户停用在 DB 事务内取消 attempt/待发任务，请求返回前同步尝试退役 manager account，manager 再以周期性精确 activation 复核覆盖暂时不可达窗口。
+- 新增 manager fake provider、migration 008→009、attempt TTL/所有权/全局锁/上下文门槛和精确路由离线测试。默认所有 Hermes/worker/live 开关仍为 `false`；本轮未登录、扫码、轮询真实账号或发送。
+- 复核生产依赖 `npm audit --omit=dev`：现有 R-1 仍报告 19 个 high、0 critical（Fastify/AJV/ExcelJS 传递链）；本范围未升级或修改依赖锁文件。
+- 验收阶段关闭生命周期与真实上游兼容缺口：prepared 超 TTL 会清除凭据并退役；回调丢响应后使用已持久 context 重放同一 activation；active 重放重新核验 activationId/target/generation/accountRef，并在二维码 TTL 后只允许该精确组合无写幂等复核；重绑在单次 flock/原子 vault 替换内退役同用户旧 live account 并激活新账号；固定上游确认字段、扫码状态、host 和 QR 渲染依赖均有失败关闭回归；自助解绑补齐确认弹窗等待期防重复。最终 Server 163/163、Gateway 59/59、overlay 30/30、H5 14/14。
+
+## Unreleased — Hermes 1–10 用户网站绑定与定向通知（2026-08-08）
+
+- H5 登录用户可生成 `XYY-` + 26 位 Base32 的 128-bit、10 分钟有效、单次使用绑定码，并查看不含 peer/token/cursor 的绑定状态与代次；绑定页可复制完整 `绑定 XYY-…` 命令、显示倒计时/过期状态，并轮询既有状态 API 自动显示绑定成功。前端请求继续统一使用 `app/src/utils/request.ts`。
+- H5 不生成或展示 Hermes/iLink 登录二维码。经人工核验的长期机器人联系人入口可通过构建环境的公开 `VITE_HERMES_BOT_ENTRY_URL`/`VITE_HERMES_BOT_ENTRY_IMAGE_URL` 显示；未配置或非法 URL 时安全降级为人工索取提示，任何 token、peer、会话或登录二维码均不得进入 Git 或静态制品。
+- 2026-08-09 验收修复 active 用户重新发码时把“旧绑定仍为 active”误当“新码已绑定”的问题；只有当状态为 active 且服务端已清空本次码的 `expires_at` 时才显示成功并停止轮询。新增 active→新命令可见→下一代 prepare/commit→轮询成功回归，H5 全量 **11/11** 通过。
+- 新增唯一迁移 `008`：业务库只保存 Hermes 不透明 peer 指纹、绑定状态/代次、绑定挑战控制、prepared 激活凭证、active activationId 派生哈希、nonce 派生哈希/时限及通知接收代次；raw peer、context token、轮询 cursor、raw nonce 和入站正文不进入业务库。`001`–`007` 的版本与 checksum 保持不变。
+- capture-only daemon 仅处理同一 Hermes 账号收到的精确 `绑定 XYY-<26位Base32>` 私聊命令，或为已绑定 peer 刷新 context token；群聊和其他未知消息忽略，无 Agent、AI、自动回复、typing 或媒体路径。
+- raw peer、context token 与 cursor 仅保存在仓库外当前用户所有的 `0700` 加密 vault；所有公开 vault 读写使用同一个跨进程 `fcntl.flock` 临界区，并在锁内执行最多 10 项容量及 peer 唯一性检查。Gateway 不读取 Hermes peer map，只把 `recipientUserId + recipientBindingGeneration` 交给 overlay 精确解析。
+- prepared vault 条目携带 activationId；daemon 在 Server commit 后才 activate，并在该崩溃窗口重启时先幂等重放 commit。Server active 快路径只接受原 activationId 的派生哈希，错误 activationId 拒绝。内部 HMAC nonce 以 SHA-256 派生值持久化，跨进程/重启拒绝重放，容量 10,000、到期清理。
+- 网站用户停用、绑定禁用及 Hermes 待发任务取消在同一 `BEGIN IMMEDIATE` 事务内；独立 internal disable 同样保证失败时完整回滚。
+- `owner_changed` outbox 固化绑定代次；重绑/停用会取消旧代次待发任务，Worker 发送前再次核对状态和代次。Hermes 无 fallback，Gateway/overlay 均保持单次调用，`result_unknown` 不自动重试。
+- 全局 active/prepared 容量上限为 10，第 11 位在 prepare 阶段失败关闭；同一 active 用户重绑不额外占槽。
+- `HERMES_CHANNEL_ENABLED` 与 `HERMES_BINDING_ENABLED` 默认均为 `false`，Hermes live 总开关同样默认关闭；没有新增生产依赖，也没有授权真实登录、扫码、联网、发送、Pilot 或生产部署。
+- 最终验收复跑：Server build 与 `156/156`、Gateway build 与 `59/59`、overlay `18/18`、H5 build 全部通过。测试报告 34.1 的 P1/P2 已由 34.2 修复并在验收阶段复现关闭；验收阶段未修改业务源码。
+
 ## Unreleased — 当前版本离线收尾（2026-08-02）
 
 - 单账号发布冻结：保留既有多人映射解析和旧单用户兼容，但 `ILINK_POC_LIVE_ENABLED=true` 的映射模式与离线 `gateway:recipient-map-check` 均要求恰好一个 `enabled=true`；零个或多个启用项失败，检查输出只保留安全结论和聚合计数，绝不输出用户 ID 或 target。未绑定仍为 `OPENCLAW_RECIPIENT_NOT_BOUND`，不回退。
@@ -172,3 +212,31 @@
 
 - 未新增通知、普通微信、企业微信、DeepSeek、AI、拜访、日报、周报、`sales_stage`、客户价值评分或组织架构功能。
 - 未提交、推送、创建 PR 或执行生产数据库迁移。
+
+## Unreleased — Hermes Weixin v2026.8.3 纯离线 PoC（2026-08-08）
+
+- 新增 `poc/hermes-weixin-offline/`：固定读取官方 `NousResearch/hermes-agent` tag `v2026.8.3`、commit `3c27eb6234bf91b8ceee9e9071591b31e9b148cb`、包版本 `0.20.0`、MIT 的本地源码副本。
+- 新增纯离线运行脚本与 9 项测试，覆盖双 peer/session、account+peer context token、DM 策略、Gateway 授权、公开 `cmd_send` fake transport、单 peer payload、失败重试和跨调用 `client_id`。
+- 测试在导入 Hermes 前把 HOME/HERMES_HOME/XDG 定向到随机 `/tmp`，并以失败桩禁止 DNS/socket；不登录、不扫码、不轮询、不发送微信、不构造真实 Agent/Provider/模型工具。
+- 未修改 `app/src`、`server/src`、`server/data`、数据库 schema、package/lockfile、部署脚本或生产配置；不新增生产依赖。
+- 已知阻断：timeout、HTTP 400/503、坏 JSON 均默认执行 1+4 次尝试；相同业务消息跨独立调用生成新 `client_id`，没有跨调用业务幂等。因此仅离线 PoC PASS，真实 Pilot/生产 NO-GO。
+
+## Unreleased — Hermes Weixin v2026.8.3 transport-only overlay（2026-08-08）
+
+- 新增 `poc/hermes-weixin-transport/` 本地 overlay：在任何配置/状态读取和 Hermes import 前严格核验固定 upstream remote/tag/commit/tree/clean、包版本、MIT 与受控文件 SHA-256；只保留 allowlist DM context-token capture 和单次纯文本 send，不启动 Gateway、登录、扫码、轮询、typing、Agent、Provider、AI、工具或媒体路径。
+- capture 只接受 1–10 个静态 peer；ignored 输入不创建状态。schema 2 使用不可逆 account+peer HMAC reference、随机 256-bit nonce、域分离 HMAC-SHA256 流加密、entry MAC 与集合 MAC，原始 account/peer/token/正文/媒体/message ID 不落盘；有效 legacy schema 1 会原子迁移。
+- send 使用 account、peer、业务幂等键派生的 deterministic client ID，只调用一次 `ilink/bot/sendmessage`；无 context token 时零调用，4xx/非零 ret 为永久失败，timeout/断线/5xx/坏 JSON 为 `result_unknown`，不重试、不分块、不 fallback。
+- `poc/ilink-gateway` 新增显式 adapter factory 与 Hermes adapter。默认 transport 保持 `openclaw`，Hermes 需 `ILINK_POC_TRANSPORT=hermes` 和 `ILINK_HERMES_TRANSPORT_ENABLED=true`，live 默认仍关闭；HTTP 不接收 peer/token/自由消息，peer 只从仓库外 1–10 项严格映射解析。
+- Gateway Hermes 模式将 Secret、overlay config、recipient map、overlay state 和 Gateway ledger 全部限制为仓库外；目录精确 `0700`、文件精确 `0600`、当前 UID、单硬链接、无 final/ancestor symlink。持久幂等账本保证同 key 并发、重启和 unknown 不产生第二次 adapter 调用。
+- 子进程交换仅使用有界 JSON stdin/stdout，peer、正文和 secret 不进入 argv；timeout/abort/超量输出先 SIGTERM，250ms 后 SIGKILL，并等待 `close`/reap 后才返回 `result_unknown`。
+- 新增 overlay 12 项测试和 Gateway Hermes 配置、路径、单次投递、重启、非法输出、SIGKILL/reap 测试。最终验收为 overlay 60/60、上游旧行为离线对照 9/9、Gateway 58/58、Server 146/146、H5 build 通过；未登录、扫码、联网、发送或访问生产数据库。
+- 未新增生产依赖、数据库迁移或 API 字段；未修改 `app/src`、`server/src`、`server/data`、`scripts` 或 `deploy`。已知 P3 为自定义 HMAC 流加密组合的维护风险；真实 Pilot/生产继续 NO-GO。
+
+### Hermes 成功响应分类修复（2026-08-08）
+
+- 修复上一真实 Pilot 已送达但旧 overlay 因只接受 `ret=0` 而误报 `permanent_failure / ILINK_PROVIDER_REJECTED` 的分类缺陷：精确 `{}` 依据固定官方插件成功 fixture 现为 `sent / ILINK_SENT / empty_object`，真正整数 `ret=0`（可选真正整数 `errcode=0`）也为 sent。上一 Pilot 的原始响应未保存，因此不反推其精确结构。
+- 不冲突的真正整数非零 `ret`/`errcode` 保持永久失败；冲突、类型异常、未知非空对象和非对象统一为 `result_unknown`，且 Python `bool` 不再被当作整数状态码。
+- overlay stdout 增加固定枚举 `responseShape`，并冻结为恰好四字段；Gateway 拒绝旧三字段、额外字段、未知 shape、非法 status/shape/退出码组合，失败关闭为 unknown。
+- 新增响应分类 fixture、单次调用/脱敏用例和 Gateway 严格消费回归；验收复验为 overlay **26/26**、Gateway **59/59**、Server **146/146**、H5 build 通过。
+- 历史不改写：上一 Pilot 指定接收人实际收到 1 条、自动重试 0、其他渠道 0；旧技术记录仍为 `permanent_failure / ILINK_PROVIDER_REJECTED`，人工事实仍为 `manually_confirmed_received`。
+- 本轮不新增依赖、API 或数据库变更，不接入 Worker，不登录、不联网、不发送；仅适合本地提交，新的真实单条 Pilot 仍需单独明确授权。

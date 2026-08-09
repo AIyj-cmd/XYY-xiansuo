@@ -8,6 +8,7 @@ server/dist/
 # Runtime data and user uploads
 server/data/
 server/uploads/
+server/upload-staging/
 server/backups/
 
 # Environment variables and secrets

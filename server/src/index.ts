@@ -18,12 +18,32 @@ import { memoRoutes } from './routes/memo.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { notificationAdminRoutes } from './routes/notification-admin.js';
 import { aiAdminRoutes } from './routes/ai-admin.js';
+import { hermesBindingRoutes } from './routes/hermes-bindings.js';
 import { resolveNotificationConfig } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = parseInt(process.env.PORT || '3000');
 const HOST = process.env.HOST || '0.0.0.0';
+
+// 仅允许当前同源 H5 所需的能力：H5 构建产物不再依赖内联脚本，图片上传和
+// uni-app 的运行时样式仍需要 data:/blob: 图片及内联样式。
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "media-src 'self' blob:",
+  "worker-src 'self' blob:",
+].join('; ');
+
+const PERMISSIONS_POLICY = 'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()';
 
 export async function buildApp(): Promise<FastifyInstance> {
   // 在任何数据库或 HTTP 副作用之前验证全部阶段三开关。
@@ -37,6 +57,18 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   const app = Fastify({
     logger: false,
+  });
+
+  // 对 API、H5、上传文件和错误响应统一生效。HSTS 只由 HTTPS Nginx
+  // server 块提供，避免在本地 HTTP 或未正确终止 TLS 的代理链中伪造 HTTPS。
+  app.addHook('onRequest', (_request, reply, done) => {
+    reply
+      .header('Content-Security-Policy', CONTENT_SECURITY_POLICY)
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('X-Frame-Options', 'DENY')
+      .header('Referrer-Policy', 'no-referrer')
+      .header('Permissions-Policy', PERMISSIONS_POLICY);
+    done();
   });
 
   // 必须在注册任何封装插件或路由前设置，确保所有子上下文继承统一错误包络。
@@ -114,6 +146,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(memoRoutes);
   await app.register(notificationRoutes);
   await app.register(notificationAdminRoutes);
+  await app.register(hermesBindingRoutes);
   await app.register(aiAdminRoutes);
   await app.register(staticFiles, { root: UPLOADS_DIR, prefix: '/uploads/', decorateReply: false });
   await app.register(uploadRoutes);
