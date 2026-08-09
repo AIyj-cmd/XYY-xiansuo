@@ -1,12 +1,12 @@
 # 变更日志
 
-## Unreleased — Release launcher 权限 P1 闭环（2026-08-09）
+## `dd5559de` — Release launcher 权限 P1 闭环（2026-08-09）
 
 - 新增固定白名单 `poc/ilink-gateway/scripts/normalize-runtime-launchers.mjs`，只将三个受控 Hermes/Gateway launcher 规范为精确 `0755`；不接受路径参数，以 `O_NOFOLLOW` + descriptor `fstat` 校验当前 UID、普通文件和单硬链接，全部初检成功后才修改。
 - Gateway 的 build/test/prestart 在运行前恢复 launcher 权限；新增规范化器反例与幂等测试，并保留原 `requireRepositoryLauncher` 对 `0775` 的 fail-closed 拒绝回归。
 - `deploy/deploy.sh` 在打包前、远端解包后/`rsync -a` 前、Hermes/Gateway `rsync -a` 后/构建前恢复权限，并验证 tar 中三个成员均精确为 `-rwxr-xr-x`。部署脚本仍不自动启动 Hermes manager/Gateway。
 - 无数据库、API、权限、渠道、前后端业务代码、锁文件或生产依赖变更。第 40 节独立验证为 Gateway 连续三轮 72/72、Server 170/170、H5 17/17、overlay 33/33 + dry-run；验收再跑 `0775 + umask 0002` build、Gateway 72/72、prestart、tar 权限和部署语法均通过。
-- 最终 P1=0、P2=0、P3=0。允许形成本地提交；提交后工作区干净时允许创建本地 RC tag。不授权 push、远程 tag、部署、生产 DB、真实渠道或外部发送。
+- 最终 P1=0、P2=0、P3=0。本地提交及本地 RC tag `rc/xiansuo-hermes-multi-user-clean-20260809` 已完成并指向 `dd5559de3082591fcfe89f62ecd6077014e6d665`。当前迁移为 `001`–`010`；生产 DB 备份、`009`→`010` 恢复演练和明确部署授权尚未执行。不授权 push、远程 tag、部署、生产 DB、真实渠道或外部发送；生产仅发布静态 H5，不运行或公网暴露 Vite `dev:h5`。
 
 ## Unreleased — 项目健康整改 v2（2026-08-09）
 

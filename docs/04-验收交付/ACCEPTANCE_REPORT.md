@@ -2,9 +2,11 @@
 
 最新验收日期：2026-08-09
 
-最新基线：`release/single-account-openclaw-v1`；本报告所随 launcher P1 闭环提交（父提交 `6576f0bc7f2352b857bf808a14c36eb7cf0dbff5`）
+最新代码基线：`dd5559de3082591fcfe89f62ecd6077014e6d665`；本地 RC tag `rc/xiansuo-hermes-multi-user-clean-20260809` 已指向该代码提交。本文档收口提交可位于 `release/single-account-openclaw-v1` 后续 HEAD，不改变该 RC 代码快照。
 
-最新结论：**release 合并后 launcher P1 已闭环，P1=0、P2=0、P3=0；允许将当前精确差异形成本地提交，并在提交后工作区干净时创建本地 RC tag。生产迁移、发布、push 和 Hermes 真实 Pilot/启用仍未授权。** 历史验收结论保留在下文，本轮详见第 14 节。
+最新结论：**launcher P1 已闭环，P1=0、P2=0、P3=0；本地提交和本地 RC tag 已完成。** 当前迁移为 `001`–`010`。生产数据库一致性备份、`009`→`010` 恢复演练、生产部署授权及 Hermes 真实 Pilot/启用均未执行或未授权，故生产发布和真实渠道仍为 **NO-GO**。生产仅发布 `app/dist/build/h5/` 静态制品，不运行或公网暴露 Vite `dev:h5` 开发服务器。
+
+本人绑定后的本人收件且旧固定接收人未误收，是单用户路由隔离证据；它不替代多人放行。两名员工同时 active 的独立账号、交叉隔离和各自单次收件仍须在获授权 Pilot 中完成，才可评估多人开放。下方历史章节保留当时验收事实；所有“允许提交后创建 tag”、旧提交基线或 `001`–`009` 的最新口径均已被本段 superseded，不得据此判断当前状态。
 
 ## 1. 验收边界
 
@@ -325,9 +327,11 @@
 
 ## 14. Release 合并后 launcher P1 最终验收（2026-08-09）
 
+> **已 superseded：** 本节中的“提交后创建本地 RC tag”是提交前的条件式验收结论。当前 HEAD/tag、迁移与生产门禁以报告顶部“最新基线/最新结论”为准；本节的离线测试与安全复核事实保持不变。
+
 ### 验收结论
 
-**PASS；P1=0、P2=0、P3=0。允许本地提交；该提交完成且工作区干净后，允许在同一提交上创建本地 RC tag。**
+**PASS；P1=0、P2=0、P3=0。该验收所述本地提交和同提交 RC tag 已完成。**
 
 本结论只冻结 `release/single-account-openclaw-v1` 上的 launcher 权限修复与已合并的项目健康整改；不授权 push、PR、远程 tag、部署、PM2 启动、生产数据库操作、真实登录/扫码/渠道发送或 DeepSeek 调用。
 
@@ -351,6 +355,6 @@
 
 ### 残余风险与放行建议
 
-- R-1 App 依赖风险仍按批准口径保留：29 high / 1 moderate / 0 critical，只发布静态 H5，开发服务器仅 loopback。
+- R-1 App 依赖风险仍按批准口径保留。按当前锁文件与 npm 11.16.0 重跑 `npm audit --omit=dev --json`，当前为 **2 high / 0 moderate / 0 critical**（`vite@5.2.8` 与间接 `nanoid@3.3.16`）；历史 29 high / 1 moderate 是旧审计对 effect graph 的统计，不是 29 个独立漏洞。生产只发布静态 H5，Vite 开发服务器仅允许 loopback。
 - R-2/G2 上传配额/生命周期产品值、R-3 生产备份/迁移/恢复演练、Hermes 真实 Pilot 与生产监控仍是外部或人工门禁，未被本次离线验收覆盖。
-- **本地提交：GO。本地 RC tag：CONDITIONAL GO，仅在本次精确差异已提交、所有必需文档纳入同一 RC 候选集且工作区干净后创建。远端发布/生产/Hermes 真实启用：NO-GO。**
+- **本地提交和本地 RC tag：已完成。远端发布/生产/Hermes 真实启用：NO-GO；生产备份、`009`→`010` 恢复演练及明确部署授权完成前不得推进。**

@@ -1,6 +1,10 @@
 # 当前版本部署手册
 
-> **2026-08-08 Hermes 多用户交付覆盖说明：** 本轮仅完成离线代码验收，不授权部署、真实 Pilot、登录、扫码、联网或微信发送。以下新增步骤是未来另获明确授权后的硬门禁，不得据此直接操作生产。
+> **当前发布记录（2026-08-09，覆盖下方提交前的“当前/最新”口径）：** 当前代码 RC 为 `dd5559de3082591fcfe89f62ecd6077014e6d665`，本地 tag 为 `rc/xiansuo-hermes-multi-user-clean-20260809`，二者一致。后续纯文档提交可位于 `release/single-account-openclaw-v1` 的更新 HEAD，不改变该 RC 代码快照。launcher 权限 P1 修复已随该提交完成，不再是“尚未提交”的候选差异；当前离线验收 P1=0、P2=0、P3=0。
+>
+> 当前 schema 迁移为 `001`–`010`。生产数据库一致性备份、`009`→`010` 恢复演练和部署授权均**尚未执行**；因此本手册不授权生产迁移、部署、PM2/systemd/Nginx 操作、真实 Pilot、登录、扫码、联网或微信发送。生产只发布 `app/dist/build/h5/` 静态制品，绝不运行或公网暴露 Vite `dev:h5` 开发服务器。当前锁文件下 App audit 为 **2 high / 0 moderate / 0 critical**（Vite 和间接 nanoid）；保留为 R-1，不使用 `--force` 或 `--legacy-peer-deps` 规避。
+>
+> 已有“本人绑定后本人收件、旧固定接收人未误收”的结果，只能作为**单用户路由隔离证据**。两名员工同时 active 的独立账号、交叉隔离及各自单次收件尚未完成，仍是多人开放 Pilot 的硬门禁。下方历史章节保留其当时事实；其中关于未提交 launcher、旧提交基线、`001`–`009` 或提交/tag 前条件式放行的表述均由本记录 superseded，不得作为当前发布状态引用。
 
 ## Hermes 1–10 用户部署前置门禁
 
@@ -223,9 +227,11 @@ Git 只能保存三个 launcher 的可执行位，不能保存去除组写位的
 
 ## 13. Release launcher 权限与 RC 冻结说明（2026-08-09）
 
-- 合并基线为 `release/single-account-openclaw-v1` @ `6576f0bc7f2352b857bf808a14c36eb7cf0dbff5`；当前 launcher P1 修复尚未提交。只有将验收报告、变更日志、部署说明、回滚计划与精确实现/测试差异形成同一本地提交，且 `git status --short` 为空后，才允许在该提交上创建本地 RC tag。
+> **已 superseded：** 本节最初记录的是提交前冻结门禁。当前 HEAD/tag、迁移与生产门禁以本手册顶部“当前发布记录”为准；以下技术门禁和未执行部署事实仍然有效。
+
+- launcher P1 修复已提交为 `dd5559de3082591fcfe89f62ecd6077014e6d665`，本地 RC tag `rc/xiansuo-hermes-multi-user-clean-20260809` 已指向该提交；当前工作区作为发布记录应保持干净。此前 `6576f0bc7f2352b857bf808a14c36eb7cf0dbff5` 是该修复的父提交，不再是当前合并基线。
 - RC 前必须保持三 launcher 为当前 UID 拥有、单硬链接、无符号链接的普通文件；`npm run build`、`npm test`、`npm start` 的 prestart 会先运行固定白名单规范化。任一校验失败都应停止，不得改为 `chmod -R`、扩大白名单或放宽 Gateway 运行时门禁。
 - 未执行 `deploy/deploy.sh`。未来另获部署授权时，打包前规范化三项并检查 tar 成员精确 `-rwxr-xr-x`；远端解包后、任一 `rsync` 前以及 Hermes/Gateway `rsync -a` 后、构建/PM2 前必须再运行同一工具。任一处失败立即中止制品或部署流程。
 - 监控仍须包含 Gateway 启动权限门禁失败、制品 launcher 权限偏离、manager/Gateway readiness、`result_unknown`、超时子进程回收和三元组不匹配取消；日志不得含 Secret、QR、accountRef 原值、target/context/cursor 或正文。
 
-**本地提交：GO。本地 RC tag：提交后工作区干净时 GO。push/远程 tag/部署/真实渠道：NO-GO。**
+**本地提交与本地 RC tag 已完成。push/远程 tag/部署/真实渠道：NO-GO；生产数据库备份、`009`→`010` 恢复演练和明确部署授权完成前不得推进。**
