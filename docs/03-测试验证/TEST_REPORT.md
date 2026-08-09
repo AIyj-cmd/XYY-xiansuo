@@ -1370,3 +1370,101 @@ P2：无。
 - 上述精确 active callback 即使在 QR TTL 后仍返回 active；binding 与 attempt 的完整行快照前后一致。错误 activation、target、account、generation，以及非 active/cancelled status 在 TTL 后均拒绝；awaiting_context 的首次过期激活仍拒绝；解绑后的旧 callback 在 TTL 后也拒绝。
 - 新增真实 Fastify/HMAC 路由回归：正确 post-TTL callback 为 HTTP 200；错误 activation 与解绑后的相同 callback 均为 HTTP 409。该用例使用临时 0600 secret 文件与 loopback 配置，不触发外部 manager/provider。
 - 执行：`cd server && npm run build && npm test`，**163/163 通过**；`git diff --check` 通过。验证阶段新增/强化的仅为 server 测试与本报告，未修改业务实现。
+
+### 37. 最终独立验证（2026-08-09，commit `615e5dd`）
+
+**结论：FAIL / NO-GO，不允许进入验收或发布。** 本轮在隔离数据库、动态本机端口和离线 Fake/Mock 环境中确认 4 个 P1、2 个 P2、1 个 P3；未触碰 `server/data`、未启动或停止任何既有 live 进程，未访问真实微信、Gateway、Manager、DeepSeek 或发送任何消息。
+
+#### 测试环境与开始基线
+
+- 工作目录 `/home/yj/xiansuo`；分支 `feature/hermes-per-user-qr-binding`，提交 `615e5dd457cbdf064544bbe26aea955f34ef0dc9`；Node `v24.18.0`。开始时 `git status --short` 和 `git diff --name-only` 都为空。
+- 开始时记录根业务数据文件 SHA-256：`app.db=8b8bc326ab3ac27a553b22ea7cacf6e34681d1f471246277907a8ed0a061d5f2`、`app.db-shm=42a2baf333a04f32142eed5a6b9eb477ae1a8c1ffc38e7124e0342c561b74c38`、`app.db-wal=194c0753141ffbc228cc791ef5627e5a1e4da3dbad325296547b25b32a839c4e`、`leads.db/xiansuo.db` 均为空文件哈希。测试后相同；既有 `server/data/backups/` 文件也未改动。
+- 覆盖：依赖锁定、构建、自动化、H5 浏览器、迁移 001–009、权限/隔离、Hermes 开关/规则/worker、JWT/安全头、部署链与静态检查。未覆盖：真实二维码登录/扫码/联网发送、真实生产副本迁移演练；这些均未获本轮授权。
+
+#### 已执行命令与实际结果
+
+| 命令/验证 | 结果 |
+| --- | --- |
+| `server: npm ci && npm run build && npm test` | PASS；最终 **163/163**。 |
+| `poc/ilink-gateway: npm ci && npm run build && npm test` | 首次 **58/59**，`Hermes command runner SIGKILLs…` 读取 `/tmp/.../timeout.pid` 时 `ENOENT`；完整重跑 **59/59**。保留为 P3 测试不稳定性。 |
+| `poc/hermes-weixin-transport: ./run-tests.sh` | PASS，**30/30**。 |
+| `app: npm ci && npm run build:h5` | PASS；仅 H5。 |
+| `app: npm run test:e2e` | PASS，Playwright **14/14**。`npm run test:h5` 等价链已执行；其两次工具会话都在输出完整结果前异常结束，因此不将该包装命令单独标为通过。 |
+| `server: npm audit --omit=dev --json` | FAIL：3 high（`brace-expansion`/`minimatch`、`fast-uri`）。 |
+| `gateway: npm audit --json` | PASS：0 vulnerabilities。 |
+| `app: npm audit --json` | FAIL：2 high + 1 moderate（`vite`、`nanoid`、`@dcloudio/vite-plugin-uni`）。 |
+| `git diff --check` | PASS。 |
+| fresh 临时 SQLite 迁移矩阵 | PASS：完整 ledger 为 001–009，见下表。 |
+
+自动化最终通过数为 **266**（Server 163 + Gateway 59 + overlay 30 + H5 14）；另有首次 Gateway 运行 1 项可复现于压力时的测试失败，未因重跑通过而删除。
+
+#### 001–009 实际迁移矩阵
+
+| 版本 | 实际 description |
+| --- | --- |
+| 001 | create baseline schema |
+| 002 | reconcile legacy lead and follow-up schema |
+| 003 | add owner transfer audit metadata and follow-up derivation source |
+| 004 | create notification rules and reliable notification outbox |
+| 005 | add AI scheduler audit log and initialize approved notification rules |
+| 006 | add provider latency audit to ai request logs |
+| 007 | allow experimental OpenClaw notification channel |
+| 008 | add Hermes multi-user opaque bindings and delivery generation |
+| 009 | replace shared Hermes binding with per-user QR account references |
+
+每条 ledger checksum 与当前 `MIGRATIONS` 常量一致；现有测试也覆盖 fresh、历史升级、重复、checksum 冲突和失败回滚。迁移均为前向变更，生产发布前仍须在可恢复副本演练升级。
+
+#### 已确认失败项与最小复现
+
+1. **P1 — Hermes 功能关闭时仍暴露 H5 入口与二维码操作。**
+   - 复现：以 `HERMES_BINDING_ENABLED=false`、临时 DB、端口 43867 启动 Server；浏览器登录后进入“我的”。
+   - 预期：关闭时不展示 Hermes/微信通知绑定入口与登录二维码操作。
+   - 实际：显示“💬 微信通知绑定”；进入 `/pages/hermes-binding/index` 仍显示“生成登录二维码”。点击后才由 `POST /api/hermes-binding/qr-attempts` 返回 409“功能未启用”。证据为 `app/src/pages/mine/index.vue` 无条件导航、`app/src/pages/hermes-binding/index.vue` 无功能状态门禁，以及隔离浏览器快照输出。
+   - 建议：由受认证的 feature-status API 或安全的启动配置驱动入口与页面 fail-closed；关闭时不渲染入口、按钮或功能文案。
+
+2. **P1 — 通知管理可保存 Hermes + 非 `owner_changed`，worker 必然拒绝。**
+   - 复现：临时 DB 设置 Hermes channel 开启和 0600 假 secret；admin `PUT /api/admin/notification-rules/daily_report`，payload 为 `enabled:true`、`recipient_strategy:'reserved'`、`channel_order:['hermes']`、合法 AI config。HTTP 为 200；再创建 daily_report task 并离线执行一次 worker。
+   - 预期：管理端拒绝 Hermes 非 owner_changed，或创建时完整写入并支持其 binding 三元组。
+   - 实际：`{"savedStatus":200,"createdStatus":"pending","channel":"hermes","status":"failed","last_error_code":"HERMES_BINDING_GENERATION_INVALID","recipient_binding_generation":null,"recipient_account_ref":null}`。没有网络调用。
+   - 建议：`notification-admin`/`parseAiRule` 禁止 Hermes 用于 AI digest，且 `createScheduledNotification` 对未支持渠道 fail-closed；补 API 到 worker 端到端断言。
+
+3. **P1 — member 工作台与工作台导出泄露他人线索。**
+   - 复现：临时 DB 创建 member 自己及 admin 他人各一条今日待跟进线索；以 member JWT 请求 `GET /api/dashboard/summary` 和 `GET /api/export/dashboard`。
+   - 预期：按 README，普通用户仅能访问自己负责的线索和相应导出。
+   - 实际：摘要 200 且 `foreignPhonePresent:true`；工作台导出同样对 member 返回 200。`dashboard.ts` 和 `import_export.ts` 的统计/明细查询均没有 owner 过滤，含他人手机号。
+   - 建议：所有 dashboard 与 dashboard export 查询对非 admin 添加 `owner_id=request.user.id`；加两名成员的 API 和 XLSX 内容隔离测试。
+
+4. **P1 — Hermes 生产部署服务链不完整。**
+   - 证据：`deploy/deploy.sh` 打包/同步仅含 `server/`、`poc/ilink-gateway/`、H5 与 `deploy/`，不含 `poc/hermes-weixin-transport/`；部署只复制 API、phase3 worker 和旧 Gateway PM2 模板，`rg` 未找到 `account-manager`、38116/38117 service 或 Hermes manager PM2/systemd 单元。脚本也明确只重载 API，worker/Gateway 保持停止。
+   - 影响：即使打开 Hermes 开关，38116 Gateway 与 38117 AccountManager 没有可部署、可监督、可重启的实现/配置链，QR 或通知不能正常工作。
+   - 建议：在批准的部署范围中补受控打包、私有 0600 配置、loopback service unit、依赖顺序/healthcheck、停止/回滚流程；未补齐前不得开启 Hermes。
+
+5. **P2 — 改密后旧 JWT 未失效。**
+   - 复现：member 使用 token 改密成功后，以同一个旧 token 请求 `/api/users/me`。
+   - 实际：`passwordChangeStatus:200` 后 `oldTokenAfterPasswordStatus:200`；JWT 仅含 user id，用户记录没有会话/密码版本。
+   - 建议：增加 token/session version（改密、管理员重置时递增）或受控 token denylist，并覆盖并发旧 token。
+
+6. **P2 — API 未设置基础浏览器安全响应头。**
+   - 隔离 API 响应实测 `content-security-policy`、`x-content-type-options`、`x-frame-options`、`referrer-policy` 均为 null；当前也未注册 helmet 或等价 hook。
+   - 建议：按 H5/静态资源兼容性设计 CSP，并至少设置 nosniff、frame-ancestors/X-Frame-Options、Referrer-Policy、Permissions-Policy；为 API 与静态响应加回归。
+
+7. **P3 — Gateway 子进程超时回收测试不稳定。**
+   - 首次完整 Gateway 测试失败：`ENOENT: .../timeout.pid`，位于 `test/gateway.test.ts:688`；同一命令完整重跑 59/59。
+   - 建议：测试等待子进程写入 PID 后再断言，或以父进程可观察的句柄同步，避免把调度竞争当作实现结果。
+
+#### 通过项、误报排除与其他安全检查
+
+- Hermes binding 的 activationId active 重放、独立 disable 原子性、解绑、QR attempt 全局锁、绑定 generation、nonce、HMAC、result_unknown 单次终态、overlay vault 隔离等由 Server/Gateway/overlay 266 项最终回归覆盖；本轮未发现新的对应 P1。
+- README 的普通 `/api/export` 契约已核对：member query 有 `owner_id=request.user.id` 且排除软删；本轮确认的是**工作台** summary/export 的独立越权，不是普通线索导出误报。
+- 上传路由有认证、10 MB multipart 上限和 MIME allowlist；但仅信任客户端 `mimetype`、未做魔数/内容解码验证且静态 `/uploads/` 长缓存。未向仓库 uploads 写测试文件，故这项记录为待加固范围而非本轮可复现 P1/P2。
+- 认证的缺失/错误/过期 token、角色变更与停用旧 token 失效，由 Server 163 项回归通过；改密不失效是独立问题，不能据此误报全部 JWT 机制失效。
+- 无真实发送、扫描、AI 调用或 live DB 访问；所有临时 DB、secret、浏览器产物和复现脚本均已删除。
+
+#### 测试阶段产生的文件变化
+
+- 仅更新本文件 `docs/03-测试验证/TEST_REPORT.md`。
+- `app/dist/build/h5/`、node_modules、`/tmp` 隔离库/脚本/日志均为工具产物或已删除；没有修改 `app/src`、`server/src`、`scripts`、`deploy`、迁移、锁文件、依赖或 `server/data`。
+
+#### 发布结论与条件
+
+**不允许进入验收或发布。** 至少必须修复并复验全部 4 个 P1；P2 应在发布前纳入安全修复。依赖审计中的 Server 3 high、App 2 high + 1 moderate 必须按上游兼容约束评估并形成明确处置，不得用 `--force` 或不受控升级掩盖。修复后应重跑 Server/Gateway/overlay/H5、上述四个最小复现、权限/XLSX 内容隔离、关闭开关 H5 浏览器流和完整部署 dry-run。
