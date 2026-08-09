@@ -14,14 +14,22 @@ function bad(reply: any, msg: string, status = 400) { return reply.code(status).
 
 export async function hermesBindingRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/hermes-binding', { preHandler: authenticate }, async (request, reply) => {
+    if (!resolveNotificationConfig().hermesBindingEnabled) {
+      reply.header('Cache-Control', 'no-store');
+      return reply.send({ code: 0, msg: 'ok', data: { status: 'disabled', generation: 0, mode: 'per_user_qr', enabled: false } });
+    }
     expireHermesQrAttempts(getDb(), nowDatetime());
     reply.header('Cache-Control', 'no-store');
-    return reply.send({ code: 0, msg: 'ok', data: { ...publicHermesBinding(getDb(), request.user.id), mode: 'per_user_qr' } });
+    return reply.send({ code: 0, msg: 'ok', data: { ...publicHermesBinding(getDb(), request.user.id), mode: 'per_user_qr', enabled: true } });
   });
 
-  app.post('/api/hermes-binding/code', { preHandler: authenticate }, async (_request, reply) => bad(reply, '旧绑定码接口已退役，请生成登录二维码', 409));
+  app.post('/api/hermes-binding/code', { preHandler: authenticate }, async (_request, reply) => {
+    if (!resolveNotificationConfig().hermesBindingEnabled) return bad(reply, 'Hermes 绑定功能未启用', 409);
+    return bad(reply, '旧绑定码接口已退役，请生成登录二维码', 409);
+  });
 
   app.delete('/api/hermes-binding', { preHandler: authenticate }, async (request, reply) => {
+    if (!resolveNotificationConfig().hermesBindingEnabled) return bad(reply, 'Hermes 绑定功能未启用', 409);
     try {
       const removed = removeOwnedHermesBinding(getDb(), request.user.id, nowDatetime());
       await Promise.all(removed.accountRefs.map(async (accountRef) => { try { await hermesManagerRequest('DELETE', `/qr-attempts/${accountRef}`); } catch { /* DB is already fail-closed; manager reconciliation will retire it */ } }));
@@ -49,6 +57,7 @@ export async function hermesBindingRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/hermes-binding/qr-attempts/:id', { preHandler: authenticate }, async (request, reply) => {
+    if (!resolveNotificationConfig().hermesBindingEnabled) return bad(reply, 'Hermes 绑定功能未启用', 409);
     const id = attemptId.safeParse((request.params as any).id); if (!id.success) return bad(reply, '绑定请求无效', 404);
     const attempt = getOwnedHermesQrAttempt(getDb(), request.user.id, id.data, nowDatetime()); if (!attempt) return bad(reply, '绑定请求不存在', 404);
     let remote: z.infer<typeof managerQr> | undefined;
@@ -63,6 +72,7 @@ export async function hermesBindingRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.delete('/api/hermes-binding/qr-attempts/:id', { preHandler: authenticate }, async (request, reply) => {
+    if (!resolveNotificationConfig().hermesBindingEnabled) return bad(reply, 'Hermes 绑定功能未启用', 409);
     const id = attemptId.safeParse((request.params as any).id); if (!id.success) return bad(reply, '绑定请求无效', 404);
     const attempt = getOwnedHermesQrAttempt(getDb(), request.user.id, id.data, nowDatetime()); if (!attempt) return bad(reply, '绑定请求不存在', 404);
     cancelOwnedHermesQrAttempt(getDb(), request.user.id, id.data, nowDatetime());

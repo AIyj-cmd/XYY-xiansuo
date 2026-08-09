@@ -1,21 +1,26 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import Fastify from 'fastify';
 
 const directory = mkdtempSync(path.join(tmpdir(), 'xiansuo-hermes-remove-route-'));
+const internalFile = path.join(directory, 'internal.secret'); const managerFile = path.join(directory, 'manager.secret');
+writeFileSync(internalFile, `${'i'.repeat(32)}\n`, { mode: 0o600 }); writeFileSync(managerFile, `${'m'.repeat(32)}\n`, { mode: 0o600 }); chmodSync(internalFile, 0o600); chmodSync(managerFile, 0o600);
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'hermes-remove-route-test-secret-at-least-32';
 process.env.DB_PATH = path.join(directory, 'route.sqlite');
-process.env.HERMES_BINDING_ENABLED = 'false';
+process.env.HERMES_BINDING_ENABLED = 'true';
+process.env.HERMES_INTERNAL_SECRET_FILE = internalFile;
+process.env.HERMES_ACCOUNT_MANAGER_URL = 'http://127.0.0.1:38999';
+process.env.HERMES_ACCOUNT_MANAGER_SECRET_FILE = managerFile;
 
 const { closeDb, getDb, initDb } = await import('../src/db.js');
 const { hermesBindingRoutes } = await import('../src/routes/hermes-bindings.js');
 const { signToken } = await import('../src/utils/jwt.js');
 
-test('DELETE /api/hermes-binding 仅解绑 JWT 本人，管理器失败不回滚已提交数据库', { concurrency: false }, async () => {
+test('DELETE /api/hermes-binding 仅解绑 JWT 本人，管理器失败不回滚已提交数据库；关闭态先于 DB/manager fail-closed', { concurrency: false }, async () => {
   initDb(); const db = getDb();
   db.prepare("INSERT INTO users(username,name,password_hash) VALUES ('remove-route-a','用户甲','x'),('remove-route-b','用户乙','x'),('remove-route-c','用户丙','x')").run();
   const refs = ['hr_aaaaaaaaaaaaaaaaaaaa', 'hr_bbbbbbbbbbbbbbbbbbbb'];
@@ -38,5 +43,20 @@ test('DELETE /api/hermes-binding 仅解绑 JWT 本人，管理器失败不回滚
   assert.equal((await app.inject({ method: 'GET', url: '/api/hermes-binding', headers: { authorization: `Bearer ${b}` } })).json().data.status, 'disabled');
   const absent = await app.inject({ method: 'DELETE', url: '/api/hermes-binding', headers: { authorization: `Bearer ${c}` } });
   assert.equal(absent.statusCode, 200); assert.deepEqual(absent.json().data, { status: 'unbound' }); assert.equal((db.prepare('SELECT COUNT(*) AS count FROM hermes_bindings WHERE user_id=3').get() as { count: number }).count, 0);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/hermes-binding', headers: { authorization: `Bearer ${b}` } })).json().data.enabled, true);
+
+  process.env.HERMES_BINDING_ENABLED = 'false';
+  const beforeDisabled = JSON.stringify({ bindings: db.prepare('SELECT * FROM hermes_bindings ORDER BY user_id').all(), attempts: db.prepare('SELECT * FROM hermes_login_attempts ORDER BY id').all() });
+  const disabledGet = await app.inject({ method: 'GET', url: '/api/hermes-binding', headers: { authorization: `Bearer ${b}` } });
+  assert.deepEqual(disabledGet.json().data, { status: 'disabled', generation: 0, mode: 'per_user_qr', enabled: false });
+  assert.equal(disabledGet.headers['cache-control'], 'no-store');
+  for (const request of [
+    { method: 'POST' as const, url: '/api/hermes-binding/code' },
+    { method: 'DELETE' as const, url: '/api/hermes-binding' },
+    { method: 'POST' as const, url: '/api/hermes-binding/qr-attempts' },
+    { method: 'GET' as const, url: '/api/hermes-binding/qr-attempts/not-a-uuid' },
+    { method: 'DELETE' as const, url: '/api/hermes-binding/qr-attempts/not-a-uuid' },
+  ]) assert.equal((await app.inject({ ...request, headers: { authorization: `Bearer ${b}` } })).statusCode, 409);
+  assert.equal(JSON.stringify({ bindings: db.prepare('SELECT * FROM hermes_bindings ORDER BY user_id').all(), attempts: db.prepare('SELECT * FROM hermes_login_attempts ORDER BY id').all() }), beforeDisabled);
   await app.close(); closeDb(); rmSync(directory, { recursive: true, force: true });
 });
