@@ -12,15 +12,14 @@
 
 当前核心代码可以构建，Server、Gateway、Hermes overlay 和 H5 浏览器回归最终共 **266/266** 通过；迁移 001–009 的离线矩阵完整，`server/data` 前后哈希一致。在已执行的离线 Fake/Mock 范围内，未发现数据库损坏、Hermes 跨用户错误路由、真实渠道误调用或核心状态机回归。
 
-当前分支确认 **3 项运行时/契约发布阻断（P1）**、**2 项发布前安全问题（P2）** 和 **1 项测试稳定性问题（P3）**。此外还有 **1 项 Hermes 部署硬门禁（D-1）**、Server 生产依赖审计/CI 门禁、App 已知依赖风险和生产迁移演练门禁。独立测试报告第 37 节把 D-1 一并统计为第 4 个 P1；本报告保留同一事实与 NO-GO 结论，但将“代码运行缺陷”和“尚未形成部署单元”分开统计。
+当前分支确认 **2 项运行时/契约发布阻断（P1）**、**2 项发布前安全问题（P2）** 和 **1 项测试稳定性问题（P3）**。此外还有 **1 项 Hermes 部署硬门禁（D-1）**、Server 生产依赖审计/CI 门禁、App 已知依赖风险和生产迁移演练门禁。独立测试报告第 37 节最初把公司级工作台可见性和 D-1 一并计入 4 个 P1；用户随后明确确认公司级工作台/导出属于接受的产品权限口径，因此本报告不再将其计为缺陷，同时继续把“代码运行缺陷”和“尚未形成部署单元”分开统计。
 
 因此：
 
 - 继续本地功能测试：可以。
-- 合并为发布候选：NO-GO；至少受 P1-2 和 Server 依赖审计 CI 失败阻断。
-- 任何共享环境发布：NO-GO；跨用户工作台数据隔离尚未修复。
-- 部署并启用 Hermes：NO-GO；同时受 P1-1、P1-3 和 D-1 阻断。
-- 修复 3 项 P1、处置 Server CI 门禁并完成对应回归后，才可进入合并评审；D-1 必须在任何 Hermes 部署前关闭，不能用代码测试通过替代。
+- 合并为发布候选：NO-GO；Server 依赖审计会令当前 CI 失败。
+- 部署并启用 Hermes：NO-GO；同时受 P1-1、P1-2 和 D-1 阻断。
+- 修复 2 项 P1、处置 Server CI 门禁并完成对应回归后，才可进入合并评审；D-1 必须在任何 Hermes 部署前关闭，不能用代码测试通过替代。
 
 本轮只审计、测试和记录问题，没有修改产品源码、迁移、依赖、运行配置或业务数据。
 
@@ -106,13 +105,13 @@
 
 ### 问题
 
-#### P1-2：普通成员可读取并导出他人工作台手机号
+#### 已接受的产品口径：普通成员可查看公司级工作台与工作台导出
 
 隔离数据库最小复现确认：member 请求 `/api/dashboard/summary` 能看到其他负责人线索的手机号；`/api/export/dashboard` 也返回公司级 XLSX。相关 SQL 没有按 `request.user.id` 过滤。
 
-这与 README 中“普通用户只能导出自己负责的线索”冲突，并构成真实的跨用户隐私暴露。
+该行为与 README 中“普通用户只能导出自己负责的线索”的原有文字口径冲突；用户已于 2026-08-09 明确确认这属于可接受的公司级工作台权限，不要求按 owner 隔离，因此不再计入 P1/P2/P3，也不要求修改当前 API。
 
-建议：确定唯一权限契约后，对非 admin 的 dashboard summary/export 统一加入 owner 可见性谓词；补两名成员、管理员、未分配和软删除线索的 API 与 XLSX 内容级反向测试。
+后续维护要求：更新项目权限说明，明确区分普通线索导出与公司级工作台导出，避免未来开发者依据旧文档误改权限。若将来产品口径再次改为成员数据隔离，需要重新进行权限设计和 XLSX 内容级测试。
 
 #### P2-1：修改密码后旧 JWT 继续有效
 
@@ -142,7 +141,7 @@
 
 ### 问题
 
-#### P1-3：通知规则允许创建 Worker 永远无法处理的 Hermes 任务
+#### P1-2：通知规则允许创建 Worker 永远无法处理的 Hermes 任务
 
 最小复现：管理员可把 `daily_report` 启用为 `channel_order=['hermes']`，API 返回 200；任务随后以 pending 入队，但没有 Hermes binding generation/accountRef。Worker 领取后终态失败：`HERMES_BINDING_GENERATION_INVALID`。
 
@@ -225,7 +224,7 @@ Gateway 全量测试首次在等待 `timeout.pid` 时出现 ENOENT（58/59），
 
 - 通知渠道能力在三处重复定义并已产生真实不一致；
 - 部署拓扑落后于本地实现；
-- dashboard 权限没有复用统一 visibility predicate；
+- 公司级工作台权限已获产品确认，README 已同步区分普通线索导出和工作台导出；
 - 大型页面和 `server/src/db.ts`、`server/src/routes/leads.ts` 仍承担过多职责；
 - OpenClaw/服务号/Hermes 多条历史路线增加配置和文档认知成本。
 
@@ -234,8 +233,7 @@ Gateway 全量测试首次在等待 `timeout.pid` 时出现 ENOENT（58/59），
 | 编号 | 等级 | 问题 | 修复门禁 |
 | --- | --- | --- | --- |
 | P1-1 | P1 | Hermes 关闭仍展示 H5 入口 | Hermes 启用/发布前 |
-| P1-2 | P1 | member dashboard/导出泄露他人手机号 | 任何共享环境发布前 |
-| P1-3 | P1 | Hermes 可配置到 AI 事件但 worker 必失败 | Hermes 启用前 |
+| P1-2 | P1 | Hermes 可配置到 AI 事件但 worker 必失败 | Hermes 启用前 |
 | P2-1 | P2 | 改密后旧 JWT 不失效 | 正式发布前 |
 | P2-2 | P2 | 浏览器安全响应头缺失 | 正式发布前 |
 | P3-1 | P3 | Gateway timeout 测试竞态 | 合并前建议修复 |
@@ -248,16 +246,15 @@ Gateway 全量测试首次在等待 `timeout.pid` 时出现 ENOENT（58/59），
 
 ## 12. 推荐最小整改顺序
 
-1. 立即修复 member dashboard summary/export 数据隔离并补 XLSX 内容级测试。
-2. 建立统一事件×渠道能力矩阵，Hermes 仅允许 `owner_changed`。
-3. 增加 Hermes runtime capability，关闭时 H5 菜单和页面 fail-closed。
-4. 最小修复 Server 可修复的 3 个 high 生产依赖，并让 CI 恢复通过。
-5. 修复 Gateway timeout 测试同步竞态。
-6. 在另获部署范围批准后，完成 Hermes manager/Gateway 可部署服务单元、preflight、readiness 和回滚；该项是 D-1，不计作运行缺陷修复。
-7. 单独设计 JWT session version 与浏览器安全响应头；同步加固上传内容识别。
-8. 获得部署授权后，在一致性副本完成迁移与恢复演练。
-9. 上述门禁完成后，再做双用户 Hermes 隔离 Pilot；不得直接开放多人生产使用。
-10. 大页面和历史路线清理由后续真实维护热点驱动，不做一次性大重构。
+1. 建立统一事件×渠道能力矩阵，Hermes 仅允许 `owner_changed`。
+2. 增加 Hermes runtime capability，关闭时 H5 菜单和页面 fail-closed。
+3. 最小修复 Server 可修复的 3 个 high 生产依赖，并让 CI 恢复通过。
+4. 修复 Gateway timeout 测试同步竞态。
+5. 在另获部署范围批准后，完成 Hermes manager/Gateway 可部署服务单元、preflight、readiness 和回滚；该项是 D-1，不计作运行缺陷修复。
+6. 单独设计 JWT session version 与浏览器安全响应头；同步加固上传内容识别。
+7. 获得部署授权后，在一致性副本完成迁移与恢复演练。
+8. 上述门禁完成后，再做双用户 Hermes 隔离 Pilot；不得直接开放多人生产使用。
+9. 大页面和历史路线清理由后续真实维护热点驱动，不做一次性大重构。
 
 ## 13. 最终建议
 
@@ -268,7 +265,7 @@ Gateway 全量测试首次在等待 `timeout.pid` 时出现 ENOENT（58/59），
 Hermes 每用户 QR/绑定状态机离线回归：PASS
 当前分支合并发布：NO-GO
 Hermes 真实启用：NO-GO
-下一步：按第12节先修3项P1与Server依赖/CI门禁，再进行独立复验
+下一步：按第12节先修2项P1与Server依赖/CI门禁，再进行独立复验
 ```
 
 建议继续以当前分支和完整 SHA 管理，不切换到 `main`，不合并服务号或历史 OpenClaw 多人研究代码。修复应按小提交拆分，每个 P1 独立测试、独立验收，避免再次把渠道、权限和部署改动混在一个提交中。
