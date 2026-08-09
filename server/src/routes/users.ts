@@ -97,7 +97,10 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
 
     if (data.is_active !== undefined) { fields.push('is_active = ?'); values.push(data.is_active); }
     if (data.role !== undefined) { fields.push('role = ?'); values.push(data.role); }
-    if (data.password !== undefined) { fields.push('password_hash = ?'); values.push(data.password); }
+    if (data.password !== undefined) {
+      fields.push('password_hash = ?', 'token_version = token_version + 1');
+      values.push(data.password);
+    }
     if (data.name !== undefined) { fields.push('name = ?'); values.push(data.name); }
     if (data.phone !== undefined) { fields.push('phone = ?'); values.push(data.phone); }
 

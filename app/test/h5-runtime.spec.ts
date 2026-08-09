@@ -280,3 +280,17 @@ test('Hermes 旧绑定需重绑时只允许解除，不生成并行二维码', a
   await login(page, MEMBER); await page.goto(`${baseUrl}/pages/hermes-binding/index`);
   await expect(page.getByText('旧绑定需重新绑定', { exact: true })).toBeVisible(); await expect(page.getByTestId('hermes-binding-remove')).toBeVisible(); await expect(page.getByTestId('hermes-qr-create')).toHaveCount(0);
 });
+
+test('自助改密成功立即清除本地会话并返回登录页', async ({ page }) => {
+  await login(page, ADMIN);
+  await page.goto(`${baseUrl}/pages/mine/index`);
+  await page.getByText('修改密码', { exact: true }).click();
+  const inputs = page.locator('input.uni-input-input');
+  await inputs.nth(0).fill(ADMIN.password);
+  await inputs.nth(1).fill('h5-admin-new-password');
+  await inputs.nth(2).fill('h5-admin-new-password');
+  await page.getByText('确认修改', { exact: true }).click();
+  await expect(page.getByText('账号登录')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => ({ token: localStorage.getItem('token'), userInfo: localStorage.getItem('userInfo') })))
+    .toEqual({ token: null, userInfo: null });
+});

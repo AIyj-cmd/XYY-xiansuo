@@ -47,7 +47,15 @@ test('空库创建完整版本化 schema，并强制外键', () => {
   const database = open('empty.db');
   runMigrations(database);
   const versions = database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>;
-  assert.deepEqual(versions.map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007', '008', '009']);
+  assert.deepEqual(versions.map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007', '008', '009', '010']);
+  const tokenVersion = database.prepare("PRAGMA table_info('users')").all() as Array<{ name: string; type: string; notnull: number; dflt_value: string | null }>;
+  const versionColumn = tokenVersion.find((column) => column.name === 'token_version');
+  assert.deepEqual(versionColumn && {
+    name: versionColumn.name, type: versionColumn.type, notnull: versionColumn.notnull, dflt_value: versionColumn.dflt_value,
+  }, {
+    name: 'token_version', type: 'INTEGER', notnull: 1, dflt_value: '0',
+  });
+  assert.throws(() => database.prepare("INSERT INTO users(username,name,password_hash,token_version) VALUES ('bad-version','坏版本','hash',-1)").run(), /CHECK constraint failed/);
   const bindingColumns = database.prepare('PRAGMA table_info(hermes_bindings)').all() as Array<{ name: string }>;
   assert.ok(bindingColumns.some((column) => column.name === 'active_activation_id_hash'));
   assert.equal((database.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys, 1);
@@ -108,6 +116,49 @@ test('008 活跃共享 Hermes 绑定升级到 009 时完整保留历史与 pendi
   assert.equal((database.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='009'").get() as { count: number }).count, 1);
   assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
   database.close();
+});
+
+test('009 升级至 010、重复执行、严格恢复与故障回滚均保持 token_version 合约', () => {
+  const upgrade = open('upgrade-009-to-010.db');
+  runMigrations(upgrade, MIGRATIONS.slice(0, 9), { log: () => undefined });
+  upgrade.prepare("INSERT INTO users(username,name,password_hash,role) VALUES ('version-upgrade','版本升级','hash','member')").run();
+  runMigrations(upgrade, MIGRATIONS, { log: () => undefined });
+  runMigrations(upgrade, MIGRATIONS, { log: () => undefined });
+  assert.equal((upgrade.prepare("SELECT token_version FROM users WHERE username='version-upgrade'").get() as { token_version: number }).token_version, 0);
+  assert.equal((upgrade.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='010'").get() as { count: number }).count, 1);
+  assert.throws(
+    () => runMigrations(upgrade, [{ ...MIGRATIONS[9], checksum: 'conflicting-010-checksum' }], { log: () => undefined }),
+    /校验和不匹配/,
+  );
+  upgrade.close();
+
+  const recovered = open('recover-existing-010-column.db');
+  runMigrations(recovered, MIGRATIONS.slice(0, 9), { log: () => undefined });
+  recovered.exec("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0 CHECK (typeof(token_version) = 'integer' AND token_version >= 0)");
+  runMigrations(recovered, [MIGRATIONS[9]], { log: () => undefined });
+  assert.equal((recovered.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='010'").get() as { count: number }).count, 1);
+  recovered.close();
+
+  const malformed = open('reject-existing-malformed-010-column.db');
+  runMigrations(malformed, MIGRATIONS.slice(0, 9), { log: () => undefined });
+  malformed.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
+  assert.throws(() => runMigrations(malformed, [MIGRATIONS[9]], { log: () => undefined }), /迁移010恢复状态不完整/);
+  assert.equal((malformed.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='010'").get() as { count: number }).count, 0);
+  malformed.close();
+
+  const rollback = open('rollback-010.db');
+  runMigrations(rollback, MIGRATIONS.slice(0, 9), { log: () => undefined });
+  const failing010: Migration = {
+    ...MIGRATIONS[9],
+    up(database) {
+      MIGRATIONS[9].up(database);
+      throw new Error('010 rollback injection');
+    },
+  };
+  assert.throws(() => runMigrations(rollback, [failing010], { log: () => undefined }), /010 rollback injection/);
+  assert.equal((rollback.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='010'").get() as { count: number }).count, 0);
+  assert.equal((rollback.prepare("PRAGMA table_info('users')").all() as Array<{ name: string }>).some((column) => column.name === 'token_version'), false);
+  rollback.close();
 });
 
 test('迁移校验和冲突或迁移失败时拒绝继续且不写完成记录', () => {

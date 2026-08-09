@@ -429,6 +429,35 @@ CREATE INDEX IF NOT EXISTS idx_hermes_attempt_expiry ON hermes_login_attempts(st
   database.exec("CREATE INDEX IF NOT EXISTS idx_notification_hermes_account ON notification_logs(recipient_user_id,recipient_binding_generation,recipient_account_ref) WHERE channel='hermes';");
 }
 
+/**
+ * The ledger can be lost on a restored database.  In that case an already
+ * present column is accepted only when it is exactly the contract introduced
+ * by 010; accepting a lookalike column could silently weaken token revocation.
+ */
+function addUserTokenVersion(database: DatabaseSync): void {
+  const columns = database.prepare("PRAGMA table_info('users')").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>;
+  const tokenVersion = columns.find((column) => column.name === 'token_version');
+  if (!tokenVersion) {
+    database.exec(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0
+      CHECK (typeof(token_version) = 'integer' AND token_version >= 0);`);
+    return;
+  }
+
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'")
+    .get() as { sql?: string } | undefined;
+  const normalizedSql = table?.sql?.replace(/\s+/g, ' ').toLowerCase() ?? '';
+  const hasRequiredCheck = normalizedSql.includes("check (typeof(token_version) = 'integer' and token_version >= 0)");
+  if (tokenVersion.type.toUpperCase() !== 'INTEGER' || tokenVersion.notnull !== 1
+      || tokenVersion.dflt_value !== '0' || !hasRequiredCheck) {
+    throw new Error('迁移010恢复状态不完整，拒绝将未知 token_version 结构标记为已迁移');
+  }
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: '001',
@@ -669,6 +698,12 @@ CREATE INDEX IF NOT EXISTS idx_ai_request_retention ON ai_request_logs(retain_un
     checksum: 'bd830c4f4812cde2ecff9e4d9c3d77d718d221eef357a040badad2e9f00b84d3',
     requiresForeignKeysOff: true,
     up: addHermesPerUserQrBindings,
+  },
+  {
+    version: '010',
+    description: 'add user token version for password-change revocation',
+    checksum: '8291d5d9a1aff8d0dc76cf5195440d9e13b911e9f8af6fde223e45a1b3589767',
+    up: addUserTokenVersion,
   },
 ];
 

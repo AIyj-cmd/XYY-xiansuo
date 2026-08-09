@@ -23,7 +23,8 @@ const passwordHash = await hashPassword('valid-password-for-auth-tests');
 db.prepare(`INSERT INTO users (username, name, password_hash, role) VALUES
   ('admin1', '管理员一', ?, 'admin'),
   ('member1', '业务员一', ?, 'member'),
-  ('member2', '业务员二', ?, 'member')`).run(passwordHash, passwordHash, passwordHash);
+  ('member2', '业务员二', ?, 'member'),
+  ('member3', '业务员三', ?, 'member')`).run(passwordHash, passwordHash, passwordHash, passwordHash);
 const ids = Object.fromEntries((db.prepare('SELECT id, username FROM users').all() as Array<{ id: number; username: string }>)
   .map((user) => [user.username, user.id])) as Record<string, number>;
 
@@ -84,7 +85,55 @@ test('缺少、错误、过期 token 均为 401，普通用户访问管理员接
     .setProtectedHeader({ alg: 'HS256' }).setIssuedAt().setExpirationTime('0s')
     .sign(new TextEncoder().encode(process.env.JWT_SECRET));
   assert.equal((await app.inject({ method: 'GET', url: '/api/users/me', headers: bearer(expiredToken) })).statusCode, 401);
+  const legacyToken = await new SignJWT({ id: ids.member1 })
+    .setProtectedHeader({ alg: 'HS256' }).setIssuedAt().setExpirationTime('7d')
+    .sign(new TextEncoder().encode(process.env.JWT_SECRET));
+  assert.equal((await app.inject({ method: 'GET', url: '/api/users/me', headers: bearer(legacyToken) })).statusCode, 200);
+  const invalidVersion = await new SignJWT({ id: ids.member1, token_version: -1 })
+    .setProtectedHeader({ alg: 'HS256' }).setIssuedAt().setExpirationTime('7d')
+    .sign(new TextEncoder().encode(process.env.JWT_SECRET));
+  const invalidId = await new SignJWT({ id: 0, token_version: 0 })
+    .setProtectedHeader({ alg: 'HS256' }).setIssuedAt().setExpirationTime('7d')
+    .sign(new TextEncoder().encode(process.env.JWT_SECRET));
+  assert.equal((await app.inject({ method: 'GET', url: '/api/users/me', headers: bearer(invalidVersion) })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/users/me', headers: bearer(invalidId) })).statusCode, 401);
   assert.equal((await app.inject({ method: 'GET', url: '/api/users', headers: bearer(memberToken) })).statusCode, 403);
+});
+
+test('密码修改和管理员重置立即撤销目标旧 token，失败不递增且不影响管理员 token', async () => {
+  const member3Login = await app.inject({ method: 'POST', url: '/api/auth/login', payload: {
+    username: 'member3', password: 'valid-password-for-auth-tests',
+  } });
+  const member3Token = member3Login.json().data.token as string;
+  const changed = await app.inject({
+    method: 'POST', url: '/api/auth/change-password', headers: bearer(member3Token),
+    payload: { old_password: 'valid-password-for-auth-tests', new_password: 'member3-new-password' },
+  });
+  assert.equal(changed.statusCode, 200);
+  assert.equal(changed.json().code, 0);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/users/me', headers: bearer(member3Token) })).statusCode, 401);
+  assert.equal((db.prepare('SELECT token_version FROM users WHERE id=?').get(ids.member3) as { token_version: number }).token_version, 1);
+  const failedChange = await app.inject({
+    method: 'POST', url: '/api/auth/change-password', headers: bearer(await signToken({ id: ids.member3, tokenVersion: 1 })),
+    payload: { old_password: 'wrong-old-password', new_password: 'must-not-be-used' },
+  });
+  assert.equal(failedChange.statusCode, 200);
+  assert.equal(failedChange.json().code, 1);
+  assert.equal((db.prepare('SELECT token_version FROM users WHERE id=?').get(ids.member3) as { token_version: number }).token_version, 1);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'member3', password: 'member3-new-password' } })).statusCode, 200);
+
+  const adminToken = await signToken({ id: ids.admin1 });
+  const member1Token = await signToken({ id: ids.member1 });
+  const reset = await app.inject({
+    method: 'PATCH', url: `/api/users/${ids.member1}`, headers: bearer(adminToken),
+    payload: { password: 'member1-reset-password' },
+  });
+  assert.equal(reset.statusCode, 200);
+  assert.equal(reset.json().code, 0);
+  assert.equal((db.prepare('SELECT token_version FROM users WHERE id=?').get(ids.member1) as { token_version: number }).token_version, 1);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/users/me', headers: bearer(member1Token) })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'GET', url: '/api/users', headers: bearer(adminToken) })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'member1', password: 'member1-reset-password' } })).statusCode, 200);
 });
 
 test.after(async () => {

@@ -73,10 +73,9 @@ async function handleChangePwd() {
       new_password: newPwd.value,
     });
     uni.showToast({ title: '密码修改成功', icon: 'success' });
-    showChangePwd.value = false;
-    oldPwd.value = '';
-    newPwd.value = '';
-    newPwd2.value = '';
+    // 服务端已撤销当前 JWT，立即清除本地会话而不是等下一次 API 返回 401。
+    store.logout();
+    uni.reLaunch({ url: '/pages/login/index' });
   } finally {
     changing.value = false;
   }
