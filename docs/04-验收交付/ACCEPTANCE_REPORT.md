@@ -264,12 +264,13 @@
 5. 用户停用的 manager 退役原先为未等待的 best-effort；现请求返回前完成一次受控退役尝试，并以 manager 周期性授权复核覆盖进程崩溃/暂时不可达窗口。
 6. manager 原先按内部别名读取确认结果，未匹配固定上游真实字段 `bot_token/baseurl`，真实确认后无法进入 prepared；现用精确上游字段归一化，并对缺失凭据、未知状态和非固定 redirect/base host 失败关闭。二维码渲染也前置到 vault 写入前，`qrcode` 缺失时不留下孤儿 attempt。
 7. 自助解绑原先只在确认弹窗完成后设置互斥状态，弹窗等待期仍可再次触发；现从打开二次确认到请求结束全程禁用并由函数 guard 防重，取消和失败均恢复 active 页面且不显示生成 QR。
+8. active manager 每 60 秒复核时可能已超过二维码 TTL，原逻辑会误拒绝并退役有效账号；现 TTL 仍严格阻止首次过期激活，但已 active 仅在 accountRef、targetFingerprint、activationId 和 generation 全部匹配当前 binding 时允许无写幂等复核。解绑、取消或任一值变化后旧 callback 均拒绝。
 
 ### 最终验证
 
 | 命令 | 结果 |
 | --- | --- |
-| `cd server && npm run build && npm test` | PASS，**162/162**。 |
+| `cd server && npm run build && npm test` | PASS，**163/163**。 |
 | `cd poc/ilink-gateway && npm run build && npm test` | PASS，**59/59**。 |
 | `cd poc/hermes-weixin-transport && ./run-tests.sh` | PASS，最近完整复测 **30/30**；包含真实 `item_list` 归一化、固定上游字段、扫码状态、host 与 `qrcode` 失败关闭。 |
 | `cd app && npm run test:h5` | PASS，H5 build + Playwright **14/14**。 |

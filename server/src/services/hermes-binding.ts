@@ -94,13 +94,14 @@ export function activateHermesQrAttempt(database: DatabaseSync, value: { id: str
   database.exec('BEGIN IMMEDIATE;');
   try {
     const attempt = database.prepare('SELECT user_id,status,generation,account_ref,expires_at,activation_id_hash FROM hermes_login_attempts WHERE id=?').get(value.id) as any;
-    if (!attempt || attempt.account_ref !== value.accountRef || attempt.expires_at <= now) throw Object.assign(new Error('二维码绑定代次已失效'), { code: 'HERMES_ATTEMPT_STALE' });
+    if (!attempt || attempt.account_ref !== value.accountRef) throw Object.assign(new Error('二维码绑定代次已失效'), { code: 'HERMES_ATTEMPT_STALE' });
     const activation = activationHash(value.activationId);
     const binding = database.prepare('SELECT generation,account_ref,target_fingerprint,prepared_account_ref,status FROM hermes_bindings WHERE user_id=?').get(attempt.user_id) as any;
     if (attempt.status === 'active') {
       if (!attempt.activation_id_hash || !timingSafeEqual(Buffer.from(attempt.activation_id_hash), Buffer.from(activation)) || binding?.status !== 'active' || binding.generation !== attempt.generation || binding.account_ref !== value.accountRef || binding.target_fingerprint !== value.targetFingerprint) throw Object.assign(new Error('绑定激活凭证不匹配'), { code: 'HERMES_BINDING_ACTIVATION_CONFLICT' });
       database.exec('COMMIT;'); return { id: attempt.id, status: 'active', generation: attempt.generation, expires_at: attempt.expires_at };
     }
+    if (attempt.expires_at <= now) throw Object.assign(new Error('二维码绑定代次已失效'), { code: 'HERMES_ATTEMPT_STALE' });
     if (attempt.status !== 'awaiting_context') throw Object.assign(new Error('尚未取得账号专属会话上下文'), { code: 'HERMES_CONTEXT_REQUIRED' });
     if (!binding || binding.generation >= attempt.generation || binding.prepared_account_ref !== value.accountRef) throw Object.assign(new Error('绑定代次冲突'), { code: 'HERMES_BINDING_GENERATION_CONFLICT' });
     database.prepare(`UPDATE hermes_bindings SET status='active',generation=?,account_ref=?,target_fingerprint=?,peer_fingerprint=?,active_activation_id_hash=?,

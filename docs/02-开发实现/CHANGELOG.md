@@ -9,7 +9,7 @@
 - Gateway、Worker、Channel 和 overlay 现在将 `userId + generation + accountRef` 作为不可拆分三元组；vault 缺失、prepared/stale/swapped/retired 条目一律永久失败，无默认账号、peer fallback、tokenless 或重试发送。用户停用在 DB 事务内取消 attempt/待发任务，请求返回前同步尝试退役 manager account，manager 再以周期性精确 activation 复核覆盖暂时不可达窗口。
 - 新增 manager fake provider、migration 008→009、attempt TTL/所有权/全局锁/上下文门槛和精确路由离线测试。默认所有 Hermes/worker/live 开关仍为 `false`；本轮未登录、扫码、轮询真实账号或发送。
 - 复核生产依赖 `npm audit --omit=dev`：现有 R-1 仍报告 19 个 high、0 critical（Fastify/AJV/ExcelJS 传递链）；本范围未升级或修改依赖锁文件。
-- 验收阶段关闭生命周期与真实上游兼容缺口：prepared 超 TTL 会清除凭据并退役；回调丢响应后使用已持久 context 重放同一 activation；active 重放重新核验 activationId/target/generation/accountRef；重绑在单次 flock/原子 vault 替换内退役同用户旧 live account 并激活新账号；固定上游确认字段、扫码状态、host 和 QR 渲染依赖均有失败关闭回归；自助解绑补齐确认弹窗等待期防重复。最终 Server 162/162、Gateway 59/59、overlay 30/30、H5 14/14。
+- 验收阶段关闭生命周期与真实上游兼容缺口：prepared 超 TTL 会清除凭据并退役；回调丢响应后使用已持久 context 重放同一 activation；active 重放重新核验 activationId/target/generation/accountRef，并在二维码 TTL 后只允许该精确组合无写幂等复核；重绑在单次 flock/原子 vault 替换内退役同用户旧 live account 并激活新账号；固定上游确认字段、扫码状态、host 和 QR 渲染依赖均有失败关闭回归；自助解绑补齐确认弹窗等待期防重复。最终 Server 163/163、Gateway 59/59、overlay 30/30、H5 14/14。
 
 ## Unreleased — Hermes 1–10 用户网站绑定与定向通知（2026-08-08）
 

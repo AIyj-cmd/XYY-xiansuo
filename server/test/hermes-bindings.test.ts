@@ -37,6 +37,22 @@ test('每用户 QR attempt 受全局锁、所有权和确认上下文状态机�
   assert.equal(activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-a'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:00:06').status, 'active');
   assert.throws(() => activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-a'),activationId:'00000000-0000-4000-8000-000000000099' }, '2026-08-09 09:00:07'), /激活凭证/);
   assert.throws(() => activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-b'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:00:08'), /激活凭证/);
+  // Manager's 60-second authorization recheck may occur after the five-minute
+  // QR TTL.  A completed activation is idempotent only for its exact tuple.
+  const postTtlBefore = JSON.stringify({ binding: db.prepare('SELECT * FROM hermes_bindings WHERE user_id=1').get(), attempt: db.prepare('SELECT * FROM hermes_login_attempts WHERE id=?').get(first.id) });
+  assert.equal(activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-a'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:06:00').status, 'active');
+  assert.equal(JSON.stringify({ binding: db.prepare('SELECT * FROM hermes_bindings WHERE user_id=1').get(), attempt: db.prepare('SELECT * FROM hermes_login_attempts WHERE id=?').get(first.id) }), postTtlBefore);
+  assert.throws(() => activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-a'),activationId:'00000000-0000-4000-8000-000000000099' }, '2026-08-09 09:06:00'), /激活凭证/);
+  assert.throws(() => activateHermesQrAttempt(db, { id:first.id,accountRef:'hr_wrongabcdefghijklmnop',targetFingerprint:fingerprint('target-a'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:06:00'), /失效/);
+  assert.throws(() => activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-b'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:06:00'), /激活凭证/);
+  db.prepare('UPDATE hermes_bindings SET generation=2 WHERE user_id=1').run();
+  assert.throws(() => activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-a'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:06:00'), /激活凭证/);
+  db.prepare('UPDATE hermes_bindings SET generation=1 WHERE user_id=1').run();
+  db.prepare("UPDATE hermes_login_attempts SET status='cancelled',context_ready_at=NULL WHERE id=?").run(first.id);
+  assert.throws(() => activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-a'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:06:00'), /失效/);
+  db.prepare("UPDATE hermes_login_attempts SET status='active',context_ready_at='2026-08-09 09:00:05' WHERE id=?").run(first.id);
+  const expiredFirst = createHermesQrAttempt(db, 1, '2026-08-09 09:07:00'); markHermesQrAwaitingContext(db, expiredFirst.id, '2026-08-09 09:07:01');
+  assert.throws(() => activateHermesQrAttempt(db, { id:expiredFirst.id,accountRef:expiredFirst.account_ref,targetFingerprint:fingerprint('target-expired'),activationId:'00000000-0000-4000-8000-000000000004' }, '2026-08-09 09:13:00'), /失效/);
   const binding = db.prepare('SELECT account_ref,target_fingerprint,generation,status FROM hermes_bindings WHERE user_id=1').get() as any;
   assert.deepEqual({ ...binding }, { account_ref:first.account_ref,target_fingerprint:fingerprint('target-a'),generation:1,status:'active' });
 });
@@ -66,6 +82,7 @@ test('自助解绑仅影响本人，原子取消任务与 live attempts，失败
   assert.deepEqual({ ...(db.prepare('SELECT status,context_ready_at,activation_id_hash FROM hermes_login_attempts WHERE id=?').get(own.id) as object) }, { status: 'cancelled', context_ready_at: null, activation_id_hash: null });
   assert.equal((db.prepare('SELECT status FROM hermes_login_attempts WHERE id=?').get(rebind.id) as { status: string }).status, 'cancelled');
   assert.throws(() => activateHermesQrAttempt(db, { id: own.id, accountRef: own.account_ref, targetFingerprint: fingerprint('remove-owner'), activationId: '12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:02:01'), /尚未取得账号专属会话上下文/);
+  assert.throws(() => activateHermesQrAttempt(db, { id: own.id, accountRef: own.account_ref, targetFingerprint: fingerprint('remove-owner'), activationId: '12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:06:00'), /失效/);
   assert.equal(publicHermesBinding(db, 1).status, 'unbound');
   assert.deepEqual({ ...(db.prepare("SELECT status,cancellation_reason,lease_token,lease_owner,lease_until FROM notification_logs WHERE dedupe_key='remove-own'").get() as object) }, { status: 'cancelled', cancellation_reason: 'binding_removed', lease_token: null, lease_owner: null, lease_until: null });
   assert.equal(publicHermesBinding(db, 2).status, 'active');

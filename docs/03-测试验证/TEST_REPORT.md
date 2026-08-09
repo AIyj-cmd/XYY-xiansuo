@@ -1362,3 +1362,11 @@ P2：无。
 #### 36.6 自助解绑验收补强（2026-08-09）
 
 验收阶段复现一个 P2：原 guard 仅覆盖确认后的 DELETE，弹窗等待期间按钮仍可再次触发。现将互斥状态前移至打开二次确认之前，并由 `finally` 覆盖取消、弹窗失败、请求失败和成功；浏览器回归同时强制点击弹窗期与请求期按钮，DELETE 始终为 1。修复后 Server build/test **162/162**、H5 build + Playwright **14/14**、`git diff --check` 均通过。最终 **P1=0、P2=0、P3=0**。
+
+#### 36.7 post-TTL active Hermes 回调 P1 修复复核（2026-08-09）
+
+**结论：PASS；P1=0、P2=0、P3=0。** 相对 `881a8c1` 的业务差异仅在 `server/src/services/hermes-binding.ts`：TTL 只对尚未完成的 attempt 生效；已 active 的精确 accountRef、targetFingerprint、activationId、generation 组合继续作为 binding/attempt 无写幂等 callback 接受。无迁移、公开 API 契约或依赖变化。
+
+- 上述精确 active callback 即使在 QR TTL 后仍返回 active；binding 与 attempt 的完整行快照前后一致。错误 activation、target、account、generation，以及非 active/cancelled status 在 TTL 后均拒绝；awaiting_context 的首次过期激活仍拒绝；解绑后的旧 callback 在 TTL 后也拒绝。
+- 新增真实 Fastify/HMAC 路由回归：正确 post-TTL callback 为 HTTP 200；错误 activation 与解绑后的相同 callback 均为 HTTP 409。该用例使用临时 0600 secret 文件与 loopback 配置，不触发外部 manager/provider。
+- 执行：`cd server && npm run build && npm test`，**163/163 通过**；`git diff --check` 通过。验证阶段新增/强化的仅为 server 测试与本报告，未修改业务实现。
