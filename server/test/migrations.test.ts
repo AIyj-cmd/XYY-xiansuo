@@ -47,7 +47,7 @@ test('空库创建完整版本化 schema，并强制外键', () => {
   const database = open('empty.db');
   runMigrations(database);
   const versions = database.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>;
-  assert.deepEqual(versions.map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007', '008']);
+  assert.deepEqual(versions.map((row) => row.version), ['001', '002', '003', '004', '005', '006', '007', '008', '009']);
   const bindingColumns = database.prepare('PRAGMA table_info(hermes_bindings)').all() as Array<{ name: string }>;
   assert.ok(bindingColumns.some((column) => column.name === 'active_activation_id_hash'));
   assert.equal((database.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys, 1);
@@ -84,6 +84,29 @@ test('007 升级到唯一的 008 时创建 active activation 凭证列且可重�
   const columns = database.prepare('PRAGMA table_info(hermes_bindings)').all() as Array<{ name: string }>;
   assert.ok(columns.some((column) => column.name === 'active_activation_id_hash'));
   assert.equal((database.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='008'").get() as { count: number }).count, 1);
+  database.close();
+});
+
+test('008 活跃共享 Hermes 绑定升级到 009 时完整保留历史与 pending 任务，仅以 account_ref 缺失要求重绑', () => {
+  const database = open('upgrade-008-to-009.db');
+  runMigrations(database, MIGRATIONS.slice(0, 8), { log: () => undefined });
+  database.prepare("INSERT INTO users(username,name,password_hash,role) VALUES ('legacy-hermes','旧 Hermes 用户','hash','member')").run();
+  database.prepare("INSERT INTO hermes_bindings(user_id,peer_fingerprint,status,generation,active_activation_id_hash,updated_at) VALUES (1,?,'active',1,?,?)").run('a'.repeat(64), 'b'.repeat(64), '2026-08-08 09:00:00');
+  database.exec("CREATE TABLE migration_009_trigger_probe (id INTEGER NOT NULL);");
+  database.exec("CREATE TRIGGER migration_009_notification_trigger AFTER INSERT ON notification_logs BEGIN INSERT INTO migration_009_trigger_probe(id) VALUES (NEW.id); END;");
+  database.prepare(`INSERT INTO notification_logs(event_type,event_source,operation_id,subject_type,subject_id,recipient_user_id,recipient_binding_generation,occurred_at,dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,expires_at)
+    VALUES ('scheduled_follow_overdue','migration','legacy-task','lead',1,1,1,'2026-08-08 09:00:00','legacy-task','legacy-key',1,'{}','["hermes"]','hermes','{}','pending',1,'2026-08-08 09:00:00','2026-08-09 09:00:00')`).run();
+  runMigrations(database, MIGRATIONS, { log: () => undefined });
+  const binding = database.prepare('SELECT status,generation,account_ref FROM hermes_bindings WHERE user_id=1').get() as { status: string; generation: number; account_ref: string | null };
+  assert.deepEqual({ ...binding }, { status: 'active', generation: 1, account_ref: null });
+  assert.equal((database.prepare("SELECT status FROM notification_logs WHERE dedupe_key='legacy-task'").get() as { status: string }).status, 'pending');
+  database.prepare(`INSERT INTO notification_logs(event_type,event_source,operation_id,subject_type,subject_id,recipient_user_id,occurred_at,dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,expires_at)
+    VALUES ('scheduled_follow_overdue','migration','trigger-task','lead',2,1,'2026-08-08 09:00:00','trigger-task','trigger-key',1,'{}','["mock"]','mock','{}','pending',1,'2026-08-08 09:00:00','2026-08-09 09:00:00')`).run();
+  assert.equal((database.prepare('SELECT COUNT(*) AS count FROM migration_009_trigger_probe').get() as { count: number }).count, 2);
+  const columns = database.prepare('PRAGMA table_info(notification_logs)').all() as Array<{ name: string }>;
+  assert.ok(columns.some((column) => column.name === 'recipient_account_ref'));
+  assert.equal((database.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version='009'").get() as { count: number }).count, 1);
+  assert.deepEqual(database.prepare('PRAGMA foreign_key_check').all(), []);
   database.close();
 });
 

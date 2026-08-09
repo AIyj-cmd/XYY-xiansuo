@@ -203,3 +203,22 @@ async def send_bound_once(source_root: Path, config: TransportConfig, vault: Any
     except Exception as exc:
         return _classify_exception(exc, request)
     return _classify_response(response, request)
+
+async def send_account_bound_once(source_root: Path, vault: Any, user_id: int, generation: int, account_ref: str, text: str, idempotency_key: str) -> dict[str, str]:
+    """Exact per-account send: no static config, default account or fallback."""
+    request = SendRequest(peer="", text=text, idempotency_key=idempotency_key)
+    try: entry = vault.get(account_ref)
+    except Exception: entry = None
+    if not entry or entry.get("lifecycle") != "active" or entry.get("userId") != user_id or entry.get("generation") != generation:
+        return _result("permanent_failure", "ILINK_STALE_CONTEXT_TOKEN", "not_attempted", request)
+    if not all(isinstance(entry.get(key),str) and entry.get(key) for key in ("providerAccountId","token","baseUrl","target","context")):
+        return _result("permanent_failure", "ILINK_STALE_CONTEXT_TOKEN", "not_attempted", request)
+    request = SendRequest(peer=str(entry["target"]), text=text, idempotency_key=idempotency_key)
+    weixin = _load_weixin_api(source_root); connector = weixin._make_ssl_connector()
+    try:
+        async with weixin.aiohttp.ClientSession(connector=connector, trust_env=False) as session:
+            response = await weixin._send_message(session, base_url=str(entry["baseUrl"]), token=str(entry["token"]), to=str(entry["target"]), text=text, context_token=str(entry["context"]), client_id="xiansuo-hermes-" + hashlib.sha256(f"{account_ref}\0{idempotency_key}".encode()).hexdigest())
+    except Exception as exc: return _classify_exception(exc, request)
+    finally:
+        if connector is not None: await connector.close()
+    return _classify_response(response, request)

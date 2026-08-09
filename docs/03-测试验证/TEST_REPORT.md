@@ -1234,3 +1234,99 @@ P2：无。
 - 最终 `git diff --check` 通过；package/lockfile 和 Server 源码无差异。无配置 H5 制品未命中测试 Secret/peer 或合法/非法入口 fixture，也无 Hermes 登录二维码图片路径；测试临时 SQLite/secret 目录已由 `afterAll` 删除，无遗留 `xiansuo-h5-runtime-*`/`xiansuo-hermes-ui-*` 目录。
 
 最终分级：**P1=0、P2=0、P3=0**；本 P2 已关闭。仍未提供或人工核验真实长期公开联系人入口，也未部署、登录、扫码、联网或发送；这些不得写成通过。
+
+### 36. 每网站用户独立 Hermes 账号 + H5 串行 QR 绑定独立测试（2026-08-09）
+
+**结论：FAIL，不允许进入验收阶段。** 本节以主代理明确的高风险实现范围为准执行第三阶段独立验证。发现 1 项 P1、2 项 P2；此外 H5 基线套件有 1 条失败。未修改任何业务源码、部署代码或既有测试断言。
+
+#### 环境与测试前基线
+
+- 工作目录：`/home/yj/xiansuo`，分支 `feature/hermes-per-user-qr-binding`；Node `v24.18.0`，Python 3，Chromium/Playwright 可用。
+- 已完整读取根 `AGENTS.md`、用户高风险验收要求、现有设计/实施摘要、当前差异。设计目录中的历史“暂停真实外部渠道”说明仅作为背景；本节按本次明确的 per-user QR 实现验收。
+- 测试前 `git status --short` 记录 30 个已修改跟踪文件和 3 个未跟踪实现文件：`poc/hermes-weixin-transport/src/hermes_weixin_transport/account_manager.py`、`poc/hermes-weixin-transport/test/test_account_manager.py`、`server/src/services/hermes-account-manager.ts`。这些均认定为实施阶段既有改动，未恢复、覆盖、清理或归因给测试。
+- 测试前 `git diff --name-only` 与本节结束前除本报告外一致；`git diff --check` 通过。`server/data/` 为 Git 忽略目录，结束 SHA-256：`app.db=8b8bc326ab3ac27a553b22ea7cacf6e34681d1f471246277907a8ed0a061d5f2`、`app.db-shm=42a2baf3a04f32142eed5a6b9eb477ae1a8c1ffc38e7124e0342c561b74c38`、`app.db-wal=194c0753141ffbc228cc791ef5627e5a1e4da3dbad325296547b25b32a839c4e`、空的 `leads.db/xiansuo.db=e3b0c442…`；本轮隔离库均在内存或 `/tmp`，没有测试写入该目录。
+
+#### 范围、通过项与未覆盖项
+
+- 已覆盖：001--009 空库、008→009、重复、checksum 冲突、故意失败回滚、FK/integrity；QR attempt 的 TTL/取消/全局锁/上下文门槛；nonce 持久化/容量；Vault 权限、完整性、flock、原子写入、容量；Gateway 三元组与单次未知结果；H5 H5-only 构建与浏览器交互；默认开关、loopback、上游 gate、qrcode 依赖、敏感文本与旧入口/配置静态扫描；供应链审计。
+- 未覆盖且不得视作通过：真实微信登录/扫码/轮询/发送、生产数据库实际备份恢复和受控升级演练。它们需要独立授权；当前失败已足以阻断，不以真实操作替代离线门禁。
+- 已通过的核心证据：migration 空库与 008→009、checksum 冲突/故障回滚、历史 users/leads/notifications、FK/integrity 的既有与本轮回归均通过；009 复制字段与索引、全局唯一 live attempt、5 分钟 TTL、owner-only 服务函数、确认前不可 active、HMAC 时间窗+哈希 nonce/10,000 容量、固定 loopback URL、Vault 0600/0700/non-symlink/flock/atomic/tamper fail-closed、10 个容量上限、Gateway 的 `userId+generation+accountRef`、无 tokenless/default/retry、`result_unknown` 保持终态均有实际覆盖。
+
+#### 已执行命令及结果
+
+| 命令/检查 | 结果 |
+| --- | --- |
+| `cd server && npm ci && npm run build` | 通过。`npm ci` 报 2 个 high（安装时）且有未批准 install-script 提示；构建通过。 |
+| `cd server && npm test` | **159/159 通过**（第二次输出落入 `/tmp/xiansuo-server-hermes-verify.log` 后获得精确 TAP 计数）。 |
+| `cd poc/ilink-gateway && npm ci && npm run build && npm test` | 通过，**59/59**。验证三元组透传、并发/重启下单次调用、错误/超时为 `result_unknown`。 |
+| `cd poc/hermes-weixin-transport && ./run-tests.sh` | 通过，**24/24**。fixed upstream gate、fake provider、精确确认命令、错误账号/目标/命令零激活、Vault 篡改与容量均通过。 |
+| `cd app && npm ci && npm run build:h5` | 通过，仅 H5；无 Appid/可选 uni-app 更新提示。 |
+| `cd app && npm run test:h5` | **失败：10 项中 9 通过、1 失败**；失败项见下。独立取消轮询用例重跑通过。 |
+| migration 009 trigger 故障注入（001--008 后创建 `notification_probe` trigger，再执行 009） | **失败**：`sqlite_master` 返回 `trigger:null`；同时 `integrity_check=ok`、`foreign_key_check=[]`，说明是静默功能丢失。 |
+| `npm audit --omit=dev --json`（server/app） | server：3 high（`brace-expansion`/`minimatch`、`fast-uri`）；app：2 high（`nanoid`、直接 dev-server 依赖 `vite`）。本次无 package/lockfile 差异，仍如实记录。Gateway 生产审计为 0。 |
+| `git diff --check`、敏感文本/制品扫描、配置扫描 | diff-check 通过；无 `VITE_HERMES_BOT_ENTRY` 制品残留。发现 legacy shared-account 模块与 `ILINK_HERMES_RECIPIENT_MAP_FILE` 仍在仓库、可被配置解析，见 P2。 |
+
+#### 失败项、最小复现与修复方向
+
+| 严重级别 | 失败项 | 最小复现 / 实际结果 | 预期与建议 |
+| --- | --- | --- | --- |
+| **P1** | 009 重建 `notification_logs` 丢失已有 trigger | 运行 `MIGRATIONS.slice(0,8)`；执行 `CREATE TABLE trigger_probe(v INTEGER); CREATE TRIGGER notification_probe AFTER INSERT ON notification_logs BEGIN INSERT INTO trigger_probe VALUES (NEW.id); END;`；执行 009；查询 `sqlite_master`。实际 `notification_probe` 消失。`addHermesPerUserQrBindings` 仅收集 type=index 的 SQL，随后 `DROP TABLE notification_logs`。 | 必须保留 notification_logs 的字段、数据、索引**和 trigger**。在重建前读取该表 triggers 的 SQL，重命名/复制后重建，并添加失败回归测试；在受控升级前做备份/恢复演练。 |
+| **P1** | 008 的 active 共享绑定会在 009 自动 `disabled`，没有可执行上线前预检/受控重绑门禁 | 001--008 后插入 `status='active', account_ref=NULL`，执行 009；实际 `{status:'disabled', generation:1, account_ref:null}`。代码无条件执行 `UPDATE hermes_bindings SET status='disabled' ...`。既有 Hermes pending 投递会在 worker 校验时取消，形成存量用户静默停发。CHANGELOG 虽写“必须重新绑定”，未提供 active 数量预检、阻断/维护窗、完成确认或回滚条件。 | 每账号必须独立，因此不能把共享账号错误升级为私有账号；但发布应先统计并显式确认受影响 active/待发任务，提供停发公告、受控重绑完成率与回滚前提。没有这些上线门禁前不得运行 009 于生产。 |
+| **P2** | H5 真实浏览器 QR 展示回归失败 | `cd app && npx playwright test test/h5-runtime.spec.ts --grep "Hermes QR 页面展示" --reporter=line`。失败于 `app/test/h5-runtime.spec.ts:172`：`getByTestId('hermes-qr-image')` 命中 `<uni-image>`，其宿主没有 `src`，5 秒后断言失败；错误上下文：`app/test-results/h5-runtime-Hermes-QR-页面展示受限-data-QR，轮询后要求精确确认命令/error-context.md`。取消轮询用例单独重跑通过。 | 不得删除或放宽 data-QR 断言；应以真实渲染的内部 `<img>`/组件公开契约断言 data URL，并保留截图/DOM 证据，随后整套 H5 复跑至通过。当前不能写成已验收。 |
+| **P2** | 旧 shared-account 长期入口/配置实现仍残留 | 静态扫描命中 `config.py`、`state.py`、`multi_user.py`、`daemon.py` 的 `account_id`/`ilink_token`/`allowed_from`/capture 路径；Gateway `config.ts` 仍接受 `ILINK_HERMES_RECIPIENT_MAP_FILE`（仅警告忽略），且保留 `readHermesRecipientMapFile`。CLI 未公开 legacy command，但相关模块仍可导入。 | 按“旧/code 退役、禁止个人/长期入口配置残留”要求删除或隔离不可达旧实现与受管环境变量，并增加反向扫描/配置拒绝测试；不要只靠注释或忽略该配置。 |
+
+#### 额外安全与兼容性证据
+
+- server manager URL 和 account-manager config 都限制 HTTP loopback；manager callback 的 nonce 哈希持久化、60 秒时窗和 10,000 上限已在 SQLite/Vault 测试中通过，原始 nonce 未落库。
+- `qrcode`：系统 Python 缺失该依赖时会 fail-closed；固定 `/tmp/hermes-agent-v2026.8.3/.venv/bin/python` 实测可 `import qrcode`，上游 `pyproject.toml` 固定 `qrcode==7.4.2`，满足运行依赖 gate。
+- QR、provider accountId/token、target/context/cursor 未写入 business SQLite；QR 只在 owner `no-store` 响应返回且路由/数据库无 raw 值。账户管理器没有调用 `qr_login` 或 `save account`；无 AI/Agent/reply/typing/media 调用路径。
+- 账户/target/token/context/cursor、错误 account/target/code/activation、vault 交换/缺失及单账户 poll 故障隔离：fake-provider/overlay/Gateway 现有离线覆盖通过；真实 provider 未获授权，未执行。
+
+#### 测试阶段文件变化与放行
+
+- 本阶段新增的唯一版本控制变化是本报告第 36 节；`app/dist/`、`node_modules/`、`app/test-results/` 和 `/tmp/xiansuo-server-hermes-verify.log` 为工具产物/临时日志，不纳入业务改动。开始前的 30 个修改文件及 3 个未跟踪实现文件保持存在；未修改 `app/src`、`server/src`、`scripts`、`deploy` 或 `server/data`。
+- **不允许进入验收阶段。** 条件放行至少需要：修复/回归 009 trigger 保留；对 008 active 存量制定可审计的迁移预检与重绑/回滚门禁；修复 H5 data-QR 真实浏览器断言并取得全绿；清理或明确隔离旧 shared-account 配置/入口后重跑受影响测试。
+
+#### 36.1 P1/P2 修复后独立复测（2026-08-09）
+
+**结论：仍为 FAIL，不允许进入验收阶段；此前两个业务 P1 已关闭，当前 P1=0、P2=2、P3=0。** 未修改业务源码或测试源码，只追加本结果。
+
+| 复测项 | 独立实际结果 |
+| --- | --- |
+| 009 trigger 保存与实际执行 | **PASS。** 001--008 后创建 `notification_probe AFTER INSERT ON notification_logs`，执行 009 后 trigger 仍在；插入任务令 probe=1，`idx_notification_hermes_account` 索引存在，`integrity_check=ok`、`foreign_key_check=0`。实现现已在 DROP 前读取 trigger SQL 并在 rename 后恢复。 |
+| 009 失败回滚前提 | **PASS（事务边界与现有 failure 测试）。** 迁移 runner 使用 `BEGIN IMMEDIATE`，任何 rebuilding/trigger 恢复异常均在同一事务 `ROLLBACK`；160 条 server 用例包含迁移失败/rollback 及 trigger 恢复。未对 SQLite 系统表做不安全篡改来制造无效 trigger SQL。 |
+| 008 active + pending 升级 / rebind_required | **PASS。** 008 active 行升级后保持 DB `status=active,generation=1,account_ref=NULL`，pending Hermes 任务保持 pending；公开 API 将该组合映射为 `{status:'rebind_required',generation:4,expires_at:null,mode:'per_user_qr'}`，响应 `Cache-Control: no-store`。不再自动 disabled 或静默取消。 |
+| 新 QR 重绑原子边界 | **PASS。** 新 attempt 创建及错误 accountRef 激活不改变旧 pending 任务；取得 exact context 后 active commit 原子切换，并取消旧 generation/accountRef 任务。服务层、160 条回归和定向 SQL 验证一致。 |
+| JWT owner-only、锁与 no-store | **PASS。** 真实 Fastify inject：owner POST 成功并只返回 data QR，第二用户 POST=423，第二用户 GET=404，owner DELETE 后第二用户可创建；owner 响应为 `no-store`，QR 未进入 URL。 |
+| Gateway/overlay 新路径 | **PASS（定向部分）。** Gateway build/test **59/59**；adapter argv 仅为 `send-bound --manager-config <private-file>`，精确三元组保留，未知结果不重发。`ILINK_HERMES_RECIPIENT_MAP_FILE` 已被 schema 当作未知受管变量拒绝；默认 CLI command 不公开 legacy capture/daemon。旧 helper 模块仍为历史离线验证代码，但新路由没有读取 legacy map/vault 或 MultiUserVault。 |
+| manager/vault/A--F 其余安全矩阵 | **PASS（既有离线覆盖未回归）。** loopback、HMAC+nonce、容量、0600/0700/non-symlink/flock/atomic、固定上游/qrcode、provider host、target/account/context exact match、无 AI/reply/typing/media、十账号上限、single-attempt/result_unknown 均在 server/Gateway/overlay 覆盖中保持。 |
+
+#### 当前失败项与最小复现
+
+| 严重级别 | 项目 | 命令、预期、实际与建议 |
+| --- | --- | --- |
+| **P2** | account manager 全量测试非确定性失败 | `cd poc/hermes-weixin-transport && ./run-tests.sh`：**23/24**。`test_fake_qr_confirm_requires_exact_command_and_account` 夹具把 `expiresAt` 固定为 `2026-08-09 10:00:00`；当前时点已过，实际 `expired`，预期 `awaiting_context`。将该单一测试夹具改为远期固定日期后，不降低“精确命令/账号”断言，重跑 24/24。 |
+| **P2** | H5 真实 data-PNG 可见性仍未通过 | `cd app && npm run test:h5` 在 `test/h5-runtime.spec.ts:163` 失败；单例重跑显示 `getByTestId('hermes-qr-image').locator('img')` 5 秒内不存在。fixture 使用 `data:image/png;base64,AA==`，它不是有效 PNG，且 2 秒后 mock 即切到 `awaiting_context`。取消停轮询单例 `--grep "Hermes QR 页面取消"` 通过。必须替换为有效最小 PNG、保持 waiting 到可见断言完成，并保留 `uni-image > img` 的 data URL/可见性断言和截图证据，再跑全套 H5。 |
+
+#### 本轮完整命令与工作区复核
+
+- `cd server && npm run build && npm test`：通过，**160/160**。
+- `cd poc/ilink-gateway && npm run build && npm test`：通过，**59/59**。
+- `cd poc/hermes-weixin-transport && ./run-tests.sh`：失败，**23/24**（上述 P2）。
+- `cd app && npm run test:h5`：构建通过、Playwright QR 可见性项失败（上述 P2）；取消轮询单例通过。
+- `git diff --check`：通过。`server/data` 五个 SHA-256 与第 36 节记录一致；本轮没有业务数据目录差异。测试后 Git 状态相对本轮开始基线仅本报告继续追加，32 个实施差异和 3 个未跟踪实现文件均被保留。
+- 因 package/lockfile 仍无变化，沿用第 36 节已执行的生产依赖审计记录；未新增依赖。
+
+**放行条件：** 两条 P2 都以不降低断言的方式修复并取得 overlay 24/24、H5 全绿后，重新执行受影响套件及本节迁移/API/Gateway 定向检查；在此之前不得进入验收阶段。
+
+#### 36.2 P2 最终独立复测（2026-08-09）
+
+**最终结论：PASS，允许进入验收阶段；P1=0、P2=0、P3=0。** 本轮只复跑修复所影响的 overlay 与 H5 套件；server 160/160、Gateway 59/59、迁移/API/三元组定向检查沿用 36.1 的已通过、且本轮差异未触及其实现。
+
+| 复测项 | 命令与独立结果 |
+| --- | --- |
+| account manager 的过期时间夹具 | `cd poc/hermes-weixin-transport && ./run-tests.sh`：**24/24 通过**。此前失败的 `test_fake_qr_confirm_requires_exact_command_and_account` 现使用远期固定 expiry，仍保留精确账号与确认命令断言，未放宽安全断言。 |
+| H5 data-PNG、确认命令和取消轮询 | `cd app && npm run test:h5`：H5 build 成功、Playwright **10/10 通过**。QR 用例确认 `uni-image > img` 可见且 `src` 为 `data:image/png;base64,`，在可见断言后才推进扫描/确认状态，并断言精确确认命令和复制值；取消用例仍断言 DELETE 一次、等待 2.3 秒后 poll=0。 |
+| 差异与归因 | `git diff --check` 通过。工作区仍保留实施阶段 32 个差异和 3 个未跟踪实现文件；本验证阶段只追加本报告，未修改业务源码、部署文件或 `server/data`。 |
+
+此前第 36 节与 36.1 中的 P1/P2 为历史发现和修复前证据，保留以便审计；上述最终复测已关闭全部阻塞项。真实微信/provider 的生产演练仍未获授权，属于已声明的非本地测试覆盖边界，不能解读为已执行。

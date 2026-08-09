@@ -23,10 +23,11 @@ export class GatewayService {
     const isHermes = this.config.ILINK_POC_TRANSPORT === 'hermes'
     if (isHermes) {
       const generation = request.recipientBindingGeneration
-      if (!Number.isInteger(generation) || generation === undefined || generation < 1) return { status: 'permanent_failure', errorCode: 'ILINK_RECIPIENT_NOT_CONFIGURED' }
+      const accountRef = request.recipientAccountRef
+      if (!Number.isInteger(generation) || generation === undefined || generation < 1 || typeof accountRef !== 'string' || !/^hr_[A-Za-z0-9_-]{16,96}$/.test(accountRef)) return { status: 'permanent_failure', errorCode: 'ILINK_RECIPIENT_NOT_CONFIGURED' }
       // No raw peer mapping is available to the Gateway.  The vault-resolving
       // overlay receives this exact pair and rejects stale generations.
-      recipientExternalId = `hermes:${request.recipientUserId}:${generation}`
+      recipientExternalId = `hermes:${request.recipientUserId}:${generation}:${accountRef}`
     }
     else if (this.config.recipientMap) {
       const recipient = this.config.recipientMap.get(request.recipientUserId)
@@ -72,7 +73,7 @@ export class GatewayService {
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), this.config.ILINK_REQUEST_TIMEOUT_MS)
       try {
-        const result = await this.adapter.send({ recipientExternalId, ...(isHermes ? { recipientUserId: request.recipientUserId, recipientBindingGeneration: request.recipientBindingGeneration! } : {}), message, idempotencyKey: request.idempotencyKey }, controller.signal)
+        const result = await this.adapter.send({ recipientExternalId, ...(isHermes ? { recipientUserId: request.recipientUserId, recipientBindingGeneration: request.recipientBindingGeneration!, recipientAccountRef: request.recipientAccountRef! } : {}), message, idempotencyKey: request.idempotencyKey }, controller.signal)
         // A deduplicated result is usable only when it carries the persisted
         // original local receipt. Never manufacture one in the worker.
         const normalized = singleAttempt && result.status === 'retryable_failure'

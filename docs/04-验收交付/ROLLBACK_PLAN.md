@@ -5,6 +5,8 @@
 
 OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已烧毁 key。已消费授权的不确定结果必须保持 `result_unknown`，不自动重试；回滚后真实渠道保持关闭。停止顺序固定为：先关闭规则和 `OPENCLAW_CHANNEL_ENABLED`，再停止 notification-worker、Gateway、OpenClaw，最后按需要停止 API；禁止清理仓库外 Secret、映射或会话目录作为“回滚”。
 
+Hermes 每用户 QR 补充（2026-08-09）：回滚先关闭所有通知规则、`HERMES_CHANNEL_ENABLED`、`HERMES_BINDING_ENABLED`、`ILINK_POC_LIVE_ENABLED` 和 `ILINK_HERMES_TRANSPORT_ENABLED`，再停 Worker、Gateway、account manager，最后按需要停 API。不得删除或手改 Gateway ledger、account vault、nonce 状态、binding/attempt/notification 历史；QR 只在 manager 内存，进程停止后自然失效，不需要也不得从磁盘恢复。
+
 ## 1. 回滚准备
 
 - 上线前保存：发布 commit/制品、上一受批准制品、实际 `DB_PATH`、数据库一致性备份、上传目录备份、环境变量快照和迁移日志。
@@ -113,3 +115,13 @@ P3 自定义 HMAC 流加密风险的后续迁移也必须采用新 schema 版本
 3. 立即移除未核验的 `VITE_HERMES_BOT_ENTRY_*` 构建值并以无配置重建；若曾把 token/session/登录二维码打入静态制品，按凭据泄露事件处置和轮换，不仅仅删除前端文件。
 4. 继续保持 `HERMES_BINDING_ENABLED=false`、Hermes channel/live/Worker 与通知规则关闭。若出现异常轮询量或页面错误，只回退 H5 制品，不换幂等键、不重发、不启动真实 Hermes。
 5. 回退验证：无配置 H5 构建成功，登录/线索核心回归正常，页面不展示登录二维码或凭据，`git diff --check` 通过；数据库和 Hermes 外部状态未改变，也没有真实发送。
+
+## 11. 每用户独立账号与迁移 `009` 回退（2026-08-09）
+
+1. `009` 应用失败时保持 API、Worker、Gateway、manager 全停，保存脱敏迁移日志和故障库；禁止修改 `schema_migrations`、手工删列或再次试跑生产主库。
+2. 从上线前一致性备份恢复到新的明确路径，以旧批准制品和全部真实渠道关闭状态启动 API；核对记录数、legacy active/pending、`integrity_check` 和 `foreign_key_check` 后再决定是否切换 `DB_PATH`。
+3. 若 `009` 已成功但 QR、重绑或隔离冒烟失败，优先保持新库并关闭功能，不反向删表；需要回退旧制品时必须恢复 `009` 前完整备份，因为旧代码不理解 accountRef/attempt 新状态。
+4. manager/Gateway 故障时保留 vault、ledger 和烧毁的幂等键；不得复制账号到 default/legacy map，不得 tokenless 发送、fallback 或重试 unknown。QR 仅在内存，manager 重启后当前 waiting QR 失效并由用户重新生成。
+5. 用户停用或重绑后发现旧 manager account 未退役时，继续保持数据库 binding 和通知关闭，记录 opaque accountRef 的受控哈希，由获授权运维执行单账号退役；不得恢复旧账号发送能力。
+6. 回退后至少重跑 Server、Gateway、overlay、H5 受影响套件及 migration/trigger/integrity 定向检查；任何真实扫码或发送仍需新的明确授权。
+7. 若固定上游 QR 状态字段、`bot_token/baseurl`、redirect host 或 `qrcode` 依赖契约变化，保持所有 Hermes 开关关闭并停止 manager；不得接受别名字段、动态 host、刷新 QR 或调用 `qr_login` 规避门禁。修复必须重新固定上游并完成独立审计与离线回归。

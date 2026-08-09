@@ -69,6 +69,9 @@ export type NotificationConfig = {
   /** Binding capture is separately gated from delivery and defaults off. */
   hermesBindingEnabled: boolean;
   hermesInternalSecret?: string;
+  /** Narrow loopback account manager for QR-only lifecycle operations. */
+  hermesAccountManagerUrl?: string;
+  hermesAccountManagerSecret?: string;
 };
 
 /** 给回环 HTTP 响应、事件循环调度和 Gateway 持久化留出的最小缓冲。 */
@@ -144,6 +147,8 @@ export function resolveNotificationConfig(env: NodeJS.ProcessEnv = process.env, 
     // This secret authenticates capture prepare/commit/refresh only.  It is
     // intentionally independent from the delivery gateway secret.
     config.hermesInternalSecret = readGatewaySecretFile(env.HERMES_INTERNAL_SECRET_FILE);
+    config.hermesAccountManagerUrl = strictLoopbackUrl(env.HERMES_ACCOUNT_MANAGER_URL || '', 'HERMES_ACCOUNT_MANAGER_URL');
+    config.hermesAccountManagerSecret = readGatewaySecretFile(env.HERMES_ACCOUNT_MANAGER_SECRET_FILE);
   }
   return config;
 }

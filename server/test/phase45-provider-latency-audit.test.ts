@@ -47,7 +47,7 @@ async function generateAndPersist(database: DatabaseSync, log: any, fake: AiProv
 }
 
 test('006 只追加 latency_ms：空库、005 升级、重复、约束、checksum 与事务回滚', () => {
-  assert.deepEqual(MIGRATIONS.map((migration) => migration.version), ['001', '002', '003', '004', '005', '006', '007', '008']);
+  assert.deepEqual(MIGRATIONS.map((migration) => migration.version), ['001', '002', '003', '004', '005', '006', '007', '008', '009']);
   assert.equal(MIGRATIONS[5].checksum, 'b6b27bc98f6620ffa4bbfd829d6f248e0c726277e8f4d94d2be10bff6603026a');
   assert.deepEqual(MIGRATIONS.slice(0, 5).map((migration) => migration.checksum), [
     'c10d4871046168fe4d264341112454eba9983c979ba5ec16098f54ae0f0e57a0',

@@ -100,10 +100,10 @@ export class HermesAdapter implements ChannelAdapter {
   }
   async send(request: AdapterDeliveryRequest, signal: AbortSignal): Promise<ChannelDeliveryResult> {
     if (!this.config.ILINK_POC_LIVE_ENABLED || !this.config.ILINK_HERMES_TRANSPORT_ENABLED) return { status: 'permanent_failure', errorCode: 'ILINK_LIVE_DISABLED' }
-    if (!this.config.hermesLauncherPath || !this.config.hermesSourceDir || !this.config.hermesConfigPath || !this.config.hermesStateDir || !this.config.hermesVaultDir || !request.recipientUserId || !request.recipientBindingGeneration) return { status: 'result_unknown', errorCode: 'ILINK_SEND_RESULT_UNKNOWN' }
+    if (!this.config.hermesLauncherPath || !this.config.hermesSourceDir || !this.config.hermesConfigPath || !this.config.hermesStateDir || !request.recipientUserId || !request.recipientBindingGeneration || !request.recipientAccountRef) return { status: 'result_unknown', errorCode: 'ILINK_SEND_RESULT_UNKNOWN' }
     const text = `${request.message.title}\n${request.message.body}`
     if (text.length > 2000) return { status: 'permanent_failure', errorCode: 'ILINK_MESSAGE_TOO_LONG' }
-    const input = JSON.stringify({ userId: request.recipientUserId, generation: request.recipientBindingGeneration, text, idempotencyKey: request.idempotencyKey })
+    const input = JSON.stringify({ userId: request.recipientUserId, generation: request.recipientBindingGeneration, accountRef: request.recipientAccountRef, text, idempotencyKey: request.idempotencyKey })
     const environment: NodeJS.ProcessEnv = {
       ...process.env,
       HERMES_SOURCE_DIR: this.config.hermesSourceDir,
@@ -116,7 +116,7 @@ export class HermesAdapter implements ChannelAdapter {
     }
     const started = performance.now()
     try {
-      const result = await this.runner.run(this.config.hermesLauncherPath, ['send-bound', '--config', this.config.hermesConfigPath, '--state-dir', this.config.hermesStateDir, '--vault-dir', this.config.hermesVaultDir], input, this.config.ILINK_REQUEST_TIMEOUT_MS, environment, signal)
+      const result = await this.runner.run(this.config.hermesLauncherPath, ['send-bound', '--manager-config', this.config.hermesConfigPath], input, this.config.ILINK_REQUEST_TIMEOUT_MS, environment, signal)
       const latencyMs = Math.max(0, Math.round(performance.now() - started))
       if (result.spawnError || result.timedOut || result.aborted || result.invalidOutput || signal.aborted) return { status: 'result_unknown', errorCode: result.timedOut || result.aborted || signal.aborted ? 'ILINK_SEND_TIMEOUT' : 'ILINK_SEND_RESULT_UNKNOWN', latencyMs }
       const response = strictResponse(result.stdout, request.idempotencyKey, result.exitCode)

@@ -5,6 +5,7 @@ import { hashPassword } from '../utils/password.js';
 import { requireAdmin, authenticate } from '../middleware/auth.js';
 import type { SQLInputValue } from 'node:sqlite';
 import { disableHermesBindingInTransaction } from '../services/hermes-binding.js';
+import { retireHermesManagerAccount } from '../services/hermes-account-manager.js';
 import { nowDatetime } from '../utils/datetime.js';
 
 const createUserSchema = z.object({
@@ -106,6 +107,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     // User deactivation, binding disablement and cancellation of queued Hermes
     // delivery are a single state transition.  A partial update could otherwise
     // leave an inactive account reachable by a previously queued notification.
+    const retiringAccount = data.is_active === 0 ? (db.prepare('SELECT account_ref FROM hermes_bindings WHERE user_id=?').get(targetId) as { account_ref: string | null } | undefined)?.account_ref : undefined;
     db.exec('BEGIN IMMEDIATE');
     try {
       db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
@@ -115,6 +117,9 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
       try { db.exec('ROLLBACK'); } catch { /* transaction was not opened */ }
       throw error;
     }
+    // Never make the SQLite transaction depend on an external process.  A
+    // subsequent manager reconciliation retains the fail-closed DB decision.
+    if (data.is_active === 0) await retireHermesManagerAccount(retiringAccount);
     return reply.send({ code: 0, msg: '更新成功', data: null });
   });
 

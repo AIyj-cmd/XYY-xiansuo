@@ -169,19 +169,19 @@ export function captureOwnerChanged(database: DatabaseSync, event: OwnerChangedE
   else if (!recipient?.is_active) { status = 'suppressed'; suppression = 'recipient_inactive'; }
   else if (!channel || (channel === 'mock' && !config.mockEnabled) || (channel === 'openclaw' && !config.openclawEnabled) || (channel === 'hermes' && !config.hermesEnabled)) { status = 'suppressed'; suppression = 'no_usable_channel'; }
   const hermesBinding = channel === 'hermes'
-    ? database.prepare("SELECT status,generation FROM hermes_bindings WHERE user_id=?").get(event.newOwnerId) as { status: string; generation: number } | undefined
+    ? database.prepare("SELECT status,generation,account_ref FROM hermes_bindings WHERE user_id=?").get(event.newOwnerId) as { status: string; generation: number; account_ref: string | null } | undefined
     : undefined;
-  if (channel === 'hermes' && (!hermesBinding || hermesBinding.status !== 'active' || hermesBinding.generation < 1)) { status = 'suppressed'; suppression = 'recipient_not_bound'; }
+  if (channel === 'hermes' && (!hermesBinding || hermesBinding.status !== 'active' || hermesBinding.generation < 1 || !hermesBinding.account_ref)) { status = 'suppressed'; suppression = 'recipient_not_bound'; }
   const terminalAt = status === 'suppressed' ? now : null;
   const availableAt = status === 'pending' ? ownerRuleAvailableAt(ruleConfig, now) : now;
   try {
     database.prepare(`INSERT INTO notification_logs (
       event_type,event_source,operation_id,subject_type,subject_id,lead_id,actor_user_id,old_owner_id,new_owner_id,recipient_user_id,occurred_at,
-      dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,recipient_binding_generation,message_snapshot_json,status,max_attempts,available_at,
+      dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,recipient_binding_generation,recipient_account_ref,message_snapshot_json,status,max_attempts,available_at,
       suppression_reason,suppressed_at,retain_until,expires_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       'owner_changed', event.source, event.operationId, 'lead', event.leadId, event.leadId, event.actorUserId, event.oldOwnerId, event.newOwnerId, event.newOwnerId, now,
-      dedupeKey, deliveryKey, rule.version, JSON.stringify({ enabled: Boolean(rule.enabled), config: ruleConfig }), rule.channel_order_json, status === 'pending' ? channel! : null, status === 'pending' && channel === 'hermes' ? hermesBinding!.generation : null,
+      dedupeKey, deliveryKey, rule.version, JSON.stringify({ enabled: Boolean(rule.enabled), config: ruleConfig }), rule.channel_order_json, status === 'pending' ? channel! : null, status === 'pending' && channel === 'hermes' ? hermesBinding!.generation : null, status === 'pending' && channel === 'hermes' ? hermesBinding!.account_ref : null,
       JSON.stringify(messageSnapshot), status, channel === 'openclaw' ? config.openclawMaxAttempts : ruleConfig.max_attempts, availableAt,
       suppression, terminalAt, terminalAt ? isoPlusMinutes(terminalAt, 180 * 24 * 60) : null, isoPlusMinutes(now, ruleConfig.ttl_minutes),
     );
@@ -277,8 +277,8 @@ export function validateClaimedNotificationTask(database: DatabaseSync, task: Cl
   if (!state || state.is_deleted || state.owner_id !== task.recipient_user_id) reason = 'owner_changed';
   else if (!state.is_active) reason = 'recipient_inactive';
   else if (task.channel === 'hermes') {
-    const binding = database.prepare('SELECT status,generation FROM hermes_bindings WHERE user_id=?').get(task.recipient_user_id) as { status: string; generation: number } | undefined;
-    if (!Number.isInteger(task.recipient_binding_generation) || !binding || binding.status !== 'active' || binding.generation !== task.recipient_binding_generation) reason = 'binding_generation_changed';
+    const binding = database.prepare('SELECT status,generation,account_ref FROM hermes_bindings WHERE user_id=?').get(task.recipient_user_id) as { status: string; generation: number; account_ref: string | null } | undefined;
+    if (!Number.isInteger(task.recipient_binding_generation) || typeof task.recipient_account_ref !== 'string' || !binding || binding.status !== 'active' || binding.generation !== task.recipient_binding_generation || binding.account_ref !== task.recipient_account_ref) reason = 'binding_generation_changed';
   }
   if (!reason) return 'valid';
   const result = database.prepare(`UPDATE notification_logs SET status='cancelled', cancellation_reason=?, cancelled_at=?, retain_until=?,

@@ -1,186 +1,30 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { onUnload } from '@dcloudio/uni-app';
-import { hermesBotEntry } from '../../config/hermes-bot-entry';
 import { get, post, request } from '../../utils/request';
 
-type Binding = { status: 'unbound' | 'pending' | 'active' | 'disabled'; generation: number; expires_at: string | null };
-const binding = ref<Binding>({ status: 'unbound', generation: 0, expires_at: null });
-const code = ref('');
-const expiresAt = ref('');
-const loading = ref(false);
-const currentTime = ref(Date.now());
-const bindingConfirmed = ref(false);
-const labels: Record<Binding['status'], string> = { unbound: '未绑定', pending: '等待绑定', active: '已绑定', disabled: '已停用' };
-let countdownTimer: ReturnType<typeof setInterval> | null = null;
-let pollTimer: ReturnType<typeof setTimeout> | null = null;
-let trackingGeneration = 0;
-let disposed = false;
-
-const command = computed(() => code.value ? `绑定 ${code.value}` : '');
-const expiresAtMs = computed(() => {
-  if (!expiresAt.value) return 0;
-  const normalized = expiresAt.value.replace(' ', 'T');
-  return Date.parse(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(normalized) ? normalized : `${normalized}+08:00`);
-});
-const isExpired = computed(() => Boolean(code.value) && (!Number.isFinite(expiresAtMs.value) || currentTime.value >= expiresAtMs.value));
-const remainingTime = computed(() => {
-  const remainingSeconds = Math.max(0, Math.ceil((expiresAtMs.value - currentTime.value) / 1000));
-  return `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`;
-});
-const generateLabel = computed(() => {
-  if (loading.value) return '生成中…';
-  if (code.value || binding.value.status === 'active') return '重新生成绑定码';
-  return '生成绑定码';
-});
-
-function clearPolling(): void {
-  if (pollTimer) clearTimeout(pollTimer);
-  pollTimer = null;
-}
-
-function clearCountdown(): void {
-  if (countdownTimer) clearInterval(countdownTimer);
-  countdownTimer = null;
-}
-
-function stopTracking(): void {
-  trackingGeneration += 1;
-  clearCountdown();
-  clearPolling();
-}
-
-function canTrack(generation: number): boolean {
-  return !disposed && generation === trackingGeneration && !isExpired.value && !bindingConfirmed.value;
-}
-
-function updateTracking(generation: number): void {
-  if (!canTrack(generation)) return;
-  currentTime.value = Date.now();
-  if (!canTrack(generation)) {
-    stopTracking();
-    return;
-  }
-  clearPolling();
-  pollTimer = setTimeout(async () => {
-    if (!canTrack(generation)) return;
-    try {
-      await load(true);
-    } finally {
-      // 请求本身无法中止时，仍不可在卸载、成功、过期或重开后重排轮询。
-      updateTracking(generation);
-    }
-  }, 2_000);
-}
-
-function startTracking(): void {
-  stopTracking();
-  const generation = ++trackingGeneration;
-  currentTime.value = Date.now();
-  countdownTimer = setInterval(() => {
-    if (!canTrack(generation)) return;
-    currentTime.value = Date.now();
-    if (isExpired.value) stopTracking();
-  }, 1_000);
-  updateTracking(generation);
-}
-
-async function load(silent = false): Promise<void> {
-  try {
-    binding.value = silent
-      ? await request<Binding>('/api/hermes-binding', { showError: false })
-      : await get<Binding>('/api/hermes-binding');
-    // 发放重绑码时服务端会保留旧绑定的 active 状态，并同时保留本次码的
-    // expires_at；只有 commit 清空 expires_at 后才代表本次两步式绑定完成。
-    if (code.value && binding.value.status === 'active' && binding.value.expires_at === null) {
-      bindingConfirmed.value = true;
-      stopTracking();
-    }
-  } catch (error) {
-    if (!silent) throw error;
-  }
-}
-
-async function generate() {
-  loading.value = true;
-  try {
-    const result = await post<{ code: string; expires_at: string }>('/api/hermes-binding/code');
-    code.value = result.code;
-    expiresAt.value = result.expires_at;
-    bindingConfirmed.value = false;
-    await load();
-    startTracking();
-  }
-  finally { loading.value = false; }
-}
-
-function copyToClipboard(value: string, successMessage: string): void {
-  uni.setClipboardData({
-    data: value,
-    success: () => uni.showToast({ title: successMessage, icon: 'success' }),
-    fail: () => uni.showToast({ title: '复制失败，请手动复制', icon: 'none' }),
-  });
-}
-
-function copyCommand(): void { copyToClipboard(command.value, '完整命令已复制'); }
-function copyEntryUrl(): void { if (hermesBotEntry.url) copyToClipboard(hermesBotEntry.url, '入口链接已复制'); }
-
-function disposeTracking(): void {
-  disposed = true;
-  stopTracking();
-  // H5 浏览器后退会先触发 popstate；即使页面容器延迟回收，也立即停止轮询。
-  window.removeEventListener('popstate', disposeTracking);
-}
-
-onMounted(() => {
-  disposed = false;
-  window.addEventListener('popstate', disposeTracking);
-  void load();
-});
-onUnmounted(disposeTracking);
-onUnload(disposeTracking);
+type Binding = { status: 'unbound' | 'pending' | 'active' | 'disabled' | 'rebind_required'; generation: number };
+type Attempt = { id: string; status: 'waiting' | 'scanned' | 'awaiting_context' | 'active' | 'expired' | 'failed' | 'cancelled'; generation: number; expires_at: string; qr_data_url?: string; confirmation_command?: string; error_code?: string };
+const binding = ref<Binding>({ status: 'unbound', generation: 0 });
+const attempt = ref<Attempt | null>(null); const loading = ref(false); const now = ref(Date.now()); let timer: ReturnType<typeof setInterval> | null = null; let poll: ReturnType<typeof setTimeout> | null = null; let disposed = false;
+const remaining = computed(() => { const raw = attempt.value?.expires_at; if (!raw) return '00:00'; const ms = Date.parse(`${raw.replace(' ', 'T')}+08:00`) - now.value; const seconds = Math.max(0, Math.ceil(ms / 1000)); return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`; });
+const terminal = computed(() => !attempt.value || ['active','expired','failed','cancelled'].includes(attempt.value.status));
+const label: Record<NonNullable<Attempt>['status'], string> = { waiting: '等待扫码', scanned: '已扫码，等待确认', awaiting_context: '请在新机器人会话发送确认命令', active: '绑定成功', expired: '二维码已过期', failed: '绑定失败', cancelled: '已取消' };
+function clear(): void { if (timer) clearInterval(timer); if (poll) clearTimeout(poll); timer = null; poll = null; }
+function track(): void { clear(); timer = setInterval(() => { now.value = Date.now(); if (remaining.value === '00:00') clear(); }, 1000); const again = async () => { if (disposed || !attempt.value || terminal.value) return; try { const latest = await request<Attempt>(`/api/hermes-binding/qr-attempts/${attempt.value.id}`, { showError: false }); attempt.value = latest; if (latest.status === 'active') binding.value.status = 'active'; } finally { if (!disposed && !terminal.value) poll = setTimeout(again, 2000); } }; poll = setTimeout(again, 2000); }
+async function load(): Promise<void> { binding.value = await get<Binding>('/api/hermes-binding'); }
+async function create(): Promise<void> { loading.value = true; try { attempt.value = await post<Attempt>('/api/hermes-binding/qr-attempts'); now.value = Date.now(); track(); } finally { loading.value = false; } }
+async function cancel(): Promise<void> { if (!attempt.value) return; await request(`/api/hermes-binding/qr-attempts/${attempt.value.id}`, { method: 'DELETE' }); attempt.value = { ...attempt.value, status: 'cancelled', qr_data_url: undefined }; clear(); }
+function copy(): void { if (!attempt.value?.confirmation_command) return; uni.setClipboardData({ data: attempt.value.confirmation_command, success: () => uni.showToast({ title: '确认命令已复制', icon: 'success' }), fail: () => uni.showToast({ title: '复制失败，请手动复制', icon: 'none' }) }); }
+function dispose(): void { disposed = true; clear(); }
+onMounted(async () => { disposed = false; await load(); }); onUnmounted(dispose); onUnload(dispose);
 </script>
 
 <template>
-  <view class="page">
-    <view class="card">
-      <text class="title">微信通知绑定</text>
-      <text class="desc">将当前网站账号与您的微信一对一绑定。绑定码仅能使用一次，10 分钟内有效。</text>
-      <view class="status"><text>当前状态</text><text class="value">{{ labels[binding.status] }}</text></view>
-      <view v-if="binding.status === 'active'" class="status"><text>当前绑定代次</text><text class="value">{{ binding.generation }}</text></view>
-      <button class="button" :disabled="loading || binding.status === 'disabled'" @click="generate">{{ generateLabel }}</button>
-    </view>
-    <view v-if="hermesBotEntry.url || hermesBotEntry.imageUrl" class="card entry-card">
-      <text class="label">已验证的 Hermes 机器人入口</text>
-      <image v-if="hermesBotEntry.imageUrl" class="entry-image" :src="hermesBotEntry.imageUrl" mode="aspectFit" />
-      <button v-if="hermesBotEntry.url" class="link-button" @click="copyEntryUrl">复制机器人入口链接</button>
-      <text class="hint">此入口仅用于添加长期机器人联系人，不是 Hermes/iLink 登录二维码。</text>
-    </view>
-    <view v-else class="card entry-card">
-      <text class="label">机器人入口尚未配置</text>
-      <text class="hint">请向管理员获取已验证的长期 Hermes 机器人联系人入口；本页不会生成或展示登录二维码。</text>
-    </view>
-    <view v-if="bindingConfirmed" class="card success-card">
-      <text class="success-title">绑定成功</text>
-      <text class="hint">当前微信已与此网站账号绑定，可关闭本页。</text>
-    </view>
-    <view v-else-if="code" class="card code-card">
-      <text class="label">请向 Hermes 微信账号发送以下完整内容</text>
-      <template v-if="!isExpired">
-        <text data-testid="hermes-binding-command" selectable class="code">{{ command }}</text>
-        <button class="copy-button" @click="copyCommand">复制完整命令</button>
-        <text class="hint">剩余 {{ remainingTime }}，有效至 {{ expiresAt }}。请勿转发给他人。</text>
-      </template>
-      <template v-else>
-        <text class="expired">绑定码已过期</text>
-        <text class="hint">请重新生成绑定码后再发送。</text>
-      </template>
-    </view>
+  <view class="page"><view class="card"><text class="title">微信通知绑定</text><text class="desc">每个网站账号使用独立 Hermes 机器人账号。二维码仅 5 分钟有效，不会自动刷新。</text><view class="status"><text>当前状态</text><text>{{ binding.status === 'active' ? '已绑定' : binding.status === 'rebind_required' ? '旧绑定需重新绑定' : binding.status === 'disabled' ? '已停用' : '未绑定' }}</text></view><button data-testid="hermes-qr-create" class="primary" :disabled="loading || binding.status === 'disabled' || (!!attempt && !terminal)" @click="create">{{ loading ? '生成中…' : '生成登录二维码' }}</button></view>
+    <view v-if="attempt" class="card center"><text class="state">{{ label[attempt.status] }}</text><text class="hint">剩余 {{ remaining }}</text><image v-if="attempt.status === 'waiting' && attempt.qr_data_url" data-testid="hermes-qr-image" class="qr" :src="attempt.qr_data_url" mode="aspectFit" /><text v-else-if="attempt.status === 'waiting'" class="hint">二维码加载中，请保持本页打开。</text><template v-if="attempt.status === 'scanned' || attempt.status === 'awaiting_context'"><text class="hint">请在刚登录的新机器人会话发送以下一次性确认命令：</text><text data-testid="hermes-confirmation-command" selectable class="command">{{ attempt.confirmation_command || '确认命令加载中…' }}</text><button class="secondary" :disabled="!attempt.confirmation_command" @click="copy">复制确认命令</button></template><text v-if="attempt.status === 'active'" class="success">绑定成功。此机器人现在只用于当前网站账号。</text><text v-if="attempt.status === 'expired' || attempt.status === 'failed'" class="error">{{ attempt.status === 'expired' ? '请重新生成二维码。' : '请重新生成二维码或联系管理员。' }}</text><button v-if="!terminal" data-testid="hermes-qr-cancel" class="cancel" @click="cancel">取消本次绑定</button></view>
   </view>
 </template>
-
 <style scoped>
-.page { min-height: 100vh; box-sizing: border-box; padding: 18px 14px; background: #f5f7fa; }
-.card { background: #fff; border-radius: 12px; padding: 20px 18px; box-shadow: 0 1px 4px rgba(0,0,0,.06); margin-bottom: 14px; }
-.title { display:block; font-size: 20px; font-weight:700; color:#1a202c; margin-bottom:12px; }.desc,.hint { display:block; color:#718096; font-size:14px; line-height:1.65; }.status { display:flex; justify-content:space-between; margin-top:16px; color:#4a5568; font-size:14px; }.value { color:#2b6cb0; font-weight:600; }.button { margin-top:22px; background:var(--p); color:#fff; border-radius:9px; font-size:16px; }.code-card,.entry-card,.success-card { text-align:center; }.label { display:block; color:#4a5568; font-size:14px; font-weight:600; }.code { display:block; overflow-wrap:anywhere; margin:16px 0 12px; padding:14px 10px; border-radius:8px; background:#edf2f7; color:#1a202c; font-size:17px; font-weight:700; letter-spacing:.4px; }.copy-button,.link-button { margin:0 0 12px; color:#2b6cb0; border:1px solid #2b6cb0; background:#fff; border-radius:8px; font-size:14px; }.entry-image { display:block; width:180px; height:180px; margin:16px auto 12px; background:#edf2f7; }.success-title { display:block; color:#2f855a; font-size:18px; font-weight:700; margin-bottom:8px; }.expired { display:block; color:#c53030; font-size:17px; font-weight:700; margin:16px 0 8px; }
+.page{min-height:100vh;padding:18px 14px;box-sizing:border-box;background:#f5f7fa}.card{padding:20px 18px;margin-bottom:14px;border-radius:12px;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.06)}.title,.state{display:block;font-weight:700;font-size:20px;color:#1a202c}.desc,.hint{display:block;color:#718096;font-size:14px;line-height:1.65;margin-top:10px}.status{display:flex;justify-content:space-between;margin-top:16px;color:#4a5568}.primary{margin-top:22px;background:var(--p);color:#fff;border-radius:9px}.center{text-align:center}.qr{width:240px;height:240px;margin:18px auto;display:block;background:#fff}.command{display:block;margin:14px 0;padding:12px;background:#edf2f7;border-radius:8px;color:#1a202c;overflow-wrap:anywhere}.secondary,.cancel{margin-top:12px;border:1px solid #2b6cb0;background:#fff;color:#2b6cb0;border-radius:8px}.cancel{border-color:#c53030;color:#c53030}.success{display:block;color:#2f855a;margin-top:16px}.error{display:block;color:#c53030;margin-top:16px}
 </style>

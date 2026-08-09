@@ -165,16 +165,23 @@ OpenClaw 的安装、会话检查和入站静默插件只按 [运行手册](OPEN
 
 若以后获得新的真实单条授权，只允许唯一接收人、固定正文、新幂等键和一次 adapter 调用。放行标准同时要求技术状态 `sent`、人工实际收到 1 条、自动重试 0、其他渠道 0；任何 unknown、超时、断连或结果不一致立即停止且不重发。在该实况门禁完成前不得接入 Worker、PM2/systemd、Nginx 或生产。
 
-## 9. Hermes 两步式 H5 绑定页交付说明（2026-08-09）
+## 9. Hermes 每用户 QR manager 交付说明（2026-08-09）
 
-本轮**没有部署**，也没有提供或人工核验真实的长期公开机器人联系人入口。
-当前只可以无入口配置构建离线制品；页面会安全降级为“向管理员获取”，不会生成或展示占位/登录二维码。
+本轮没有部署或真实账号操作。`HERMES_BINDING_ENABLED=false`、`HERMES_CHANNEL_ENABLED=false`、`ILINK_HERMES_TRANSPORT_ENABLED=false` 和 `ILINK_POC_LIVE_ENABLED=false` 必须保持默认关闭；禁止启动 manager、Gateway、轮询、登录、扫码或发送。
 
-未来只有另获部署授权后才可执行：
+如未来另获单独实况授权，manager 仅可绑定 `127.0.0.1`/`::1`，以仓库外 0600 JSON 配置文件启动：`host`、`port`、`vault_dir`、base64 `vault_key`、`manager_secret`、loopback `server_url`、`internal_secret` 必须齐全，`vault_dir` 为当前 UID 的非链接 0700 目录。密钥、provider accountId/token、二维码、target、context、cursor、activationId 绝不进入 PM2 环境、argv、日志、SQLite 或 H5 静态制品。固定上游必须通过 provenance/hash gate，并包含其锁定的 `qrcode==7.4.2` messaging extra；不得改上游源码或调用 `qr_login`。
 
-1. 由两名授权人人工复核入口的归属、长期可用性、HTTPS 证书和实际内容；必须是可公开的机器人联系人入口，不得是 Hermes/iLink 登录二维码。
-2. 在受控构建环境仅配置已核验的 `VITE_HERMES_BOT_ENTRY_URL` 和/或 `VITE_HERMES_BOT_ENTRY_IMAGE_URL`。值会进入公开静态制品，禁止 userinfo、token、peer、session、cursor、凭据、短期签名 URL 或登录二维码。
-3. 运行 `cd app && npm ci && npm run test:h5`，再对 `app/dist/build/h5/` 执行入口值、登录二维码与凭据扫描；人工浏览器验证入口内容和复制值。未通过则以无配置重建，不可以弱化校验。
-4. 部署后监控绑定状态 GET/发码 POST 的 401、403、409、429 比率、轮询请求量、入口图片加载失败和前端异常；日志不得记录绑定码、剪贴板、入口查询串或任何 peer/token/session。
+放行前先以 fake provider 完成离线 manager/Server/Gateway/H5 全套测试，核查单一活动 attempt、owner-only API、五分钟过期且无刷新、扫码后精确确认命令、三元组零 fallback、vault 0600/0700/完整性、重启恢复和第 11 账号拒绝。任何权限、HMAC/nonce、vault、上游 gate 或泄密扫描失败都必须停止；不允许以真实二维码或实际发送代替测试。
 
-`HERMES_BINDING_ENABLED`、渠道/live/Worker 开关及通知规则继续保持关闭。本节不授权构建配置入口、覆盖 H5、重启服务、登录、扫码、轮询真实 Hermes 或发送。
+## 10. 每用户 QR 生产前门禁补充（2026-08-09）
+
+当前结论仍是**不得部署**。未来取得真实双人 Pilot 与部署授权后，按以下顺序执行：
+
+1. 冻结发布 commit 和制品；保持 `HERMES_BINDING_ENABLED=false`、`HERMES_CHANNEL_ENABLED=false`、`ILINK_HERMES_TRANSPORT_ENABLED=false`、`ILINK_POC_LIVE_ENABLED=false` 及全部通知规则关闭。
+2. 对真实 `DB_PATH` 做一致性备份和可恢复验证，只在生产副本首次运行 `009`。升级前统计 legacy Hermes active、pending/retry/sending 数量并经业务确认停发与重绑窗口；升级后确认 legacy 行/任务未改变、公开状态为 `rebind_required`、trigger/索引实际可执行、`integrity_check=ok`、`foreign_key_check` 为空。
+3. manager 配置只放仓库外 0600 JSON；`vault_dir` 为当前 UID 的仓库外非链接 0700 目录。`vault_key`、`manager_secret`、`internal_secret` 不进 env、argv、Git 或日志；Server 仅通过各自 0600 Secret 文件读取 manager/internal Secret。确认固定 Python 的 `qrcode==7.4.2` 可导入、upstream provenance/hash gate 通过，并静态核对确认响应仍使用 `bot_token/baseurl`、扫码重定向 host 仍为固定 `ilinkai.weixin.qq.com`；任一契约变化均停止。
+4. 启动顺序固定为 API（渠道关闭）→ account manager（loopback）→ Hermes Gateway（transport/live 仍关闭）→ notification-worker（仍关闭）。manager 不在当前 PM2 自动启动模板中，不得因加载 API/Worker 模板而隐式启动。
+5. 用两名明确测试用户串行执行：A 生成/扫描/确认并 active；B 在 A 完成或取消后执行；交换 accountRef、generation、确认命令、target/context 的负例必须零网络。再验证 manager 重启、prepared 过期、用户停用退役和 active 重绑旧账号退役。
+6. 只有双人隔离通过后，才可单独授权 `owner_changed`：每人一条固定消息、一个新幂等键、一次 adapter 调用；人工核对接收人、数量、技术结果、自动重试 0、其他渠道 0。任何 `result_unknown`、错投、重复、fallback、重试或账本不一致立即停止，不换 key、不重发。
+
+监控新增：全局 live attempt 数/最老年龄、prepared 超 TTL、manager 401/409/不可达、周期授权拒绝、同用户旧账号退役失败、vault live 用户数、QR 进程重启失效、`rebind_required` 完成率，以及三元组不匹配取消数。日志不得记录 QR、activationId、accountRef 原值、provider account/token、target/context/cursor 或消息正文。

@@ -68,10 +68,10 @@ async function processTask(db: ReturnType<typeof getDb>, channels: { mock: MockN
         : undefined;
       result = await channels.openclaw.send({ userId: task.recipient_user_id }, controlledSyntheticMessage ?? ownerMessage ?? openClawMessage(task.event_type), task.delivery_idempotency_key, controller.signal);
     } else if (task.channel === 'hermes' && channels.hermes) {
-      if (!Number.isInteger(task.recipient_binding_generation) || task.recipient_binding_generation < 1) throw Object.assign(new Error('Hermes 任务缺少绑定代次'), { code: 'HERMES_BINDING_GENERATION_INVALID', permanent: true });
+      if (!Number.isInteger(task.recipient_binding_generation) || task.recipient_binding_generation < 1 || typeof task.recipient_account_ref !== 'string' || !task.recipient_account_ref) throw Object.assign(new Error('Hermes 任务缺少绑定三元组'), { code: 'HERMES_BINDING_GENERATION_INVALID', permanent: true });
       const ownerMessage = task.event_type === 'owner_changed' ? toChannelMessage(task.event_type, parseNotificationSnapshot(task.event_type, task.message_snapshot_json)) : undefined;
       if (!ownerMessage) throw Object.assign(new Error('Hermes 仅支持负责人变更通知'), { code: 'EVENT_NOT_IMPLEMENTED', permanent: true });
-      result = await channels.hermes.send({ userId: task.recipient_user_id, generation: task.recipient_binding_generation }, ownerMessage, task.delivery_idempotency_key, controller.signal);
+      result = await channels.hermes.send({ userId: task.recipient_user_id, generation: task.recipient_binding_generation, accountRef: task.recipient_account_ref }, ownerMessage, task.delivery_idempotency_key, controller.signal);
     } else throw Object.assign(new Error('渠道任务不允许领取'), { code: 'CHANNEL_NOT_ALLOWED', permanent: true });
     const outcome = mapChannelResult(task as { channel: string; delivery_idempotency_key: string }, result);
     const updated = finishNotificationTask(db, task, outcome, nowDatetime());

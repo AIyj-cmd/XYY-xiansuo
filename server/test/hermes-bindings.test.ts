@@ -3,7 +3,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, createHmac } from 'node:crypto';
 import { MIGRATIONS } from '../src/db.js';
-import { commitHermesBinding, consumeHermesInternalNonce, disableHermesBinding, disableHermesBindingInTransaction, fingerprint, issueHermesBindingCode, prepareHermesBinding, publicHermesBinding, verifyHermesInternalSignature } from '../src/services/hermes-binding.js';
+import { activateHermesQrAttempt, cancelOwnedHermesQrAttempt, commitHermesBinding, consumeHermesInternalNonce, createHermesQrAttempt, disableHermesBinding, disableHermesBindingInTransaction, fingerprint, getOwnedHermesQrAttempt, issueHermesBindingCode, markHermesQrAwaitingContext, markHermesQrConfirmed, prepareHermesBinding, publicHermesBinding, verifyHermesInternalSignature } from '../src/services/hermes-binding.js';
 
 function open(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -19,13 +19,59 @@ test('008 重建通知表并只保存 Hermes 不透明绑定状态和代次', ()
   const bindingSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='hermes_bindings'").get() as { sql: string }).sql;
   assert.match(bindingSql, /active_activation_id_hash/);
   assert.doesNotMatch(bindingSql, /context_token|cursor|peer[^_f]/i);
+  assert.match((db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='hermes_login_attempts'").get() as { sql: string }).sql, /account_ref/);
+});
+
+test('每用户 QR attempt 受全局锁、所有权和确认上下文状态机保护', () => {
+  const db = open(); db.prepare("INSERT INTO users(username,name,password_hash) VALUES ('qr-other','二维码其他人','x')").run();
+  const first = createHermesQrAttempt(db, 1, '2026-08-09 09:00:00');
+  assert.match(first.account_ref, /^hr_[A-Za-z0-9_-]{16,96}$/);
+  assert.throws(() => createHermesQrAttempt(db, 2, '2026-08-09 09:00:01'), /其他用户正在绑定/);
+  assert.equal(getOwnedHermesQrAttempt(db, 2, first.id, '2026-08-09 09:00:01'), undefined);
+  assert.equal(cancelOwnedHermesQrAttempt(db, 2, first.id, '2026-08-09 09:00:01'), false);
+  markHermesQrConfirmed(db, first.id, '2026-08-09 09:00:02');
+  assert.throws(() => activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-a'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:00:03'), /上下文/);
+  markHermesQrAwaitingContext(db, first.id, '2026-08-09 09:00:04');
+  const active = activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-a'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:00:05');
+  assert.equal(active.status, 'active');
+  assert.equal(activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-a'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:00:06').status, 'active');
+  assert.throws(() => activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-a'),activationId:'00000000-0000-4000-8000-000000000099' }, '2026-08-09 09:00:07'), /激活凭证/);
+  assert.throws(() => activateHermesQrAttempt(db, { id:first.id,accountRef:first.account_ref,targetFingerprint:fingerprint('target-b'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:00:08'), /激活凭证/);
+  const binding = db.prepare('SELECT account_ref,target_fingerprint,generation,status FROM hermes_bindings WHERE user_id=1').get() as any;
+  assert.deepEqual({ ...binding }, { account_ref:first.account_ref,target_fingerprint:fingerprint('target-a'),generation:1,status:'active' });
+});
+
+test('QR attempt TTL/cancel never exposes provider values and frees the global lock', () => {
+  const db = open(); db.prepare("INSERT INTO users(username,name,password_hash) VALUES ('qr-cancel','取消用户','x')").run();
+  const expired = createHermesQrAttempt(db, 1, '2026-08-09 09:00:00');
+  assert.equal(getOwnedHermesQrAttempt(db, 1, expired.id, '2026-08-09 09:06:00')?.status, 'expired');
+  const next = createHermesQrAttempt(db, 2, '2026-08-09 09:06:01');
+  assert.equal(cancelOwnedHermesQrAttempt(db, 2, next.id, '2026-08-09 09:06:02'), true);
+  const serialized = JSON.stringify(db.prepare('SELECT * FROM hermes_login_attempts').all());
+  assert.equal(/"(?:token|context|qrcode|providerAccountId)"/i.test(serialized), false);
+});
+
+test('legacy active 绑定迁移后仅提示重绑；新账号激活前不改旧任务，成功后原子切换', () => {
+  const db = open();
+  db.prepare("INSERT INTO hermes_bindings(user_id,peer_fingerprint,status,generation,active_activation_id_hash,updated_at) VALUES (1,?,'active',1,?,?)").run(fingerprint('legacy-peer'), 'a'.repeat(64), '2026-08-09 08:00:00');
+  db.prepare(`INSERT INTO notification_logs(event_type,event_source,operation_id,subject_type,subject_id,recipient_user_id,recipient_binding_generation,occurred_at,dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,expires_at)
+    VALUES ('scheduled_follow_overdue','test','legacy-rebind','lead',1,1,1,'2026-08-09 08:00:00','legacy-rebind','legacy-rebind-key',1,'{}','["hermes"]','hermes','{}','pending',1,'2026-08-09 08:00:00','2026-08-10 08:00:00')`).run();
+  assert.equal(publicHermesBinding(db, 1).status, 'rebind_required');
+  const attempt = createHermesQrAttempt(db, 1, '2026-08-09 09:00:00');
+  assert.equal((db.prepare("SELECT status FROM notification_logs WHERE dedupe_key='legacy-rebind'").get() as { status: string }).status, 'pending');
+  markHermesQrAwaitingContext(db, attempt.id, '2026-08-09 09:00:01');
+  assert.throws(() => activateHermesQrAttempt(db, { id:attempt.id,accountRef:'hr_abcdefghijklmnopqrstuv',targetFingerprint:fingerprint('new-target'),activationId:'00000000-0000-4000-8000-000000000001' }, '2026-08-09 09:00:02'), /失效/);
+  assert.equal((db.prepare("SELECT status FROM notification_logs WHERE dedupe_key='legacy-rebind'").get() as { status: string }).status, 'pending');
+  activateHermesQrAttempt(db, { id:attempt.id,accountRef:attempt.account_ref,targetFingerprint:fingerprint('new-target'),activationId:'12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:00:03');
+  assert.equal(publicHermesBinding(db, 1).status, 'active');
+  assert.equal((db.prepare("SELECT status FROM notification_logs WHERE dedupe_key='legacy-rebind'").get() as { status: string }).status, 'cancelled');
 });
 
 test('绑定码为一次性128位随机值，代次递增且重绑取消旧 Hermes 任务', () => {
   const db = open(); const first = issueHermesBindingCode(db, 1, new Date('2026-08-08T00:00:00Z'));
   assert.match(first.code, /^XYY-[A-Z2-7]{26}$/); const firstPrep = prepareHermesBinding(db, { userId: 1, code: first.code, peerFingerprint: fingerprint('peer-a') }, '2026-08-08 08:01:00');
   assert.equal(firstPrep.generation, 1); commitHermesBinding(db, { userId: 1, activationId: firstPrep.activationId, peerFingerprint: fingerprint('peer-a'), generation: 1 }, '2026-08-08 08:01:00');
-  assert.deepEqual(publicHermesBinding(db, 1).status, 'active');
+  assert.deepEqual(publicHermesBinding(db, 1).status, 'rebind_required');
   db.prepare("INSERT INTO users(username,name,password_hash) VALUES ('other','其他','x')").run();
   db.prepare("INSERT INTO leads(contact_name,source,lead_date,owner_id,created_by) VALUES ('测试','测试','2026-08-08',1,2)").run();
   db.prepare(`INSERT INTO notification_logs(event_type,event_source,operation_id,subject_type,subject_id,lead_id,actor_user_id,new_owner_id,recipient_user_id,recipient_binding_generation,occurred_at,dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,expires_at) VALUES ('owner_changed','single_edit','o','lead',1,1,2,1,1,1,'2026-08-08 08:01:00','d','k',1,'{}','["hermes"]','hermes','{}','pending',1,'2026-08-08 08:01:00','2026-08-09 08:01:00')`).run();

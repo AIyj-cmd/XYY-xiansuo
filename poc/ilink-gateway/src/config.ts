@@ -47,10 +47,8 @@ const configSchema = z.object({
   ILINK_HERMES_SOURCE_DIR: absolutePath.optional(),
   ILINK_HERMES_CONFIG_FILE: absolutePath.optional(),
   ILINK_HERMES_STATE_DIR: absolutePath.optional(),
-  /** External 0700 vault, never a business DB or static peer map. */
-  ILINK_HERMES_VAULT_DIR: absolutePath.optional(),
-  /** Deprecated and ignored: retained only so an old environment fails closed at routing, not config parsing. */
-  ILINK_HERMES_RECIPIENT_MAP_FILE: absolutePath.optional()
+  // Hermes has no peer map or separate CLI vault argument: the manager config
+  // is its single opaque accountRef-to-vault authority.
 }).strict()
 
 const legacyAliases: Record<string, keyof z.input<typeof configSchema>> = {
@@ -70,7 +68,6 @@ export type GatewayConfig = z.output<typeof configSchema> & {
   hermesConfigPath?: string
   hermesStateDir?: string
   hermesLauncherPath?: string
-  hermesVaultDir?: string
   deprecatedWarnings: string[]
 }
 
@@ -125,11 +122,9 @@ function loadHermesConfig(parsed: z.output<typeof configSchema>, stateDir: strin
   const hermesConfigPath = requirePrivateExternalFile(parsed.ILINK_HERMES_CONFIG_FILE, 'ILINK_HERMES_CONFIG_FILE')
   const hermesStateDir = requireSafeDirectory(parsed.ILINK_HERMES_STATE_DIR, 'ILINK_HERMES_STATE_DIR', true, true)
   ensurePrivateDirectory(hermesStateDir, 'ILINK_HERMES_STATE_DIR')
-  const hermesVaultDir = requireSafeDirectory(parsed.ILINK_HERMES_VAULT_DIR ?? parsed.ILINK_HERMES_STATE_DIR, 'ILINK_HERMES_VAULT_DIR', true, true)
-  if (parsed.ILINK_HERMES_RECIPIENT_MAP_FILE) warnings.push('ILINK_HERMES_RECIPIENT_MAP_FILE 已废弃且被忽略；Hermes 仅按 userId+generation 查询 vault')
   const hermesLauncherPath = join(repositoryRoot, 'poc/hermes-weixin-transport/run-hermes-weixin-transport.sh')
   requireRepositoryLauncher(hermesLauncherPath)
-  return { ...parsed, stateDir, gatewaySecret, hermesSourceDir, hermesConfigPath, hermesStateDir, hermesVaultDir, hermesLauncherPath, openclawConfigPath: '', deprecatedWarnings: warnings }
+  return { ...parsed, stateDir, gatewaySecret, hermesSourceDir, hermesConfigPath, hermesStateDir, hermesLauncherPath, openclawConfigPath: '', deprecatedWarnings: warnings }
 }
 
 function readSecretFile(path: string): string {

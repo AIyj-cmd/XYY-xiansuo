@@ -232,3 +232,52 @@
 - `git diff --check` PASS；package/lockfile 与 Server 源码无差异，无配置 H5 制品的入口 fixture/测试凭据/登录二维码路径扫描无命中，无测试临时目录遗留。
 - 本轮不涉及 Server、Gateway、overlay、数据库或依赖变更；第 10 节的完整 Hermes 离线基线仍保留，但不被冒充为本次真实运行证据。
 - **上线建议：离线代码可进入本地提交/评审（GO）；生产部署、开启 Hermes 绑定、真实 Pilot 和任何发送仍为 NO-GO。** 放行前必须先人工核验真实入口归属/长期性/HTTPS 证书/公开内容，确认非登录二维码且不含凭据，再获得单独部署与实况授权。
+
+## 12. 每网站用户独立 Hermes 账号与串行 QR 绑定最终验收（2026-08-09）
+
+### 结论
+
+**离线代码与自动化验收：GO，可形成范围清晰的本地提交；P1=0、P2=0、P3=0。**
+**真实双人扫码/确认命令/owner_changed 发送及生产部署：NO-GO。** 本轮没有登录、扫码、
+联网、轮询真实 provider、发送微信消息、操作生产数据库或启动生产进程。
+
+### 原始目标与实现核对
+
+| 验收目标 | 结果 | 最终证据 |
+| --- | --- | --- |
+| 每网站用户独立账号 | 通过 | Server 只持久化 opaque `accountRef`；manager vault 以 `userId + generation + accountRef` 保存独立 provider account/target/context/cursor；Gateway、Worker、adapter 和 send overlay 全程使用同一精确三元组。 |
+| H5 直接串行展示官方登录 QR | 通过（离线） | 全局唯一 live attempt；owner-only create/get/delete；5 分钟 TTL；响应 `Cache-Control: no-store`；data PNG、倒计时、状态、确认命令、取消和卸载停止轮询均通过真实浏览器回归。QR token/payload 只驻留 manager 进程内存，未写 vault、SQLite、日志或 H5 静态制品。 |
+| 扫码后仍需新会话精确确认 | 通过（fake provider） | scan 只进入 `prepared/awaiting_context`；只有精确账号收到精确 `确认 <activationId>` 且取得非空 target/context 后才回调 active。错误账号、target、命令、accountRef、generation、activationId 均拒绝或零网络。 |
+| 重绑安全切换 | 通过 | 新 active 前旧 binding/任务不变；Server active commit 与旧任务取消同一 SQLite 事务；manager 在单次 flock/原子 vault 替换中激活新账号并清空、退役同用户其他 live 账号。回调丢响应后会使用已持久 context 自动重试同一 activation，不要求重新发送命令。 |
+| 停用、重启与崩溃 | 通过（离线） | 用户停用事务先禁用 binding、取消 live attempt/待发任务，再同步尝试 manager 退役；manager 对 active 账号每 60 秒用精确 activation 合同复核，Server 拒绝已停用/错代账号后本地退役。prepared 过期会清空 provider 凭据；重启恢复 prepared/active poll，丢失的内存 QR 失败关闭。 |
+| owner_changed 精确隔离 | 通过 | outbox 固化 `recipient_user_id + recipient_binding_generation + recipient_account_ref`；领取前再与 active binding 精确比较；Gateway 无 Hermes peer map、default/legacy account、tokenless、fallback 或 retry；unknown 保持单次终态。 |
+| 迁移与兼容 | 通过 | 仅新增 `009`，未改 `001`–`008`；fresh、008→009、重复、checksum 冲突、故障回滚、trigger 实际执行、完整性和外键均通过。legacy active/pending 数据保持原状，公开状态为 `rebind_required`；新 active 前不切换。 |
+| 默认关闭与运行边界 | 通过 | Server binding/channel、Gateway Hermes transport/live 和通知规则默认关闭；旧 H5 入口配置已删除，旧 binding-code API 返回 409，旧 Hermes recipient-map 环境变量被严格配置 schema 拒绝。manager 未加入自动 PM2 启动链。 |
+
+### 验收阶段确认并修复的问题
+
+1. QR token/payload 原先进入加密 vault，仍不满足“QR 不落盘”；现改为仅进程内存，重启时失败关闭。
+2. prepared attempt 原先可超过 Server TTL 持续 poll；现按同一 `expiresAt` 自动退役并清空 token、target、context 和 cursor。
+3. active 重绑原先只切换业务库，旧 manager account 可继续占用 slot/poll；现同用户旧 live account 与新 active 在同一 vault 锁和原子替换中完成退役/激活。
+4. active activation 重放原先未重新核验 activationId/target；现必须同时匹配 activationId 派生哈希、target fingerprint、generation 和 accountRef。
+5. 用户停用的 manager 退役原先为未等待的 best-effort；现请求返回前完成一次受控退役尝试，并以 manager 周期性授权复核覆盖进程崩溃/暂时不可达窗口。
+6. manager 原先按内部别名读取确认结果，未匹配固定上游真实字段 `bot_token/baseurl`，真实确认后无法进入 prepared；现用精确上游字段归一化，并对缺失凭据、未知状态和非固定 redirect/base host 失败关闭。二维码渲染也前置到 vault 写入前，`qrcode` 缺失时不留下孤儿 attempt。
+
+### 最终验证
+
+| 命令 | 结果 |
+| --- | --- |
+| `cd server && npm run build && npm test` | PASS，**160/160**。 |
+| `cd poc/ilink-gateway && npm run build && npm test` | PASS，**59/59**。 |
+| `cd poc/hermes-weixin-transport && ./run-tests.sh` | PASS，**29/29**；包含固定上游字段 fixture、扫码状态、redirect host 与 `qrcode` 缺失失败关闭。 |
+| `cd app && npm run test:h5` | PASS，H5 build + Playwright **10/10**。 |
+| `git diff --check`、敏感内容与制品扫描 | PASS；未发现真实 QR、provider credential、target/context/cursor、Secret 或测试图片进入 Git。 |
+
+### 残余风险与下一人工门禁
+
+- `R-1`：server/app 既有生产依赖审计仍有 high 项；本轮 package/lockfile 未变化，不在验收中擅自升级。必须按既有风险登记和 uni-app 兼容升级计划处理。
+- 自定义 HMAC-SHA256 keystream + Encrypt-then-MAC vault 格式仍是既有长期维护风险；本轮确认随机 256-bit nonce、entry MAC、随机 key、0600/0700、flock、原子替换与篡改失败关闭，未新增依赖或更换批准设计。
+- 固定上游代码静态核对和 `qrcode==7.4.2` 导入通过，但离线 fake provider 不能证明真实 QR 内容、扫码状态、iLink 账号生命周期、context 有效期、限流、用户端送达或 provider 回执；生产副本迁移/恢复也未执行。
+- 下一门禁必须由人工冻结两名测试用户、两套独立账号、唯一接收人、固定消息、窗口和停止条件；依次完成串行 QR、精确确认、重启/停用/重绑、两账号交叉交换零网络、各一条 owner_changed 单次发送与人工收件核对。任何 unknown、错投、重复、fallback、重试或账本不一致立即停止。
+
+因此，本工作区**可以提交但不应部署**；真实双人扫码/发送和生产部署在完成上述人工门禁前保持 **NO-GO**。

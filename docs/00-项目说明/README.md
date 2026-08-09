@@ -135,7 +135,7 @@ bash scripts/backup.sh
 
 前端当前只构建、发布和验收 H5，产物为 `app/dist/build/h5/`。不再保留微信小程序依赖、构建脚本或发布流程；这不影响业务数据中的微信号、公众号来源、跟进方式“微信”。普通安装口径是 `npm ci`，不使用 `--legacy-peer-deps`。Hermes 多用户通知使用网站账号的一次性绑定码和绑定代次：业务库只保存指纹、状态和代次，原始 peer、context token 与轮询 cursor 只能在仓库外 0700 加密 vault 保存；默认关闭，capture daemon 仅捕获精确绑定命令或已绑定 peer 的 token 刷新，绝不启动 AI、回复、typing 或媒体。DeepSeek、AI Scheduler 与所有通知开关默认关闭。任何新的真实微信发送都必须单独取得明确授权。除已冻结且只做入站静默的 `xiansuo-openclaw-no-reply` 官方插件外，不新增其他 Hook；RPA、逆向协议和 Windows 自动化继续禁止。
 
-Hermes 绑定页绝不生成或展示 Hermes/iLink 登录二维码。若运维已人工核验长期机器人联系人入口，可只在构建 H5 的受控环境配置公开 `VITE_HERMES_BOT_ENTRY_URL` 和/或 `VITE_HERMES_BOT_ENTRY_IMAGE_URL`（仅 HTTPS URL）；它们会被编译进公开静态制品，因此不得包含登录二维码、token、peer、会话信息或任何凭据。未配置或值不合法时，页面仅提示用户向管理员索取入口，不显示占位二维码。
+Hermes 绑定页在功能开关关闭时不显示任何登录入口；开启后只能由已认证用户请求其自己的五分钟一次性二维码。二维码以单次 `no-store` 认证 API 响应中的受限 base64 data 呈现，不进入 URL、构建变量、数据库、日志或 argv。扫码确认后仍必须向新 Bot 私聊页面显示的精确确认命令，取得该账号专属会话上下文才会激活；全站同时只能有一个未终态 attempt。`VITE_HERMES_BOT_ENTRY_*` 已退役，禁止把任何长期入口、登录二维码、token、peer 或会话信息编译进 H5。
 
 ## 环境变量
 

@@ -12,10 +12,11 @@ from typing import Any
 from .config import ConfigError, load_config, load_daemon_config
 from .state import StateError, TokenState
 from .transport import RequestError, parse_send_request, send_once
-from .transport import send_bound_once
+from .transport import send_bound_once, send_account_bound_once
 from .multi_user import MultiUserVault
 from .daemon import InternalClient, run_capture_daemon
 from .upstream_gate import UpstreamGateError, verify_upstream
+from .account_manager import AccountManager, HermesPrimitiveProvider, load_account_manager_config, serve_manager
 
 
 def _input_object() -> dict[str, Any]:
@@ -55,12 +56,17 @@ def _capture(config, state: TokenState, inbound: dict[str, Any]) -> dict[str, st
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hermes-weixin-transport")
-    parser.add_argument("command", choices=("capture", "send", "send-bound", "daemon"))
-    parser.add_argument("--config", required=True, help="0600 JSON 配置文件")
-    parser.add_argument("--state-dir", required=True, help="0700、绝对路径的状态目录")
+    # Legacy shared-account capture/send commands are intentionally not public
+    # entry points in the per-user QR model.  Keeping their helpers private
+    # preserves historical offline verifier coverage without permitting a
+    # second activation or fallback delivery path.
+    parser.add_argument("command", choices=("send-bound", "account-manager"))
+    parser.add_argument("--config", help="0600 JSON 配置文件")
+    parser.add_argument("--state-dir", help="0700、绝对路径的状态目录")
     parser.add_argument("--vault-dir", help="多人绑定 vault（0700、绝对路径）")
     parser.add_argument("--server-url", help="本机内部绑定 API 根地址")
     parser.add_argument("--internal-secret-file", help="0600 内部 HMAC 密钥文件")
+    parser.add_argument("--manager-config", help="0600、仓库外 account manager JSON 配置")
     return parser
 
 
@@ -74,6 +80,25 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = _parser().parse_args(argv)
     try:
+        if args.command == "account-manager":
+            if not args.manager_config: raise RequestError("account manager 配置无效")
+            manager = AccountManager(load_account_manager_config(args.manager_config), HermesPrimitiveProvider(source_root))
+            server = serve_manager(manager)
+            try: server.serve_forever()
+            except KeyboardInterrupt: pass
+            finally: manager.stop.set(); server.server_close()
+            return 0
+        if args.command == "send-bound":
+            if not args.manager_config: raise RequestError("多人投递参数无效")
+            inbound_or_request = _input_object()
+            if set(inbound_or_request) != {"userId", "generation", "accountRef", "text", "idempotencyKey"}: raise RequestError("多人投递参数无效")
+            user_id, generation, account_ref, text, key = inbound_or_request["userId"], inbound_or_request["generation"], inbound_or_request["accountRef"], inbound_or_request["text"], inbound_or_request["idempotencyKey"]
+            if not isinstance(user_id, int) or user_id < 1 or not isinstance(generation, int) or generation < 1 or not isinstance(account_ref, str) or not isinstance(text, str) or not text or len(text)>2000 or not isinstance(key,str) or not 1<=len(key)<=256: raise RequestError("多人投递参数无效")
+            manager_config = load_account_manager_config(args.manager_config)
+            outcome = asyncio.run(send_account_bound_once(source_root, AccountManager(manager_config, HermesPrimitiveProvider(source_root)).vault, user_id, generation, account_ref, text, key))
+            print(json.dumps(outcome, ensure_ascii=False, separators=(",",":")))
+            return 0 if outcome.get("status") == "sent" else 1
+        if not args.config or not args.state_dir: raise RequestError("transport 配置无效")
         config = load_daemon_config(args.config) if args.command == "daemon" else load_config(args.config)
         state = TokenState(Path(args.state_dir), config)
         if args.command == "daemon":
@@ -89,16 +114,6 @@ def main(argv: list[str] | None = None) -> int:
         inbound_or_request = _input_object()
         if args.command == "capture":
             outcome = _capture(config, state, inbound_or_request)
-        elif args.command == "send-bound":
-            if not args.vault_dir or set(inbound_or_request) != {"userId", "generation", "text", "idempotencyKey"}:
-                raise RequestError("多人投递参数无效")
-            user_id, generation, text, key = inbound_or_request["userId"], inbound_or_request["generation"], inbound_or_request["text"], inbound_or_request["idempotencyKey"]
-            if not isinstance(user_id, int) or user_id < 1 or not isinstance(generation, int) or generation < 1:
-                raise RequestError("多人投递代次无效")
-            # Reuse strict text/key validation without exposing a static peer.
-            if not isinstance(text, str) or not text or len(text) > 2000 or not isinstance(key, str) or not 1 <= len(key) <= 256:
-                raise RequestError("多人投递正文无效")
-            outcome = asyncio.run(send_bound_once(source_root, config, MultiUserVault(args.vault_dir, config.hmac_key), user_id, generation, text, key))
         else:
             request = parse_send_request(inbound_or_request, config.allowed_from)
             outcome = asyncio.run(send_once(source_root, config, state, request))
