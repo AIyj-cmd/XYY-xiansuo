@@ -55,8 +55,8 @@ class AccountManagerTests(unittest.TestCase):
                 persisted=manager.vault.get("hr_abcdefghijklmnopqrstuv"); assert persisted
                 self.assertNotIn("qrToken",persisted); self.assertNotIn("qrPayload",persisted)
                 with patch.object(manager,"_start_poll"): confirmed=manager.status("hr_abcdefghijklmnopqrstuv")
-            self.assertEqual(confirmed["status"],"awaiting_context")
             entry=manager.vault.get("hr_abcdefghijklmnopqrstuv"); assert entry
+            self.assertEqual(confirmed,{"status":"awaiting_context","confirmationCommand":f"确认 {entry['activationId']}"})
             manager.poll_once("hr_abcdefghijklmnopqrstuv")
             self.assertEqual(provider.polls[-1][0],"bot-a")
             self.assertEqual(entry["lifecycle"],"prepared")

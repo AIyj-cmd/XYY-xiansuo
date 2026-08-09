@@ -192,7 +192,7 @@ class AccountManager:
         status="waiting" if entry["lifecycle"]=="qr" else "awaiting_context" if entry["lifecycle"]=="prepared" else "active" if entry["lifecycle"]=="active" else "expired" if entry["lifecycle"]=="expired" else "cancelled"
         result={"status":status}
         if include_qr and status=="waiting" and entry["accountRef"] in self._qr: result["qrDataUrl"]=self._qr[entry["accountRef"]][2]
-        if status=="prepared": result["confirmationCommand"]=f"确认 {entry['activationId']}"
+        if entry["lifecycle"]=="prepared": result["confirmationCommand"]=f"确认 {entry['activationId']}"
         return result
     def create(self, request:dict[str,Any])->dict[str,Any]:
         ref=request.get("accountRef"); ident=request.get("id"); gen=request.get("generation"); user=request.get("userId")
