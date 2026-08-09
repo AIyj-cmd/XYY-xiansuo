@@ -160,13 +160,14 @@ test('401 清理会话并跳转登录页', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => localStorage.getItem('token'))).toBeNull();
 });
 
-test('Hermes QR 页面展示受限 data QR，轮询后要求精确确认命令', async ({ page, context }) => {
+test('Hermes QR 页面展示受限 data QR，确认命令状态可即时查询', async ({ page, context }) => {
   const qrDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLqAAAAAElFTkSuQmCC';
-  let attemptStatus: 'waiting' | 'scanned' | 'awaiting_context' = 'waiting';
+  let attemptStatus: 'waiting' | 'scanned' | 'awaiting_context' | 'active' = 'waiting'; let bindingStatus: 'unbound' | 'active' = 'unbound'; let failAttemptGet = false; const attemptGetTimes: number[] = [];
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: baseUrl });
   await page.route('**/api/hermes-binding**', async route => {
     const request = route.request(); const url = new URL(request.url());
-    const data = request.method() === 'POST' ? { id: '12345678-1234-4234-a234-123456789012', status: 'waiting', generation: 3, expires_at: '2099-08-09 10:00:00', qr_data_url: qrDataUrl } : url.pathname.includes('/qr-attempts/') ? { id: '12345678-1234-4234-a234-123456789012', status: attemptStatus, generation: 3, expires_at: '2099-08-09 10:00:00', ...(attemptStatus === 'waiting' ? { qr_data_url: qrDataUrl } : { confirmation_command: '确认 12345678-1234-4234-a234-123456789012' }) } : { status: 'unbound', generation: 0 };
+    if (request.method() === 'GET' && url.pathname.includes('/qr-attempts/')) { attemptGetTimes.push(Date.now()); if (failAttemptGet) return route.abort('failed'); }
+    const data = request.method() === 'POST' ? { id: '12345678-1234-4234-a234-123456789012', status: 'waiting', generation: 3, expires_at: '2099-08-09 10:00:00', qr_data_url: qrDataUrl } : url.pathname.includes('/qr-attempts/') ? { id: '12345678-1234-4234-a234-123456789012', status: attemptStatus, generation: 3, expires_at: '2099-08-09 10:00:00', ...(attemptStatus === 'waiting' ? { qr_data_url: qrDataUrl } : { confirmation_command: '确认 12345678-1234-4234-a234-123456789012' }) } : { status: bindingStatus, generation: bindingStatus === 'active' ? 3 : 0 };
     await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'cache-control': 'no-store' }, body: JSON.stringify({ code: 0, msg: 'ok', data }) });
   });
   await login(page, ADMIN); await page.goto(`${baseUrl}/pages/hermes-binding/index`); await page.getByTestId('hermes-qr-create').click();
@@ -176,9 +177,25 @@ test('Hermes QR 页面展示受限 data QR，轮询后要求精确确认命令',
   await expect(page.getByText(/^剩余 \d+:\d{2}$/)).toBeVisible();
   attemptStatus = 'scanned';
   await expect(page.getByText('已扫码，等待确认')).toBeVisible({ timeout: 5_000 });
+  const sent = page.getByTestId('hermes-confirmation-sent'); await expect(sent).toBeVisible();
+  const scannedClickAt = Date.now(); await sent.click();
+  await expect.poll(() => attemptGetTimes.some(time => time >= scannedClickAt && time - scannedClickAt < 500)).toBe(true);
+  await expect(page.getByTestId('hermes-confirmation-feedback')).toHaveText('正在等待确认命令，请确认已发送到新机器人会话。');
+  await expect(page.getByText('绑定成功。此机器人现在只用于当前网站账号。')).toHaveCount(0);
   attemptStatus = 'awaiting_context';
   const command = page.getByTestId('hermes-confirmation-command'); await expect(command).toHaveText('确认 12345678-1234-4234-a234-123456789012', { timeout: 5_000 });
   await page.getByText('复制确认命令').click(); await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('确认 12345678-1234-4234-a234-123456789012');
+  const pendingClickAt = Date.now(); await sent.click();
+  await expect.poll(() => attemptGetTimes.some(time => time >= pendingClickAt && time - pendingClickAt < 500)).toBe(true);
+  await expect(page.getByTestId('hermes-confirmation-feedback')).toHaveText('正在等待确认命令被新机器人会话接收，请确认发送位置正确。');
+  await expect(page.getByText('绑定成功。此机器人现在只用于当前网站账号。')).toHaveCount(0);
+  failAttemptGet = true; await sent.click();
+  await expect(page.getByTestId('hermes-confirmation-feedback')).toHaveText('查询绑定状态失败，请稍后重试。');
+  await expect(page.getByText('绑定成功。此机器人现在只用于当前网站账号。')).toHaveCount(0);
+  failAttemptGet = false;
+  attemptStatus = 'active'; bindingStatus = 'active'; await page.getByTestId('hermes-confirmation-sent').click();
+  await expect(page.getByText('绑定成功。此机器人现在只用于当前网站账号。')).toBeVisible();
+  await expect(page.getByText('已绑定', { exact: true })).toBeVisible();
 });
 
 test('Hermes QR 页面取消后停止轮询', async ({ page }) => {

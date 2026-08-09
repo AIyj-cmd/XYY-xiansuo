@@ -1330,3 +1330,12 @@ P2：无。
 | 差异与归因 | `git diff --check` 通过。工作区仍保留实施阶段 32 个差异和 3 个未跟踪实现文件；本验证阶段只追加本报告，未修改业务源码、部署文件或 `server/data`。 |
 
 此前第 36 节与 36.1 中的 P1/P2 为历史发现和修复前证据，保留以便审计；上述最终复测已关闭全部阻塞项。真实微信/provider 的生产演练仍未获授权，属于已声明的非本地测试覆盖边界，不能解读为已执行。
+
+#### 36.3 H5 确认命令即时查询 UX 复核（2026-08-09）
+
+**结论：PASS，允许提交；P1=0、P2=0、P3=0。** 本次低风险差异仅涉及 `app/src/pages/hermes-binding/index.vue` 与其 Playwright 回归，未新增 API、迁移或生产依赖。
+
+- `checkConfirmation()` 与自动轮询共用 `refreshAttempt()`，统一经 `app/src/utils/request.ts` 对当前 attempt 执行 `GET /api/hermes-binding/qr-attempts/:id`；没有直接 fetch/axios 或新接口。
+- `scanned`/`awaiting_context` 均展示“我已发送确认命令”。手动 GET 返回 scanned 或 awaiting_context 时分别显示等待确认/接收的提示，且断言不存在成功文案；网络失败时显示“查询绑定状态失败，请稍后重试”，同样不显示成功。
+- 仅 `active` 分支会 `clear()`、重新 `load()` binding 并展示成功；浏览器回归确认绑定状态刷新为“已绑定”。非终态错误在自动轮询的 `finally` 中仍安排下一轮，不改变原有轮询恢复语义；取消用例仍验证 DELETE 一次且随后 2.3 秒无 poll。
+- 执行：`cd app && npm run build:h5` 通过；`cd app && npm run test:h5` 通过，Playwright **10/10**。为覆盖此前未覆盖的网络失败路径，本验证阶段在既有 Hermes H5 用例补充了请求 abort 后的失败提示/无成功断言，未放宽原断言。`git diff --check` 通过。
