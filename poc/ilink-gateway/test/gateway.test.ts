@@ -678,15 +678,27 @@ test('Hermes strict stdout contract accepts only the atomic fixed response-shape
 
 test('Hermes command runner SIGKILLs and reaps timeout or oversized-output children', async () => {
   const dir = directory()
+  const waitForMarker = async (marker: string) => {
+    const deadline = Date.now() + 1_000
+    await new Promise<void>((resolve, reject) => {
+      const check = () => {
+        if (existsSync(marker)) return resolve()
+        if (Date.now() >= deadline) return reject(new Error(`Timed out waiting for child marker: ${marker}`))
+        setTimeout(check, 5)
+      }
+      check()
+    })
+  }
   const runHostileChild = async (mode: 'timeout' | 'oversize') => {
     const marker = join(dir, `${mode}.pid`)
     const program = mode === 'timeout'
       ? `process.on('SIGTERM',()=>{});require('fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000)`
       : `process.on('SIGTERM',()=>{});require('fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));process.stdout.write('x'.repeat(9000));setInterval(()=>{},1000)`
-    const result = await hermesCommandRunner.run(process.execPath, ['-e', program], '{}', mode === 'timeout' ? 80 : 2_000, process.env, new AbortController().signal)
+    const resultPromise = hermesCommandRunner.run(process.execPath, ['-e', program], '{}', mode === 'timeout' ? 500 : 2_000, process.env, new AbortController().signal)
+    await waitForMarker(marker)
+    const result = await resultPromise
     assert.equal(mode === 'timeout' ? result.timedOut : result.invalidOutput, true)
     const pid = Number(readFileSync(marker, 'utf8')); assert.ok(Number.isSafeInteger(pid) && pid > 1)
-    await new Promise((resolve) => setTimeout(resolve, 20))
     assert.equal(existsSync(`/proc/${pid}`), false, 'runner must return only after child close/reap')
   }
   try { await runHostileChild('timeout'); await runHostileChild('oversize') } finally { rmSync(dir, { recursive: true, force: true }) }
