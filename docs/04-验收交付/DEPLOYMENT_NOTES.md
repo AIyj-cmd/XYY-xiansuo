@@ -184,4 +184,15 @@ OpenClaw 的安装、会话检查和入站静默插件只按 [运行手册](OPEN
 5. 用两名明确测试用户串行执行：A 生成/扫描/确认并 active；B 在 A 完成或取消后执行；交换 accountRef、generation、确认命令、target/context 的负例必须零网络。再验证 manager 重启、prepared 过期、用户停用退役、active 重绑旧账号退役，以及 A 自助解绑后 generation 撤权、任务/attempt 取消、B 完全不变且 manager 退役失败时数据库仍保持 unbound。
 6. 只有双人隔离通过后，才可单独授权 `owner_changed`：每人一条固定消息、一个新幂等键、一次 adapter 调用；人工核对接收人、数量、技术结果、自动重试 0、其他渠道 0。任何 `result_unknown`、错投、重复、fallback、重试或账本不一致立即停止，不换 key、不重发。
 
+## 11. Hermes 离线服务链 D-1（2026-08-09）
+
+本节只描述已打包的离线部署单元；**不授权执行 PM2、Nginx、服务器、登录、扫码、轮询或发送操作**。`deploy/deploy.sh` 会把 `poc/hermes-weixin-transport/` 和固定的 `hermes-agent-v2026.8.3` 源码副本放入制品，但只重载 API，绝不自动加载下面两个 Hermes PM2 模板。
+
+- `ecosystem.hermes-account-manager.config.cjs`：单实例、固定 overlay `cwd`、仅 `127.0.0.1:38117`，配置只通过 argv 中的仓库外 `0600` JSON 路径传入；启动包装器会清空继承环境，只保留 PATH、语言、源码/Python 路径，不能含 DB、JWT、DeepSeek 或任何 Secret 实值。
+- `ecosystem.hermes-gateway.config.cjs`：单实例、固定 Gateway `cwd`、仅 `127.0.0.1:38116`。启动包装器同样以 `env -i` 清空 PM2 shell 继承值，只把 PATH/LANG/LC_ALL/TZ、明确的 `ILINK_*` 路径与固定开关传给 Node；因此 DB、JWT、DeepSeek 和 Secret 实值不会进入 Gateway。`ILINK_POC_LIVE_ENABLED=false` 与 `ILINK_HERMES_TRANSPORT_ENABLED=false` 被硬编码。两个模板均使用 15 秒正常停止窗口、5 秒重启退避、最多 10 次重启及仓库外日志目录。
+- manager JSON 默认且必须保持 `"enabled": false`。关闭态仍可在 loopback 返回 `/livez` 和纯本地 `/readyz`，但 QR、poll、内部 callback 与 send 全部拒绝，也不会创建 poll thread。Gateway `/livez`、`/readyz` 只检查配置、账本、launcher、manager 配置和超时，不调用 adapter、不启动子进程或访问网络。
+- 机器可读检查使用 `poc/hermes-weixin-transport/run-hermes-weixin-transport.sh preflight --manager-config /绝对/私有/manager.json`；它核验 Node/Python、OS/arch、固定上游 tag/commit/tree/hash/clean、`qrcode` 导入、0600/0700/UID/无链接/仓库外路径、loopback 端口及全部真实开关为 false。`dry-run` 使用临时 fake config、空 vault/ledger/state 与 fake Secret，不做 DNS/socket、业务 DB 或常驻进程。
+
+未来另获单独部署授权时，启动顺序只能是：**manager → Hermes Gateway → API → notification-worker**；health/readiness 均通过后才能进入下一项，且真实开关和规则仍先保持关闭。停止顺序严格反向：**notification-worker → API → Hermes Gateway → manager**。任一失败只保全账本/vault/日志并停止，不用网络消息作验证。
+
 监控新增：全局 live attempt 数/最老年龄、prepared 超 TTL、manager 401/409/不可达、周期授权拒绝、同用户旧账号退役失败、vault live 用户数、QR 进程重启失效、`rebind_required` 完成率，以及三元组不匹配取消数。日志不得记录 QR、activationId、accountRef 原值、provider account/token、target/context/cursor 或消息正文。

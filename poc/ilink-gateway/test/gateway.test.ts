@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { canonicalRequest, freshNonce, sha256, sign } from '../src/auth.js'
-import { inspectRecipientMapFile, loadConfig, ensurePrivateOpenClawStateDirectory, ensurePrivateStateDirectory, type GatewayConfig } from '../src/config.js'
+import { inspectRecipientMapFile, loadConfig, hermesGatewayReadiness, ensurePrivateOpenClawStateDirectory, ensurePrivateStateDirectory, type GatewayConfig } from '../src/config.js'
 import { IdempotencyStore } from '../src/idempotency-store.js'
 import { GatewayService } from '../src/gateway-service.js'
 import { OfficialRuntime, type CommandResult, type OfficialCommandRunner, hasVerifiedOutboundSendCapability, parseOfficialSessionStatus, satisfiesDeclaredCompatibility } from '../src/official-runtime.js'
@@ -32,15 +33,56 @@ function config(dir: string, extra: Record<string, string> = {}): GatewayConfig 
   return loadConfig({ ILINK_POC_STATE_DIR: dir, OPENCLAW_STATE_DIR: join(dir, 'sessions'), OPENCLAW_CONFIG_PATH: openclawConfigPath(dir), ILINK_GATEWAY_SECRET_FILE: secretFile(dir), OPENCLAW_PILOT_USER_ID: '1', ILINK_POC_RECIPIENT_EXTERNAL_ID: 'test-recipient-1', ...extra })
 }
 function hermesConfig(dir: string, extra: Record<string, string> = {}): GatewayConfig {
-  const overlayConfig = join(dir, 'hermes-config.json'); writeFileSync(overlayConfig, '{"opaque":"test-only"}', { mode: 0o600 }); chmodSync(overlayConfig, 0o600)
+  const overlayConfig = join(dir, 'hermes-config.json'); writeFileSync(overlayConfig, JSON.stringify({ host: '127.0.0.1', port: 38117, vault_dir: join(dir, 'manager-vault'), vault_key: 'A'.repeat(44), manager_secret: 'm'.repeat(32), server_url: 'http://127.0.0.1:3000', internal_secret: 'i'.repeat(32), enabled: false }), { mode: 0o600 }); chmodSync(overlayConfig, 0o600)
+  mkdirSync(join(dir, 'manager-vault'), { recursive: true, mode: 0o700 }); chmodSync(join(dir, 'manager-vault'), 0o700)
   const overlayState = join(dir, 'hermes-state'); mkdirSync(overlayState, { recursive: true, mode: 0o700 }); chmodSync(overlayState, 0o700)
   return loadConfig({
     ILINK_POC_TRANSPORT: 'hermes', ILINK_POC_LIVE_ENABLED: 'true', ILINK_HERMES_TRANSPORT_ENABLED: 'true',
-    ILINK_POC_STATE_DIR: dir, ILINK_GATEWAY_SECRET_FILE: secretFile(dir), ILINK_HERMES_SOURCE_DIR: dir,
+    ILINK_POC_STATE_DIR: dir, ILINK_GATEWAY_PORT: '38116', ILINK_GATEWAY_SECRET_FILE: secretFile(dir), ILINK_HERMES_SOURCE_DIR: dir,
     ILINK_HERMES_CONFIG_FILE: overlayConfig, ILINK_HERMES_STATE_DIR: overlayState,
     ...extra
   })
 }
+
+test('Hermes readiness is local-only and accepts all real switches false', () => {
+  const dir = directory(); try {
+    const cfg = hermesConfig(dir, { ILINK_POC_LIVE_ENABLED: 'false', ILINK_HERMES_TRANSPORT_ENABLED: 'false' })
+    assert.deepEqual(hermesGatewayReadiness(cfg), {
+      service: 'xiansuo-hermes-gateway', status: 'ready', transport: 'hermes', liveEnabled: false, transportEnabled: false, managerEnabled: false,
+      checks: { config: 'ok', ledger: 'ok', launcher: 'ok', managerConfig: 'ok', timeout: 'ok' }
+    })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Hermes /livez and /readyz do not invoke an adapter or launcher', async () => {
+  const dir = directory(); try {
+    const cfg = hermesConfig(dir, { ILINK_POC_LIVE_ENABLED: 'false', ILINK_HERMES_TRANSPORT_ENABLED: 'false' })
+    let healthCalls = 0
+    const gateway = createGateway(cfg, { name: 'fake', health: async () => { healthCalls += 1; return { status: 'healthy' as const } }, send: async () => ({ status: 'sent' as const, providerMessageId: 'unused' }) })
+    await new Promise<void>((resolve) => gateway.server.listen(0, '127.0.0.1', resolve)); const address = gateway.server.address(); assert.ok(address && typeof address !== 'string')
+    const base = `http://127.0.0.1:${address.port}`
+    assert.deepEqual(await (await fetch(`${base}/livez`)).json(), { service: 'xiansuo-hermes-gateway', status: 'live', transport: 'hermes' })
+    const ready = await (await fetch(`${base}/readyz`)).json() as { status: string; checks: Record<string, string> }
+    assert.equal(ready.status, 'ready'); assert.deepEqual(ready.checks, { config: 'ok', ledger: 'ok', launcher: 'ok', managerConfig: 'ok', timeout: 'ok' }); assert.equal(healthCalls, 0)
+    gateway.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Hermes Gateway launcher clears inherited DB, JWT and DeepSeek values before Node', () => {
+  const dir = directory(); try {
+    const capture = join(dir, 'environment.txt'); const args = join(dir, 'arguments.txt'); const fakeNode = join(dir, 'node')
+    writeFileSync(fakeNode, `#!/bin/sh\nenv > ${capture}\nprintf '%s\\n' "$@" > ${args}\n`, { mode: 0o700 }); chmodSync(fakeNode, 0o700)
+    const result = spawnSync('bash', [join(process.cwd(), 'run-hermes-gateway.sh')], { env: {
+      ...process.env, DB_PATH: '/business.db', JWT_SECRET: 'must-not-cross', DEEPSEEK_API_KEY: 'must-not-cross',
+      XIANSUO_HERMES_GATEWAY_NODE_BIN: fakeNode,
+      ILINK_POC_TRANSPORT: 'hermes', ILINK_GATEWAY_HOST: '127.0.0.1', ILINK_GATEWAY_PORT: '38116', ILINK_POC_LIVE_ENABLED: 'false', ILINK_HERMES_TRANSPORT_ENABLED: 'false',
+      ILINK_REQUEST_TIMEOUT_MS: '30000', ILINK_SESSION_CHECK_TIMEOUT_MS: '5000', ILINK_POC_STATE_DIR: join(dir, 'ledger'), ILINK_GATEWAY_SECRET_FILE: join(dir, 'secret'),
+      ILINK_HERMES_SOURCE_DIR: join(dir, 'source'), ILINK_HERMES_CONFIG_FILE: join(dir, 'manager.json'), ILINK_HERMES_STATE_DIR: join(dir, 'state'),
+    }, encoding: 'utf8' })
+    assert.equal(result.status, 0); const environment = readFileSync(capture, 'utf8'); assert.equal(environment.includes('DB_PATH='), false); assert.equal(environment.includes('JWT_SECRET='), false); assert.equal(environment.includes('DEEPSEEK_API_KEY='), false)
+    assert.equal(readFileSync(args, 'utf8').trim(), join(process.cwd(), 'dist/server.js'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
 function request() { return { deliveryId: randomUUID(), idempotencyKey: `phase5a-test-${randomUUID()}`, recipientUserId: 1, recipientBindingGeneration: 1, recipientAccountRef: 'hr_abcdefghijklmnopqrstuv', ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' as const, gatewaySendTimeoutMs: 30_000, workerTimeoutMs: 40_000 } }
 function adapterRequest() { return { recipientExternalId: 'test-recipient-1', idempotencyKey: `phase5a-test-${randomUUID()}`, message: { ...SYNTHETIC_MESSAGE, detailUrl: 'https://xs.tomatopia.top/' } } }
 function result(stdout = '', exitCode = 0): CommandResult { return { stdout, stderr: '', exitCode } }
@@ -604,7 +646,9 @@ test('mock transport validates successful and unknown live send lifecycle withou
 })
 
 test('Hermes adapter uses only bounded JSON stdin/stdout and never exposes peer or secrets in argv', async () => {
-  const dir = directory(); try {
+  const dir = directory(); const before = { DB_PATH: process.env.DB_PATH, JWT_SECRET: process.env.JWT_SECRET, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY }
+  process.env.DB_PATH = '/business.db'; process.env.JWT_SECRET = 'jwt-must-not-cross'; process.env.DEEPSEEK_API_KEY = 'deepseek-must-not-cross'
+  try {
     const cfg = hermesConfig(dir); const calls: Array<{ command: string; args: readonly string[]; stdin: string; env: NodeJS.ProcessEnv }> = []
     const fakeCli: HermesCommandRunner = { run: async (command, args, stdin, _timeout, env) => {
       calls.push({ command, args, stdin, env })
@@ -620,7 +664,11 @@ test('Hermes adapter uses only bounded JSON stdin/stdout and never exposes peer 
     assert.equal(calls[0].args.join(' ').includes('peer-a'), false)
     assert.equal(calls[0].env.HERMES_SOURCE_DIR, cfg.hermesSourceDir); assert.equal(calls[0].env.HERMES_HOME, cfg.hermesStateDir)
     assert.equal(calls[0].env.HOME, cfg.hermesStateDir); assert.equal(calls[0].env.PYTHONPATH, '')
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+    assert.equal(calls[0].env.DB_PATH, undefined); assert.equal(calls[0].env.JWT_SECRET, undefined); assert.equal(calls[0].env.DEEPSEEK_API_KEY, undefined)
+  } finally {
+    for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value }
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('Hermes adapter treats startup, timeout and illegal output as unknown and never retryable', async () => {

@@ -7,6 +7,8 @@ OpenClaw 补充：回滚不得删除 Gateway audit ledger、人工确认或已�
 
 Hermes 每用户 QR 补充（2026-08-09）：回滚先关闭所有通知规则、`HERMES_CHANNEL_ENABLED`、`HERMES_BINDING_ENABLED`、`ILINK_POC_LIVE_ENABLED` 和 `ILINK_HERMES_TRANSPORT_ENABLED`，再停 Worker、Gateway、account manager，最后按需要停 API。不得删除或手改 Gateway ledger、account vault、nonce 状态、binding/attempt/notification 历史；QR 只在 manager 内存，进程停止后自然失效，不需要也不得从磁盘恢复。
 
+Hermes D-1 服务链补充（2026-08-09）：manager/Gateway 都是独立单实例，正常启动顺序为 manager → Gateway → API → Worker；因此受控停止/回滚顺序固定为 Worker → API → Gateway → manager。不要把这两个模板加入 `deploy.sh` 的自动 PM2 链，也不要为回滚重启它们。若 manager 或 Gateway `/readyz` 失败、固定上游/hash/依赖/权限检查失败，保持 `enabled=false`、live/transport=false，停止已启动的下游单元并保全仓库外 `0600/0700` vault、ledger、配置和脱敏日志；禁止删除它们、换 key、重试 unknown 或用真实微信验证。
+
 ## 1. 回滚准备
 
 - 上线前保存：发布 commit/制品、上一受批准制品、实际 `DB_PATH`、数据库一致性备份、上传目录备份、环境变量快照和迁移日志。

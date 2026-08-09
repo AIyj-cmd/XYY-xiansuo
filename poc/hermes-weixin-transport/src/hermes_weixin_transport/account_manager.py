@@ -199,7 +199,7 @@ def _png_data(value: str) -> str:
 
 @dataclass(frozen=True)
 class AccountManagerConfig:
-    host: str; port: int; vault_dir: str; vault_key: bytes; manager_secret: str; server_url: str; internal_secret: str
+    host: str; port: int; vault_dir: str; vault_key: bytes; manager_secret: str; server_url: str; internal_secret: str; enabled: bool = False
 
 class AccountManager:
     def __init__(self, config: AccountManagerConfig, provider: AccountProvider):
@@ -208,6 +208,17 @@ class AccountManager:
         # QR payload/token are deliberately process-memory only. A manager
         # crash invalidates the five-minute attempt instead of persisting QR.
         self._qr: dict[str,tuple[str,str,str]]={}; self._runtime_lock=threading.RLock(); self._last_auth: dict[str,float]={}
+    def livez(self)->dict[str,Any]:
+        return {"service":"hermes-account-manager","status":"live","enabled":self.config.enabled}
+    def readyz(self, source_root:Path|None=None)->dict[str,Any]:
+        """Offline-only readiness.  Never touches the provider or internal API."""
+        from .upstream_gate import verify_upstream
+        verify_upstream(source_root)
+        import qrcode  # noqa: F401 - QR rendering is a required local dependency.
+        # Opening the vault verifies its private directory and encrypted state
+        # format without starting reconciliation or any poll thread.
+        self.vault.entries()
+        return {"service":"hermes-account-manager","status":"ready","enabled":self.config.enabled,"checks":{"config":"ok","upstream":"ok","dependencies":"ok","vault":"ok"}}
     def _response(self, entry:dict[str,Any], include_qr:bool=False)->dict[str,Any]:
         status="waiting" if entry["lifecycle"]=="qr" else "awaiting_context" if entry["lifecycle"]=="prepared" else "active" if entry["lifecycle"]=="active" else "expired" if entry["lifecycle"]=="expired" else "cancelled"
         result={"status":status}
@@ -215,6 +226,7 @@ class AccountManager:
         if entry["lifecycle"]=="prepared": result["confirmationCommand"]=f"确认 {entry['activationId']}"
         return result
     def create(self, request:dict[str,Any])->dict[str,Any]:
+        if not self.config.enabled: raise ValueError("manager disabled")
         ref=request.get("accountRef"); ident=request.get("id"); gen=request.get("generation"); user=request.get("userId")
         if not isinstance(ref,str) or not _REF.fullmatch(ref) or not isinstance(ident,str) or not _UUID.fullmatch(ident) or not isinstance(gen,int) or gen<1 or not isinstance(user,int) or user<1: raise ValueError("invalid request")
         with self._runtime_lock:
@@ -229,6 +241,7 @@ class AccountManager:
             entry={"accountRef":ref,"attemptId":ident,"userId":user,"generation":gen,"lifecycle":"qr","expiresAt":request.get("expiresAt"),"cursor":"","providerAccountId":"","token":"","baseUrl":"","target":"","context":"","activationId":""}
             self.vault.put(entry); self._qr[ref]=(qr["qrToken"],qr["qrPayload"],qr_data_url); return self._response(entry,True)
     def status(self, ref:str)->dict[str,Any]:
+        if not self.config.enabled: raise ValueError("manager disabled")
         with self._runtime_lock:
             entry=self.vault.get(ref)
             if not entry: raise ValueError("not found")
@@ -269,12 +282,14 @@ class AccountManager:
         for entry in self.vault.entries():
             if self._expired(entry): self._retire(str(entry["accountRef"]),"expired")
     def _callback(self,entry:dict[str,Any])->str:
+        if not self.config.enabled: return "rejected"
         body=json.dumps({"id":entry["attemptId"],"accountRef":entry["accountRef"],"targetFingerprint":_peer_fingerprint(str(entry["target"])),"activationId":entry["activationId"]},separators=(",",":")).encode(); ts=str(int(time.time()*1000)); nonce=secrets.token_urlsafe(24); canonical="\n".join(("POST","/internal/hermes-accounts/activate",ts,nonce,hashlib.sha256(body).hexdigest())); headers={"content-type":"application/json","x-hermes-timestamp":ts,"x-hermes-nonce":nonce,"x-hermes-signature":hmac.new(self.config.internal_secret.encode(),canonical.encode(),hashlib.sha256).hexdigest()}
         try:
             with urlopen(Request(self.config.server_url.rstrip("/")+"/internal/hermes-accounts/activate",body,headers),timeout=10) as response: return "accepted" if json.loads(response.read()).get("code")==0 else "rejected"
         except HTTPError as exc: return "rejected" if exc.code == 409 else "unavailable"
         except Exception: return "unavailable"
     def poll_once(self,ref:str)->None:
+        if not self.config.enabled: return
         entry=self.vault.get(ref)
         if not entry or entry.get("lifecycle") not in {"prepared","active"}: return
         if self._expired(entry): self._retire(ref,"expired"); return
@@ -304,11 +319,13 @@ class AccountManager:
         if isinstance(cursor,str) and cursor and cursor != entry.get("cursor"):
             entry["cursor"]=cursor; self.vault.put(entry)
     def _start_poll(self,ref:str)->None:
+        if not self.config.enabled: return
         if ref in self._threads and self._threads[ref].is_alive(): return
         def runner():
             while not self.stop.is_set(): self.poll_once(ref); time.sleep(.25)
         self._threads[ref]=threading.Thread(target=runner,daemon=True); self._threads[ref].start()
     def reconcile(self)->None:
+        if not self.config.enabled: return
         self.expire_stale()
         for entry in self.vault.entries():
             if entry.get("lifecycle") in {"prepared","active"}: self._start_poll(str(entry["accountRef"]))
@@ -318,14 +335,17 @@ def load_account_manager_config(path: str | Path) -> AccountManagerConfig:
     try: raw=json.loads(require_private_file(Path(path),kind="account manager 配置").read_text())
     except Exception as exc: raise ValueError("account manager 配置无效") from exc
     required={"host","port","vault_dir","vault_key","manager_secret","server_url","internal_secret"}
-    if not isinstance(raw,dict) or set(raw)!=required: raise ValueError("account manager 配置字段无效")
+    allowed=required|{"enabled"}
+    if not isinstance(raw,dict) or not required.issubset(raw) or set(raw)-allowed: raise ValueError("account manager 配置字段无效")
+    enabled=raw.get("enabled",False)
+    if not isinstance(enabled,bool): raise ValueError("account manager enabled 必须为布尔值")
     if raw["host"] not in {"127.0.0.1","::1"} or not isinstance(raw["port"],int) or not 1024<=raw["port"]<=65535: raise ValueError("account manager 仅允许 loopback")
     if not isinstance(raw["vault_dir"],str) or not raw["vault_dir"].startswith("/") or not isinstance(raw["server_url"],str) or not re.fullmatch(r"http://(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{1,5}",raw["server_url"]): raise ValueError("account manager 路径无效")
     try: key=base64.b64decode(raw["vault_key"],validate=True)
     except Exception as exc: raise ValueError("account manager vault key 无效") from exc
     if len(key)<32 or any(not isinstance(raw[k],str) or len(raw[k].encode())<32 for k in ("manager_secret","internal_secret")): raise ValueError("account manager 密钥无效")
     ensure_state_directory(Path(raw["vault_dir"]))
-    return AccountManagerConfig(raw["host"],raw["port"],raw["vault_dir"],key,raw["manager_secret"],raw["server_url"],raw["internal_secret"])
+    return AccountManagerConfig(raw["host"],raw["port"],raw["vault_dir"],key,raw["manager_secret"],raw["server_url"],raw["internal_secret"],enabled)
 
 def serve_manager(manager:AccountManager)->ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
@@ -339,12 +359,20 @@ def serve_manager(manager:AccountManager)->ThreadingHTTPServer:
             return hmac.compare_digest(expected,sig) and manager.vault.consume_nonce(nonce,int(ts)+65000)
         def _body(self)->bytes:
             size=int(self.headers.get("content-length","0")); return self.rfile.read(size) if 0<=size<=16384 else b""
+        def _loopback(self)->bool: return self.client_address[0] in {"127.0.0.1","::1"}
         def do_POST(self):
             body=self._body()
             if self.path!="/qr-attempts" or not self._auth(body): return self._send(401,{"code":"AUTH"})
             try: self._send(200,manager.create(json.loads(body)))
             except Exception: self._send(409,{"code":"REJECTED"})
         def do_GET(self):
+            if self.path=="/livez":
+                if not self._loopback(): return self._send(403,{"code":"LOOPBACK_ONLY"})
+                return self._send(200,manager.livez())
+            if self.path=="/readyz":
+                if not self._loopback(): return self._send(403,{"code":"LOOPBACK_ONLY"})
+                try: return self._send(200,manager.readyz())
+                except Exception: return self._send(503,{"service":"hermes-account-manager","status":"not_ready","enabled":manager.config.enabled})
             body=b""
             if not self.path.startswith("/qr-attempts/") or not self._auth(body): return self._send(401,{"code":"AUTH"})
             try: self._send(200,manager.status(self.path.rsplit("/",1)[1]))

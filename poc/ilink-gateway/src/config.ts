@@ -68,6 +68,7 @@ export type GatewayConfig = z.output<typeof configSchema> & {
   hermesConfigPath?: string
   hermesStateDir?: string
   hermesLauncherPath?: string
+  hermesManagerEnabled?: boolean
   deprecatedWarnings: string[]
 }
 
@@ -112,7 +113,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
 }
 
 function loadHermesConfig(parsed: z.output<typeof configSchema>, stateDir: string, gatewaySecret: string, warnings: string[]): GatewayConfig {
-  if (!parsed.ILINK_HERMES_TRANSPORT_ENABLED) throw new Error('iLink Gateway 配置无效：Hermes transport 必须显式启用')
   if (!parsed.ILINK_HERMES_SOURCE_DIR || !parsed.ILINK_HERMES_CONFIG_FILE || !parsed.ILINK_HERMES_STATE_DIR) throw new Error('iLink Gateway 配置无效：Hermes transport 缺少固定源码、配置或状态路径')
   // The Gateway ledger is itself persistent Hermes-mode state.  Unlike the
   // long-standing OpenClaw compatibility path, Hermes must never put it in
@@ -124,7 +124,34 @@ function loadHermesConfig(parsed: z.output<typeof configSchema>, stateDir: strin
   ensurePrivateDirectory(hermesStateDir, 'ILINK_HERMES_STATE_DIR')
   const hermesLauncherPath = join(repositoryRoot, 'poc/hermes-weixin-transport/run-hermes-weixin-transport.sh')
   requireRepositoryLauncher(hermesLauncherPath)
-  return { ...parsed, stateDir, gatewaySecret, hermesSourceDir, hermesConfigPath, hermesStateDir, hermesLauncherPath, openclawConfigPath: '', deprecatedWarnings: warnings }
+  const hermesManagerEnabled = validateHermesManagerConfig(hermesConfigPath)
+  return { ...parsed, stateDir, gatewaySecret, hermesSourceDir, hermesConfigPath, hermesStateDir, hermesLauncherPath, hermesManagerEnabled, openclawConfigPath: '', deprecatedWarnings: warnings }
+}
+
+/** Read a private manager config structurally only. It never contacts manager. */
+function validateHermesManagerConfig(path: string): boolean {
+  let raw: unknown
+  try { raw = JSON.parse(readFileSync(path, 'utf8')) } catch { throw new Error('ILINK_HERMES_CONFIG_FILE 必须是合法 JSON') }
+  if (raw === null || Array.isArray(raw) || typeof raw !== 'object') throw new Error('ILINK_HERMES_CONFIG_FILE 格式无效')
+  const record = raw as Record<string, unknown>
+  const required = ['host', 'port', 'vault_dir', 'vault_key', 'manager_secret', 'server_url', 'internal_secret']
+  const allowed = new Set([...required, 'enabled'])
+  if (required.some((key) => !Object.hasOwn(record, key)) || Object.keys(record).some((key) => !allowed.has(key))) throw new Error('ILINK_HERMES_CONFIG_FILE 字段无效')
+  if (record.host !== '127.0.0.1' || record.port !== 38117 || record.enabled !== undefined && typeof record.enabled !== 'boolean') throw new Error('ILINK_HERMES_CONFIG_FILE 必须固定为 loopback:38117 且 enabled 为布尔值')
+  if (typeof record.vault_dir !== 'string' || !record.vault_dir.startsWith('/') || typeof record.server_url !== 'string' || !/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{1,5}$/.test(record.server_url)) throw new Error('ILINK_HERMES_CONFIG_FILE 路径无效')
+  return record.enabled === true
+}
+
+/** Purely local readiness contract.  Do not call adapter.health(): Hermes
+ * health must not poll, spawn its launcher, or contact a manager/provider. */
+export function hermesGatewayReadiness(config: GatewayConfig): Record<string, unknown> {
+  if (config.ILINK_POC_TRANSPORT !== 'hermes') return { service: 'xiansuo-hermes-gateway', status: 'not_ready', transport: config.ILINK_POC_TRANSPORT }
+  if (!config.hermesLauncherPath || !config.hermesConfigPath || !config.hermesStateDir || config.ILINK_GATEWAY_HOST !== '127.0.0.1' || config.ILINK_GATEWAY_PORT !== 38116) throw new Error('Hermes Gateway readiness 配置无效')
+  requirePrivateExternalStateDirectory(config.stateDir, 'ILINK_POC_STATE_DIR')
+  requirePrivateExternalFile(config.hermesConfigPath, 'ILINK_HERMES_CONFIG_FILE')
+  requireSafeDirectory(config.hermesStateDir, 'ILINK_HERMES_STATE_DIR', true)
+  requireRepositoryLauncher(config.hermesLauncherPath)
+  return { service: 'xiansuo-hermes-gateway', status: 'ready', transport: 'hermes', liveEnabled: config.ILINK_POC_LIVE_ENABLED, transportEnabled: config.ILINK_HERMES_TRANSPORT_ENABLED, managerEnabled: config.hermesManagerEnabled === true, checks: { config: 'ok', ledger: 'ok', launcher: 'ok', managerConfig: 'ok', timeout: 'ok' } }
 }
 
 function readSecretFile(path: string): string {

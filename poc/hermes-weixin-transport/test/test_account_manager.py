@@ -13,7 +13,15 @@ class FakeProvider:
 
 class AccountManagerTests(unittest.TestCase):
     def config(self, directory):
-        return AccountManagerConfig("127.0.0.1",38999,str(directory),b"k"*32,"m"*32,"http://127.0.0.1:3000","s"*32)
+        return AccountManagerConfig("127.0.0.1",38999,str(directory),b"k"*32,"m"*32,"http://127.0.0.1:3000","s"*32,True)
+    def test_disabled_manager_is_live_and_ready_but_never_polls_or_calls_provider(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory=Path(root); directory.chmod(0o700); provider=FakeProvider()
+            manager=AccountManager(AccountManagerConfig("127.0.0.1",38117,str(directory),b"k"*32,"m"*32,"http://127.0.0.1:3000","s"*32),provider)
+            self.assertEqual(manager.livez(),{"service":"hermes-account-manager","status":"live","enabled":False})
+            with self.assertRaisesRegex(ValueError,"disabled"): manager.create({})
+            manager.poll_once("hr_abcdefghijklmnopqrstuv"); manager.reconcile(); manager._start_poll("hr_abcdefghijklmnopqrstuv")
+            self.assertEqual(provider.polls,[]); self.assertEqual(manager._threads,{})
     def test_encrypted_vault_capacity_and_tamper_fail_closed(self):
         with tempfile.TemporaryDirectory() as root:
             directory=Path(root); directory.chmod(0o700); vault=AccountVault(directory,b"k"*32)

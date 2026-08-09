@@ -17,6 +17,7 @@ from .multi_user import MultiUserVault
 from .daemon import InternalClient, run_capture_daemon
 from .upstream_gate import UpstreamGateError, verify_upstream
 from .account_manager import AccountManager, HermesPrimitiveProvider, load_account_manager_config, serve_manager
+from .preflight import run_dry_run, run_preflight
 
 
 def _input_object() -> dict[str, Any]:
@@ -60,7 +61,7 @@ def _parser() -> argparse.ArgumentParser:
     # entry points in the per-user QR model.  Keeping their helpers private
     # preserves historical offline verifier coverage without permitting a
     # second activation or fallback delivery path.
-    parser.add_argument("command", choices=("send-bound", "account-manager"))
+    parser.add_argument("command", choices=("send-bound", "account-manager", "preflight", "dry-run"))
     parser.add_argument("--config", help="0600 JSON 配置文件")
     parser.add_argument("--state-dir", help="0700、绝对路径的状态目录")
     parser.add_argument("--vault-dir", help="多人绑定 vault（0700、绝对路径）")
@@ -80,6 +81,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = _parser().parse_args(argv)
     try:
+        if args.command == "preflight":
+            if not args.manager_config: raise RequestError("account manager 配置无效")
+            print(json.dumps(run_preflight(Path(args.manager_config), source_root), ensure_ascii=False, separators=(",",":")))
+            return 0
+        if args.command == "dry-run":
+            print(json.dumps(run_dry_run(source_root), ensure_ascii=False, separators=(",",":")))
+            return 0
         if args.command == "account-manager":
             if not args.manager_config: raise RequestError("account manager 配置无效")
             manager = AccountManager(load_account_manager_config(args.manager_config), HermesPrimitiveProvider(source_root))
@@ -95,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
             user_id, generation, account_ref, text, key = inbound_or_request["userId"], inbound_or_request["generation"], inbound_or_request["accountRef"], inbound_or_request["text"], inbound_or_request["idempotencyKey"]
             if not isinstance(user_id, int) or user_id < 1 or not isinstance(generation, int) or generation < 1 or not isinstance(account_ref, str) or not isinstance(text, str) or not text or len(text)>2000 or not isinstance(key,str) or not 1<=len(key)<=256: raise RequestError("多人投递参数无效")
             manager_config = load_account_manager_config(args.manager_config)
+            if not manager_config.enabled: raise RequestError("account manager disabled")
             outcome = asyncio.run(send_account_bound_once(source_root, AccountManager(manager_config, HermesPrimitiveProvider(source_root)).vault, user_id, generation, account_ref, text, key))
             print(json.dumps(outcome, ensure_ascii=False, separators=(",",":")))
             return 0 if outcome.get("status") == "sent" else 1

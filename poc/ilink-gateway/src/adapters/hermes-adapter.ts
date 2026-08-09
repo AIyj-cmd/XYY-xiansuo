@@ -104,8 +104,10 @@ export class HermesAdapter implements ChannelAdapter {
     const text = `${request.message.title}\n${request.message.body}`
     if (text.length > 2000) return { status: 'permanent_failure', errorCode: 'ILINK_MESSAGE_TOO_LONG' }
     const input = JSON.stringify({ userId: request.recipientUserId, generation: request.recipientBindingGeneration, accountRef: request.recipientAccountRef, text, idempotencyKey: request.idempotencyKey })
+    // Do not inherit the Gateway/PM2 environment into the overlay child.  In
+    // particular DB/JWT/DeepSeek values must never cross this process boundary.
     const environment: NodeJS.ProcessEnv = {
-      ...process.env,
+      PATH: process.env.PATH, LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, TZ: process.env.TZ,
       HERMES_SOURCE_DIR: this.config.hermesSourceDir,
       HERMES_HOME: this.config.hermesStateDir,
       HOME: this.config.hermesStateDir,
