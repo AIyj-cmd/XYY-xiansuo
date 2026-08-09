@@ -1755,3 +1755,57 @@ P2：无。
 
 - 迁移 `001`–`010`、Server/Gateway/App 锁文件相对 `5027a76` 无差异；`server/data` SHA-256 与第 41 节逐项一致；`git diff --check` 通过。开始前 36 个改动仍保留，本验证阶段唯一受跟踪改动是本报告第 43 节。
 - **缺陷统计：P1=0、P2=0、P3=0。允许带条件进入验收阶段。** 条件：在最终受控环境提供合法 private Python 及其 `qrcode` 依赖，并独立重跑 Hermes `dry-run`；在此之前不启动 PM2、不部署、不启用真实渠道、扫码、DeepSeek 或外部发送。该条件是环境验证缺口，不是对已通过的 Shell/Node/Python provenance、TOCTOU 或快照门禁的放宽。
+
+## 44. 已部署安全整改候选独立复核（2026-08-09）
+
+### 44.1 环境、基线与计划
+
+- 本轮仅进行只读验证；目标为 `https://xs.tomatopia.top` / `47.82.105.103`，SSH 使用 root 的 BatchMode。未登录业务账户、未写业务数据、未发送消息、未调用 AI/渠道、未重启服务，亦未触碰既有 `/root/.hermes` 服务。
+- 开始前本地工作树为 clean：`git status --short`、暂存/未暂存 `git diff --name-only` 均为空；当前 HEAD 与远端 `fix/codex-security-remediation` 均为 `7bb238f76e35e11e298d32175f8d406383e4e0f6`，远端 `main` 为 `d77b600b8c6d7a9fe3e71fdc9f75ef90d78a6c71`。已阅读根 `AGENTS.md`、现有设计/实施/验收摘要和候选差异。
+- 计划按四组执行：公网 TLS/H5/API 安全探测；systemd、PM2、Nginx、端口及日志只读核验；运行库、迁移前回滚备份、迁移后快照与恢复副本核验；本地构建、全量回归、依赖审计和五分钟稳定性观察。
+
+### 44.2 已执行命令与结果
+
+| 范围 | 命令或方法 | 结果 |
+| --- | --- | --- |
+| GitHub 分支 | `git ls-remote --heads origin main fix/codex-security-remediation` | PASS；候选分支为 `7bb238f…`，`main` 保持 `d77b600…`。 |
+| 后端基线 | `cd server && npm run build`；`npm test` | PASS；构建成功，**171/171**。覆盖鉴权/越权、实时权限失效、迁移、上传安全、AI 脱敏、通知关闭态和异常路径。 |
+| 前端 H5 | `cd app && npm run build:h5`；`npm run test:e2e` | PASS；H5 构建成功，Playwright **17/17**。未构建或验收微信小程序。 |
+| 生产依赖审计 | `server/app: npm audit --omit=dev` | Server PASS：0 vulnerabilities；App 见 P3-1。 |
+| 公网 | `curl` HTTPS 根页、`/pages/leads/list`、`/api/health`、`/api/users/me`、不存在 API 和三个 index 静态 asset；`openssl s_client` | PASS；TLS 证书为 `xs.tomatopia.top` 且有效，根页/深链/health/asset 均 200，未认证为 401，不存在 API 为 404。H5 不存在页面路径返回 index 是 SPA fallback 的预期行为。 |
+| 浏览器安全头 | HTTPS root、API、asset 和 404 的响应头 | PASS；CSP、`nosniff`、DENY、no-referrer、Permissions-Policy 及 `Strict-Transport-Security: max-age=31536000` 均存在。 |
+| 服务与端口 | `systemctl`、`ss`、`pm2 list`、loopback/public health | PASS；`xiansuo-api` active+enabled，直接执行候选制品的 `/usr/bin/node …/server/dist/index.js`，仅监听 `127.0.0.1:3301`。旧 PM2 `xiansuo` 为 stopped；38115–38117 均未监听。 |
+| 开关和权限 | systemd unit/env 文件元数据；仅以变量名和布尔结果检查 env | PASS；unit 为 root:root 0644、env 为 root:root 0600；Notification、OpenClaw、Hermes、DeepSeek 及 AI 定时开关均为 false。未输出环境值、密钥或业务数据。 |
+| Nginx | 生效文件类型/目标端口、`nginx -t`、公网验证 | PASS；`sites-enabled/xs-tomatopia` 是普通文件且实际 proxy 至 3301，语法通过，HSTS 生效。 |
+| 运行库与恢复 | 部署 Node 的只读 `node:sqlite`，对运行库、post-deploy snapshot、restore copy 执行迁移/checksum/完整性/FK/计数查询 | PASS；三者均为 001–010、checksum 一致、`integrity_check=ok`、`foreign_key_check=0`，关键计数一致：users=2、leads=6、follow_ups=3、memos=0、favorites=2、AI request logs=0、Hermes bindings=0。 |
+| 备份 | `stat`、`sha256sum`、`cmp`，并只读打开恢复副本 | PASS；`post-deploy-20260809T152506Z.db` 与对应 restore copy 均 0600，备份目录 0700，SHA-256 同为 `a7c07bb5…9eb73cb0` 且字节一致、可读恢复。 |
+| 稳定性和日志 | 23:14:15–23:27:42 期间的 systemd `NRestarts`、loopback/public health、journal 安全分类 | PASS；服务连续运行超过 13 分钟，`NRestarts=0`，健康检查为 200。日志无敏感赋值行；长 token 模式仅对应 release SHA/部署 DB 路径，均已在检查时脱敏。 |
+
+### 44.3 数据与备份结论
+
+- 运行库为 `/var/lib/xiansuo/7bb238f76e35e11e298d32175f8d406383e4e0f6-20260809T151415Z/app.db`；DB/WAL/SHM 均 root:root 0600，父目录 0700。
+- `final-20260809T151415Z.db` 是停旧服务后的**迁移前一致回滚备份**：没有 `schema_migrations` 与旧库 `/opt/xiansuo/server/data/app.db` 一致，二者完整性均为 ok。这符合回滚设计，不作为失败项。
+- 迁移后的一致快照与恢复副本是本轮最终恢复证据；它们包含完整迁移账本，且与当前运行库的 schema、checksum、完整性、外键和关键行数一致。
+
+### 44.4 短暂 502、根因与最终状态
+
+- Nginx access log 记录 27 次 502，时间为 22:36:37–23:11:53；error log 明确为 upstream `127.0.0.1:3300` connection refused。
+- 根因：`sites-enabled/xs-tomatopia` 是普通文件而不是对 `sites-available` 的软链接；早期仅编辑 `sites-available` 不会改变实际生效配置，因此仍反代旧的 3300。
+- 最终状态已修复：实际 enabled 文件和 available 文件均为 3301，`nginx -t`、loopback/public health、H5 深链与静态 asset 均成功。该 502 是已关闭的短暂部署切换故障，非当前阻断项。
+
+### 44.5 失败项、严重级别与建议
+
+#### P3-1：App 生产依赖审计仍有 2 个 high
+
+- 命令：`cd app && npm audit --omit=dev`。
+- 实际：`vite` 及间接 `nanoid` 报告 2 个 high；Server 同一审计为 0。
+- 影响：当前生产仅由 Nginx 提供已构建的静态 H5，不运行 Vite 开发服务器；本轮公网安全头、H5 和静态资源验证未发现可利用路径。因此定为 P3，不阻断本候选验收。
+- 建议：在 uni-app/Vite 兼容性验证后升级受影响依赖并重跑 H5 构建、Playwright 和 `npm audit --omit=dev`；保持生产不暴露 Vite dev server。
+
+**统计：P1=0，P2=0，P3=1。**
+
+### 44.6 覆盖边界、文件变化与放行结论
+
+- 未覆盖：真实消息/AI/Hermes/OpenClaw 调用、真实登录写操作、上传写入、并发写入、重启和生产迁移执行；这些均被本次只读授权明确排除。自动化测试已覆盖相关的权限、异常、并发/幂等与恢复路径。
+- 测试前本地工作树 clean，`server/data` 五个文件的 SHA-256 在测试后保持不变；构建/测试未新增受跟踪或未跟踪文件。测试阶段唯一工作区变化是本报告的本节追加。
+- **允许进入验收阶段（带条件 GO）**：P1/P2 均为 0，部署、运行库、恢复副本与五分钟稳定性门禁均通过。条件是将 P3-1 纳入后续依赖升级计划；在未取得新的明确授权前，继续保持所有 Notification/AI/Hermes/OpenClaw/worker 开关为 false，不进行真实外发或重启操作。

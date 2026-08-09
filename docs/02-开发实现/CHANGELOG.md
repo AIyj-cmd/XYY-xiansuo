@@ -1,5 +1,27 @@
 # 变更日志
 
+## `7bb238f7` — Codex Security 整改生产发布（2026-08-09）
+
+- 已将 `fix/codex-security-remediation` 同步至 GitHub，远端分支精确为
+  `7bb238f76e35e11e298d32175f8d406383e4e0f6`；未创建 PR，未合并或改动 `main`，
+  `main` 仍为 `d77b600b8c6d7a9fe3e71fdc9f75ef90d78a6c71`。
+- 唯一生产环境 `xs.tomatopia.top` 已发布该代码 SHA。API 由 enabled 的
+  `xiansuo-api` systemd 单元直接执行 release 中 `server/dist/index.js`，仅监听
+  `127.0.0.1:3301`；旧 PM2 `xiansuo` 保留但为 stopped。
+- 没有就地迁移旧库。停旧服务后用 Node SQLite backup 生成一致性备份，
+  克隆到专用运行路径后执行 `001`–`010`；旧库保留且无 `schema_migrations`。
+- 迁移后快照与独立恢复副本完成字节级 SHA-256 一致、迁移 checksum、
+  `integrity_check`、`foreign_key_check` 和关键行数核对。
+- 部署切换中发生过两段短暂 502：PM2 fork 未按预期执行 ESM bootstrap，
+  以及 Nginx `sites-enabled` 为普通文件而早期只修改 `sites-available`。最终切换为
+  systemd 直接 Node，并将实际生效 Nginx 文件指向 3301；后续稳定观察超过 10 分钟，
+  `NRestarts=0`。
+- 独立报告与验收复跑结果：Server build + **171/171**，H5 build +
+  Playwright **17/17**，公网 H5/API/深链/401/404/安全头通过。P1=0、P2=0、P3=1；
+  P3 为静态 H5 构建工具链的 Vite/间接 nanoid high，纳入后续兼容升级。
+- 本次发布未启用 Notification/AI/Hermes/OpenClaw/Worker，也未触碰既有
+  `/root/.hermes` 服务。`status_document_sha: 本提交`，具体 SHA 由主代理提交后在最终报告回报。
+
 ## `dd5559de` — Release launcher 权限 P1 闭环（2026-08-09）
 
 - 新增固定白名单 `poc/ilink-gateway/scripts/normalize-runtime-launchers.mjs`，只将三个受控 Hermes/Gateway launcher 规范为精确 `0755`；不接受路径参数，以 `O_NOFOLLOW` + descriptor `fstat` 校验当前 UID、普通文件和单硬链接，全部初检成功后才修改。

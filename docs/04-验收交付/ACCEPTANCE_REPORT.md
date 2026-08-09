@@ -1,10 +1,13 @@
-# 当前版本离线收尾验收报告
+# 安全整改生产部署最终验收报告
 
 最新验收日期：2026-08-09
 
-最新代码基线：`dd5559de3082591fcfe89f62ecd6077014e6d665`；本地 RC tag `rc/xiansuo-hermes-multi-user-clean-20260809` 已指向该代码提交。本文档收口提交可位于 `release/single-account-openclaw-v1` 后续 HEAD，不改变该 RC 代码快照。
+已部署代码：`deployed_code_sha=7bb238f76e35e11e298d32175f8d406383e4e0f6`；GitHub
+`fix/codex-security-remediation` 精确指向该 SHA，`main` 仍为
+`d77b600b8c6d7a9fe3e71fdc9f75ef90d78a6c71`。`status_document_sha: 本提交`，具体 SHA 由主代理提交后在最终报告回报；它不改变已部署代码 SHA。
 
-最新结论：**launcher P1 已闭环，P1=0、P2=0、P3=0；本地提交和本地 RC tag 已完成。** 当前迁移为 `001`–`010`。生产数据库一致性备份、`009`→`010` 恢复演练、生产部署授权及 Hermes 真实 Pilot/启用均未执行或未授权，故生产发布和真实渠道仍为 **NO-GO**。生产仅发布 `app/dist/build/h5/` 静态制品，不运行或公网暴露 Vite `dev:h5` 开发服务器。
+最新结论：**生产验收 GO，P1=0、P2=0、P3=1；可保持当前版本上线运行。**
+唯一 P3 为 App 锁定工具链中 Vite/间接 nanoid 的 high 审计项；生产只由 Nginx 提供已构建的静态 H5，不运行 Vite dev server，因此不阻断本次上线。所有 Notification、AI、Hermes、OpenClaw 和 Worker 能力仍关闭，本结论不授权真实外发、扫码或启用这些能力。
 
 本人绑定后的本人收件且旧固定接收人未误收，是单用户路由隔离证据；它不替代多人放行。两名员工同时 active 的独立账号、交叉隔离和各自单次收件仍须在获授权 Pilot 中完成，才可评估多人开放。下方历史章节保留当时验收事实；所有“允许提交后创建 tag”、旧提交基线或 `001`–`009` 的最新口径均已被本段 superseded，不得据此判断当前状态。
 
@@ -421,3 +424,53 @@ DeepSeek、常驻进程或外部发送。该项是**环境验证缺口**，不�
 登录、扫码或发送。
 
 **提交建议：可按本次 35 个实施文件、测试报告和四份交付文档形成一个范围清晰的本地提交并进入评审；不要混入仓库外夹具或构建产物。上线建议：代码评审 GO，部署/真实 Hermes 启用 NO-GO。**
+
+## 16. `7bb238f` 生产部署最终验收（2026-08-09）
+
+> 本节是最新生产事实，覆盖上方历史章节中“未部署”、“部署 NO-GO”以及旧基线的口径；历史离线测试事实仍保留。
+
+### 业务目标与范围符合性
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| 仅同步非 `main` 分支 | PASS | GitHub `fix/codex-security-remediation` 精确为 `7bb238f76e35e11e298d32175f8d406383e4e0f6`。 |
+| 不创建 PR、不改 `main` | PASS | 未创建 PR；远端 `main` 仍为 `d77b600b8c6d7a9fe3e71fdc9f75ef90d78a6c71`。 |
+| 只部署唯一指定环境 | PASS | 只核验并保留 `https://xs.tomatopia.top`。 |
+| 已部署代码可证明 | PASS | systemd `ExecStart` 直接指向 `/opt/xiansuo-releases/7bb238f…/server/dist/index.js`。 |
+| 发布状态独立可追溯 | PASS | `deployed_code_sha=7bb238f…`；`status_document_sha: 本提交`，具体 SHA 由主代理提交后回报，不冒充为部署 SHA。 |
+
+实现未越出批准范围：本验收未修改业务源码、迁移、API、权限、依赖或服务器状态；只更新测试与交付文档。
+
+### 运行、数据与安全验收
+
+- `xiansuo-api` 为 active 且 enabled，`NRestarts=0`，从 23:14:15 CST 起稳定运行超过 10 分钟；仅在 `127.0.0.1:3301` 监听。旧 PM2 `xiansuo` 为 stopped，保留但不承载流量。
+- Nginx 实际 `sites-enabled/xs-tomatopia` 是 root 所有的 0644 普通文件，已指向 `127.0.0.1:3301`；`nginx -t` 通过，HSTS 为 `max-age=31536000`。
+- 公网根页、H5 深链、health 和静态资源为 200，未认证 `/api/users/me` 为 401，不存在 API 为 404；CSP、`nosniff`、DENY、no-referrer、Permissions-Policy 和 HSTS 均存在。
+- 部署没有就地迁移 `/opt/xiansuo/server/data/app.db`。停旧服务后生成一致性备份
+  `/var/backups/xiansuo/7bb238f76e35e11e298d32175f8d406383e4e0f6-final-20260809T151415Z.db`，
+  再克隆到 `/var/lib/xiansuo/7bb238f76e35e11e298d32175f8d406383e4e0f6-20260809T151415Z/app.db` 迁移。旧库和迁移前备份均保留且无 `schema_migrations`。
+- 运行库、迁移后快照与独立恢复副本均含 `001`–`010`，checksum 一致，`integrity_check=ok`、`foreign_key_check=0`，关键行数一致。快照与恢复副本 SHA-256 同为 `a7c07bb5…9eb73cb0`，且字节一致。
+- Notification/AI/Hermes/OpenClaw/Worker 开关保持 false 或相关单元未启动；38115–38117 无候选服务监听。既有 `/root/.hermes` 服务没有被本次部署触碰。
+
+### 已关闭的部署异常
+
+切换过程中有两段短暂 502，均已恢复：
+
+1. PM2 fork 模式没有按预期执行 ESM bootstrap；最终改为 systemd 直接执行 release 的 Node 入口。
+2. Nginx `sites-enabled` 是普通文件，早期只修改 `sites-available` 未改变生效配置；最终两份文件均指向 3301 并通过语法及公网验证。
+
+这两项为已关闭的发布切换事件，不是当前 P1/P2；应保留在运维记录中，不得删除或改写为无故障。
+
+### 最终测试与上线建议
+
+| 验证 | 结果 |
+| --- | --- |
+| 独立 `TEST_REPORT.md` 第 44 节 | 条件 GO；P1=0、P2=0、P3=1。 |
+| `cd server && npm run build && npm test` | PASS，171/171。 |
+| `cd app && npm run build:h5` | PASS。 |
+| `cd app && npm run test:e2e` | PASS，17/17。 |
+| GitHub/公网/生产只读复核 | PASS。 |
+
+已知问题只有 **P3-1**：App `npm audit --omit=dev` 对 Vite 和间接 nanoid 报告 2 个 high。当前静态 H5 生产路径不运行 Vite dev server，因此不阻断；后续必须在 uni-app/Vite 兼容性验证后升级并重跑 H5、Playwright 与 audit。
+
+**最终建议：GO，保持当前 `7bb238f` 版本上线运行。可提交并推送本次测试与状态文档到同一非 `main` 分支；不创建 PR，不改动 `main`。**

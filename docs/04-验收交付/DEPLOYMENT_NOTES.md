@@ -1,8 +1,14 @@
-# 当前版本部署手册
+# 当前版本部署与运行记录
 
-> **当前发布记录（2026-08-09，覆盖下方提交前的“当前/最新”口径）：** 当前代码 RC 为 `dd5559de3082591fcfe89f62ecd6077014e6d665`，本地 tag 为 `rc/xiansuo-hermes-multi-user-clean-20260809`，二者一致。后续纯文档提交可位于 `release/single-account-openclaw-v1` 的更新 HEAD，不改变该 RC 代码快照。launcher 权限 P1 修复已随该提交完成，不再是“尚未提交”的候选差异；当前离线验收 P1=0、P2=0、P3=0。
+> **当前发布记录（2026-08-09，覆盖下方所有历史“未部署/NO-GO”口径）：**
+> `deployed_code_sha=7bb238f76e35e11e298d32175f8d406383e4e0f6`，环境仅为
+> `xs.tomatopia.top`。GitHub 候选分支与该 SHA 一致，`main` 未改，未创建 PR。
+> `status_document_sha: 本提交`，具体 SHA 由主代理提交后在最终报告回报。
 >
-> 当前 schema 迁移为 `001`–`010`。生产数据库一致性备份、`009`→`010` 恢复演练和部署授权均**尚未执行**；因此本手册不授权生产迁移、部署、PM2/systemd/Nginx 操作、真实 Pilot、登录、扫码、联网或微信发送。生产只发布 `app/dist/build/h5/` 静态制品，绝不运行或公网暴露 Vite `dev:h5` 开发服务器。当前锁文件下 App audit 为 **2 high / 0 moderate / 0 critical**（Vite 和间接 nanoid）；保留为 R-1，不使用 `--force` 或 `--legacy-peer-deps` 规避。
+> 当前 schema 已在从旧库一致性备份克隆的新运行库上迁移为 `001`–`010`；
+> 迁移后快照与恢复副本已验证。当前生产只发布静态 H5 与 API，不运行
+> Vite dev server。App audit 的 **2 high / 0 moderate / 0 critical**（Vite 和间接 nanoid）
+> 保留为 P3/R-1；不使用 `--force` 或 `--legacy-peer-deps` 规避。
 >
 > 已有“本人绑定后本人收件、旧固定接收人未误收”的结果，只能作为**单用户路由隔离证据**。两名员工同时 active 的独立账号、交叉隔离及各自单次收件尚未完成，仍是多人开放 Pilot 的硬门禁。下方历史章节保留其当时事实；其中关于未提交 launcher、旧提交基线、`001`–`009` 或提交/tag 前条件式放行的表述均由本记录 superseded，不得作为当前发布状态引用。
 
@@ -277,3 +283,38 @@ Hermes 登录/扫码/发送或 DeepSeek 调用。即使代码提交或合并，�
 
 **停止条件：任一 dry-run 门禁未完成、权限/provenance 漂移、真实开关意外为 true、Secret/路径泄露、
 重复/错投或 `result_unknown` 被自动重试，立即保持或恢复 NO-GO，停止下游单元并保全证据。**
+
+## 15. `7bb238f` 实际生产部署状态（2026-08-09）
+
+### 当前运行配置
+
+- 域名：`https://xs.tomatopia.top`，本次唯一部署环境。
+- 代码：`deployed_code_sha=7bb238f76e35e11e298d32175f8d406383e4e0f6`。
+- API：`xiansuo-api.service`，active/enabled，工作目录为该 SHA 的 release `server/`，
+  `/usr/bin/node .../server/dist/index.js`，仅监听 `127.0.0.1:3301`。
+- 旧 PM2：`xiansuo` 保留为 stopped，不删除，不作为自动 fallback。
+- Nginx：实际 `sites-enabled/xs-tomatopia` 为普通文件，已反代
+  `127.0.0.1:3301`，HSTS 为一年；修改时必须同时核对实际 enabled 文件，不得假设它是 symlink。
+- 数据库：`/var/lib/xiansuo/7bb238f76e35e11e298d32175f8d406383e4e0f6-20260809T151415Z/app.db`，父目录 0700，DB/WAL/SHM 0600。
+- 旧库：`/opt/xiansuo/server/data/app.db`，保留且无 `schema_migrations`，不再是当前 `DB_PATH`。
+
+### 备份和恢复证据
+
+- 迁移前一致备份：
+  `/var/backups/xiansuo/7bb238f76e35e11e298d32175f8d406383e4e0f6-final-20260809T151415Z.db`。
+- 迁移后快照：
+  `/var/backups/xiansuo/7bb238f76e35e11e298d32175f8d406383e4e0f6-post-deploy-20260809T152506Z.db`。
+- 恢复副本：
+  `/var/backups/xiansuo/7bb238f76e35e11e298d32175f8d406383e4e0f6-post-deploy-restore-20260809T152506Z.db`。
+- 迁移后快照与恢复副本均为 0600，备份目录 0700，SHA-256 同为
+  `a7c07bb5ab9e2fddc0afb73de41346e98d759d280169abef0048f7209eb73cb0`，字节一致，
+  且均通过 `001`–`010` checksum、完整性、外键与关键行数核对。
+
+### 部署事件和当前监控
+
+- 切换期两段短暂 502 的原因分别是 PM2 fork/ESM bootstrap 语义和 Nginx enabled 普通文件未被早期 available 修改覆盖。两项均已关闭，不得从发布日志中删除。
+- 发布后已稳定观察超过 10 分钟，`NRestarts=0`，loopback 和公网 health 均为 200，最新 systemd journal 无 error/fatal/failed/exception 分类行。
+- 持续监控：API 5xx/401/429/503、systemd restart 数和内存、SQLite 完整性/外键/容量、Nginx upstream 连接拒绝、H5 静态资源 404/CSP，以及任一通知/AI/Hermes/Worker 意外启动。
+- 停止条件：重启循环、持续 502、迁移/checksum/完整性/外键异常、鉴权回归、数据路径错配，或任一被禁用单元/开关意外激活。
+
+当前 P1=0、P2=0、P3=1；保持这一部署为 **GO**。P3 工具链升级不得直接在生产机上使用 `audit fix --force`，必须作为新的兼容性发布处理。

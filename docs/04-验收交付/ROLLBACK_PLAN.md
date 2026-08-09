@@ -1,5 +1,9 @@
 # 当前版本回滚手册
 
+> **当前生产基线（2026-08-09）：** `deployed_code_sha=7bb238f76e35e11e298d32175f8d406383e4e0f6`，
+> systemd API 监听 `127.0.0.1:3301`，Nginx 实际 enabled 文件指向 3301。下方历史“未部署”回退口径
+> 均被第 15 节的实际生产回滚步骤覆盖。
+
 日期：2026-08-02
 原则：先停写、保全数据和证据，再按故障类型回退；不得手工篡改 `schema_migrations` 绕过失败。
 
@@ -180,3 +184,37 @@ P3 自定义 HMAC 流加密风险的后续迁移也必须采用新 schema 版本
 回滚完成标准：核心登录/权限/API 可用，上传和数据库私有权限保持，AI 外发关闭或脱敏有效，全部 Hermes
 真实开关为 false，无常驻异常进程，`integrity_check=ok`、`foreign_key_check` 为空，且没有删除测试、放宽
 断言、丢失账本或数据覆盖。
+
+## 15. `7bb238f` 实际生产回滚方案（2026-08-09）
+
+### 优先级和禁止项
+
+1. 先停止新写入和切换，保全 systemd/Nginx 日志、当前 DB/WAL/SHM 与制品标识。
+2. 继续保持 Notification、AI、Hermes、OpenClaw、Worker 关闭；不启动旧 PM2 `xiansuo` 作自动 fallback，不触碰 `/root/.hermes`。
+3. 不做 down migration，不删除或手改 `schema_migrations`，不覆盖旧库或备份，不把已知不安全的 `main`/`d77b600` 直接作为生产回滚制品。
+4. 已恢复业务写入后，不得直接用 15:14 或 15:25 备份覆盖当前数据；必须先保存故障时点一致快照并获得数据恢复/对账授权。
+
+### 应用或反代故障
+
+1. 如 API 异常，先停止 `xiansuo-api`，保留 Nginx 当前 3301 配置和旧 PM2 stopped 状态，避免流量意外切回旧制品。
+2. 使用同一 `7bb238f…` 已验证 release 和当前运行库完成一次受控重启；仅在 health、公网 H5/API、401/404 与日志均恢复后恢复流量。
+3. 如需换制品，只能使用另行审批、无已知九项漏洞且已验证兼容 `001`–`010` 的制品；否则保持服务停止并向前修复。
+4. Nginx 更改必须修改并核对实际 `sites-enabled/xs-tomatopia` 普通文件，通过 `nginx -t` 后才可 reload。
+
+### 数据库恢复
+
+1. 当前库仍完整时，优先保留当前库并只回退/修复应用，避免丢失上线后写入。
+2. 当前库损坏且已获数据恢复授权时，先将故障库做一致性保全备份，再将
+   `/var/backups/xiansuo/7bb238f76e35e11e298d32175f8d406383e4e0f6-post-deploy-restore-20260809T152506Z.db`
+   复制到新的 0700 目录/0600 文件，验证 SHA-256、`001`–`010` checksum、完整性、外键与行数后再原子切换 `DB_PATH`。
+3. 仅在需要同时回退 schema 且获得明确数据丢失/对账授权时，才可使用
+   `/var/backups/xiansuo/7bb238f76e35e11e298d32175f8d406383e4e0f6-final-20260809T151415Z.db`；
+   它无 `schema_migrations`，必须搭配独立审批且已验证的兼容应用，不得直接覆盖当前库。
+
+### 回滚完成标准
+
+- systemd 运行的制品 SHA、`DB_PATH`、Nginx enabled 目标和端口完全一致，且 `NRestarts` 稳定。
+- loopback/public health、H5 根页与深链、未认证 401、不存在 API 404 和安全头通过。
+- `integrity_check=ok`、`foreign_key_check` 为空，迁移 checksum 和关键行数符合选定恢复点。
+- 旧 PM2 仍 stopped，Notification/AI/Hermes/OpenClaw/Worker 仍关闭，无真实外发或自动重试。
+- 记录故障时间、数据 RPO/对账影响、实际制品 SHA、备份/restore SHA 与恢复验证；不删除两段已知 502 的历史证据。
