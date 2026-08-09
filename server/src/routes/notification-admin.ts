@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { getDb } from '../db.js';
 import { requireAdmin } from '../middleware/auth.js';
-import { ownerRuleAvailableAt, parseAiRule, parseOwnerRule, parseSingleNotificationChannel } from '../services/notification.js';
+import { isNotificationEventChannelSupported, ownerRuleAvailableAt, parseAiRule, parseOwnerRule, parseSingleNotificationChannel } from '../services/notification.js';
 import { resolveNotificationConfig } from '../config.js';
 import { nowDatetime } from '../utils/datetime.js';
 import { parseNotificationSnapshot } from '../notifications/snapshot.js';
@@ -14,13 +14,10 @@ const previewSchema = z.object({ rule: ruleUpdateSchema, sample: z.object({ lead
 const retrySchema = z.object({ expected_version: z.number().int().positive(), reason: z.string().min(1).max(200) }).strict();
 const idSchema = z.coerce.number().int().positive();
 function bad(reply: any, msg: string, code = 'RULE_CONFIG_INVALID', status = 400) { return reply.code(status).send({ code: 1, msg, data: { error_code: code } }); }
-function allowedSingleChannel(channelOrder: readonly string[]): 'mock' | 'openclaw' | 'hermes' | undefined {
-  return channelOrder.length === 1 && (channelOrder[0] === 'mock' || channelOrder[0] === 'openclaw' || channelOrder[0] === 'hermes') ? channelOrder[0] : undefined;
-}
 function validateRuleTarget(eventType: string, recipientStrategy: string, channelOrder: readonly string[]): { channel: 'mock' | 'openclaw' | 'hermes' } | undefined {
   const aiEvent = eventType === 'scheduled_follow_overdue' || eventType === 'daily_report';
-  const channel = allowedSingleChannel(channelOrder);
-  if ((eventType === 'owner_changed' && recipientStrategy !== 'new_owner') || (aiEvent && recipientStrategy !== 'reserved') || !channel) return undefined;
+  const channel = channelOrder.length === 1 ? channelOrder[0] : undefined;
+  if ((eventType === 'owner_changed' && recipientStrategy !== 'new_owner') || (aiEvent && recipientStrategy !== 'reserved') || !isNotificationEventChannelSupported(eventType, channel)) return undefined;
   return { channel };
 }
 function safeRule(row: any) { return { event_type: row.event_type, enabled: Boolean(row.enabled), recipient_strategy: row.recipient_strategy, channel_order: JSON.parse(row.channel_order_json), config_schema_version: row.config_schema_version, config: JSON.parse(row.config_json), version: row.version, updated_at: row.updated_at }; }
@@ -115,7 +112,10 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
       }
       const channel = parseSingleNotificationChannel(rule.channel_order_json);
       const config = resolveNotificationConfig();
-      ruleUsable = Boolean(rule?.enabled) && ((channel === 'mock' && config.mockEnabled) || (channel === 'openclaw' && config.openclawEnabled) || (channel === 'hermes' && config.hermesEnabled));
+      ruleUsable = Boolean(rule?.enabled)
+        && isNotificationEventChannelSupported(row.event_type, channel)
+        && isNotificationEventChannelSupported(row.event_type, row.channel)
+        && ((channel === 'mock' && config.mockEnabled) || (channel === 'openclaw' && config.openclawEnabled) || (channel === 'hermes' && config.hermesEnabled));
     } catch { ruleUsable = false; contextUsable = false; }
     if (row.status !== 'failed' || !row.retry_allowed || row.expires_at <= now || row.provider_message_id || !contextUsable || !ruleUsable) return bad(reply, '该任务当前不符合人工重试条件', 'RETRY_NOT_ALLOWED', 409);
     const result = db.prepare(`UPDATE notification_logs SET status='pending', available_at=?, manual_retry_count=manual_retry_count+1, failed_at=NULL, retain_until=NULL, failure_class=NULL, last_error_code=NULL, last_error_message=NULL, management_audit_json=json_insert(management_audit_json, '$[#]', json_object('action','manual_retry','by',?,'reason',?,'at',?)), row_version=row_version+1, updated_at=? WHERE id=? AND row_version=?`).run(now, request.user.id, body.data.reason, now, now, id.data, body.data.expected_version);
