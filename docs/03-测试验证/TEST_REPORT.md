@@ -1348,3 +1348,17 @@ P2：无。
 - 独立回归以 pinned 原语形状的 `item_list` 注入：精确正文经 provider 归一化后贯穿 `AccountManager.poll_once()`，回调接受时状态变为 active，且 target/context/cursor 均来自同一 DM；官方群聊、错误 account 与带尾随空格的非精确确认命令均为零激活。active 调用不读取 `_extract_text`。
 - `poll_once()` 不调用 provider `send`，实现亦无 Agent/AI/reply/typing/media 路径；既有错误路径断言 `provider.sends=[]` 保持。
 - 执行：`cd poc/hermes-weixin-transport && ./run-tests.sh`，**30/30 通过**；`git diff --check` 通过。本验证阶段仅补充上述最小回归与本报告，未修改业务实现。
+
+#### 36.5 自助解除 Hermes 绑定独立验证（2026-08-09）
+
+**结论：PASS，允许提交；P1=0、P2=0、P3=0。** 本次验证基线为 5 个已跟踪实现/测试差异和 1 个未跟踪路由测试；验证阶段仅追加回归断言与本报告，未修改 `app/src`、`server/src` 业务实现。
+
+- `DELETE /api/hermes-binding` 使用 JWT `request.user.id`，未经认证为 401；A 删除后仅 A 变为 unbound，B 仍 active。成功 `data` 严格仅为 `{status:'unbound'}`，无 generation、mode、account、target 或其他凭据字段，并设置 `Cache-Control: no-store`。
+- 解绑事务将非 unbound 绑定 generation 加一并清除 account/target/peer/activation 与 prepared 引用字段；同一用户 Hermes `pending`/`retry_wait`/`sending` 任务原子取消并清 lease，live attempts 原子取消。SQL trigger 注入取消失败时 binding、任务与 attempts 全部回滚；manager retire 在 DB commit 后执行，失败仍返回 fail-closed 的 200 unbound。
+- disabled 在任何写入与 manager retire 前返回 409，路由测试比较整行 DB 数据确认零改动；无绑定记录和已 unbound 重复 DELETE 均返回 unbound 且不增加 generation。已取消的旧 activation 重新调用被拒绝，worker 对已取消任务/不再 active 的绑定不会恢复投递。
+- H5：active 与 rebind_required 均仅显示红色“解除机器人”且隐藏 QR；二次确认取消为零 DELETE，成功只发一次 DELETE、清空 attempt 并刷新为未绑定，失败保持 active。请求进行时输出 `disabled="true"` 且函数 guard 抵御强制第二点击，浏览器回归确认 DELETE 仍为 1。
+- 执行：`cd server && npm run build && npm test`，**162/162 通过**；`cd app && npm run build:h5 && npm run test:h5`，Playwright **14/14 通过**；`git diff --check` 通过。无新增 API 以外的依赖或迁移。
+
+#### 36.6 自助解绑验收补强（2026-08-09）
+
+验收阶段复现一个 P2：原 guard 仅覆盖确认后的 DELETE，弹窗等待期间按钮仍可再次触发。现将互斥状态前移至打开二次确认之前，并由 `finally` 覆盖取消、弹窗失败、请求失败和成功；浏览器回归同时强制点击弹窗期与请求期按钮，DELETE 始终为 1。修复后 Server build/test **162/162**、H5 build + Playwright **14/14**、`git diff --check` 均通过。最终 **P1=0、P2=0、P3=0**。

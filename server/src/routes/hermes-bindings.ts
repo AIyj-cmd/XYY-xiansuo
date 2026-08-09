@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getDb } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { resolveNotificationConfig } from '../config.js';
-import { activateHermesQrAttempt, cancelOwnedHermesQrAttempt, consumeHermesInternalNonce, createHermesQrAttempt, expireHermesQrAttempts, fingerprint, getOwnedHermesQrAttempt, markHermesQrAwaitingContext, markHermesQrConfirmed, publicHermesBinding, verifyHermesInternalSignature } from '../services/hermes-binding.js';
+import { activateHermesQrAttempt, cancelOwnedHermesQrAttempt, consumeHermesInternalNonce, createHermesQrAttempt, expireHermesQrAttempts, fingerprint, getOwnedHermesQrAttempt, markHermesQrAwaitingContext, markHermesQrConfirmed, publicHermesBinding, removeOwnedHermesBinding, verifyHermesInternalSignature } from '../services/hermes-binding.js';
 import { nowDatetime } from '../utils/datetime.js';
 import { hermesManagerRequest } from '../services/hermes-account-manager.js';
 
@@ -20,6 +20,17 @@ export async function hermesBindingRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/hermes-binding/code', { preHandler: authenticate }, async (_request, reply) => bad(reply, '旧绑定码接口已退役，请生成登录二维码', 409));
+
+  app.delete('/api/hermes-binding', { preHandler: authenticate }, async (request, reply) => {
+    try {
+      const removed = removeOwnedHermesBinding(getDb(), request.user.id, nowDatetime());
+      await Promise.all(removed.accountRefs.map(async (accountRef) => { try { await hermesManagerRequest('DELETE', `/qr-attempts/${accountRef}`); } catch { /* DB is already fail-closed; manager reconciliation will retire it */ } }));
+      reply.header('Cache-Control', 'no-store');
+      return reply.send({ code: 0, msg: '已解除机器人', data: { status: 'unbound' } });
+    } catch (error) {
+      return bad(reply, (error as any).code === 'HERMES_BINDING_DISABLED' ? '绑定已被管理员停用' : '解除机器人失败，请稍后重试', (error as any).code === 'HERMES_BINDING_DISABLED' ? 409 : 500);
+    }
+  });
 
   app.post('/api/hermes-binding/qr-attempts', { preHandler: authenticate }, async (request, reply) => {
     if (!resolveNotificationConfig().hermesBindingEnabled) return bad(reply, 'Hermes 绑定功能未启用', 409);

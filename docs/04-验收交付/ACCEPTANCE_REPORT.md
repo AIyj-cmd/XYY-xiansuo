@@ -247,6 +247,7 @@
 | --- | --- | --- |
 | 每网站用户独立账号 | 通过 | Server 只持久化 opaque `accountRef`；manager vault 以 `userId + generation + accountRef` 保存独立 provider account/target/context/cursor；Gateway、Worker、adapter 和 send overlay 全程使用同一精确三元组。 |
 | H5 直接串行展示官方登录 QR | 通过（离线） | 全局唯一 live attempt；owner-only create/get/delete；5 分钟 TTL；响应 `Cache-Control: no-store`；data PNG、倒计时、状态、确认命令、取消和卸载停止轮询均通过真实浏览器回归。QR token/payload 只驻留 manager 进程内存，未写 vault、SQLite、日志或 H5 静态制品。 |
+| 自助解除机器人 | 通过 | active/rebind_required 只显示“解除机器人”而不显示生成 QR；owner-only DELETE 在同一事务递增 generation、清除绑定凭据引用并取消本人 live attempt 与未完成任务，提交后才退役 manager account。disabled 保持管理员状态；响应仅返回 `unbound`。 |
 | 扫码后仍需新会话精确确认 | 通过（fake provider） | scan 只进入 `prepared/awaiting_context`；只有精确账号收到精确 `确认 <activationId>` 且取得非空 target/context 后才回调 active。错误账号、target、命令、accountRef、generation、activationId 均拒绝或零网络。 |
 | 重绑安全切换 | 通过 | 新 active 前旧 binding/任务不变；Server active commit 与旧任务取消同一 SQLite 事务；manager 在单次 flock/原子 vault 替换中激活新账号并清空、退役同用户其他 live 账号。回调丢响应后会使用已持久 context 自动重试同一 activation，不要求重新发送命令。 |
 | 停用、重启与崩溃 | 通过（离线） | 用户停用事务先禁用 binding、取消 live attempt/待发任务，再同步尝试 manager 退役；manager 对 active 账号每 60 秒用精确 activation 合同复核，Server 拒绝已停用/错代账号后本地退役。prepared 过期会清空 provider 凭据；重启恢复 prepared/active poll，丢失的内存 QR 失败关闭。 |
@@ -262,15 +263,16 @@
 4. active activation 重放原先未重新核验 activationId/target；现必须同时匹配 activationId 派生哈希、target fingerprint、generation 和 accountRef。
 5. 用户停用的 manager 退役原先为未等待的 best-effort；现请求返回前完成一次受控退役尝试，并以 manager 周期性授权复核覆盖进程崩溃/暂时不可达窗口。
 6. manager 原先按内部别名读取确认结果，未匹配固定上游真实字段 `bot_token/baseurl`，真实确认后无法进入 prepared；现用精确上游字段归一化，并对缺失凭据、未知状态和非固定 redirect/base host 失败关闭。二维码渲染也前置到 vault 写入前，`qrcode` 缺失时不留下孤儿 attempt。
+7. 自助解绑原先只在确认弹窗完成后设置互斥状态，弹窗等待期仍可再次触发；现从打开二次确认到请求结束全程禁用并由函数 guard 防重，取消和失败均恢复 active 页面且不显示生成 QR。
 
 ### 最终验证
 
 | 命令 | 结果 |
 | --- | --- |
-| `cd server && npm run build && npm test` | PASS，**160/160**。 |
+| `cd server && npm run build && npm test` | PASS，**162/162**。 |
 | `cd poc/ilink-gateway && npm run build && npm test` | PASS，**59/59**。 |
-| `cd poc/hermes-weixin-transport && ./run-tests.sh` | PASS，**29/29**；包含固定上游字段 fixture、扫码状态、redirect host 与 `qrcode` 缺失失败关闭。 |
-| `cd app && npm run test:h5` | PASS，H5 build + Playwright **10/10**。 |
+| `cd poc/hermes-weixin-transport && ./run-tests.sh` | PASS，最近完整复测 **30/30**；包含真实 `item_list` 归一化、固定上游字段、扫码状态、host 与 `qrcode` 失败关闭。 |
+| `cd app && npm run test:h5` | PASS，H5 build + Playwright **14/14**。 |
 | `git diff --check`、敏感内容与制品扫描 | PASS；未发现真实 QR、provider credential、target/context/cursor、Secret 或测试图片进入 Git。 |
 
 ### 残余风险与下一人工门禁

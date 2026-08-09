@@ -122,6 +122,6 @@ P3 自定义 HMAC 流加密风险的后续迁移也必须采用新 schema 版本
 2. 从上线前一致性备份恢复到新的明确路径，以旧批准制品和全部真实渠道关闭状态启动 API；核对记录数、legacy active/pending、`integrity_check` 和 `foreign_key_check` 后再决定是否切换 `DB_PATH`。
 3. 若 `009` 已成功但 QR、重绑或隔离冒烟失败，优先保持新库并关闭功能，不反向删表；需要回退旧制品时必须恢复 `009` 前完整备份，因为旧代码不理解 accountRef/attempt 新状态。
 4. manager/Gateway 故障时保留 vault、ledger 和烧毁的幂等键；不得复制账号到 default/legacy map，不得 tokenless 发送、fallback 或重试 unknown。QR 仅在内存，manager 重启后当前 waiting QR 失效并由用户重新生成。
-5. 用户停用或重绑后发现旧 manager account 未退役时，继续保持数据库 binding 和通知关闭，记录 opaque accountRef 的受控哈希，由获授权运维执行单账号退役；不得恢复旧账号发送能力。
+5. 用户停用、重绑或自助解绑后发现旧 manager account 未退役时，继续保持数据库 binding 和通知关闭，记录 opaque accountRef 的受控哈希，由获授权运维执行单账号退役；不得降低已提交的 unbound/generation 撤权状态或恢复旧账号发送能力。
 6. 回退后至少重跑 Server、Gateway、overlay、H5 受影响套件及 migration/trigger/integrity 定向检查；任何真实扫码或发送仍需新的明确授权。
 7. 若固定上游 QR 状态字段、`bot_token/baseurl`、redirect host 或 `qrcode` 依赖契约变化，保持所有 Hermes 开关关闭并停止 manager；不得接受别名字段、动态 host、刷新 QR 或调用 `qr_login` 规避门禁。修复必须重新固定上游并完成独立审计与离线回归。

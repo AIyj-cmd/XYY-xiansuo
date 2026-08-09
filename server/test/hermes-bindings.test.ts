@@ -3,7 +3,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, createHmac } from 'node:crypto';
 import { MIGRATIONS } from '../src/db.js';
-import { activateHermesQrAttempt, cancelOwnedHermesQrAttempt, commitHermesBinding, consumeHermesInternalNonce, createHermesQrAttempt, disableHermesBinding, disableHermesBindingInTransaction, fingerprint, getOwnedHermesQrAttempt, issueHermesBindingCode, markHermesQrAwaitingContext, markHermesQrConfirmed, prepareHermesBinding, publicHermesBinding, verifyHermesInternalSignature } from '../src/services/hermes-binding.js';
+import { activateHermesQrAttempt, cancelOwnedHermesQrAttempt, commitHermesBinding, consumeHermesInternalNonce, createHermesQrAttempt, disableHermesBinding, disableHermesBindingInTransaction, fingerprint, getOwnedHermesQrAttempt, issueHermesBindingCode, markHermesQrAwaitingContext, markHermesQrConfirmed, prepareHermesBinding, publicHermesBinding, removeOwnedHermesBinding, verifyHermesInternalSignature } from '../src/services/hermes-binding.js';
 
 function open(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
@@ -49,6 +49,42 @@ test('QR attempt TTL/cancel never exposes provider values and frees the global l
   assert.equal(cancelOwnedHermesQrAttempt(db, 2, next.id, '2026-08-09 09:06:02'), true);
   const serialized = JSON.stringify(db.prepare('SELECT * FROM hermes_login_attempts').all());
   assert.equal(/"(?:token|context|qrcode|providerAccountId)"/i.test(serialized), false);
+});
+
+test('自助解绑仅影响本人，原子取消任务与 live attempts，失败时完整回滚', () => {
+  const db = open(); db.prepare("INSERT INTO users(username,name,password_hash) VALUES ('remove-other','其他用户','x')").run();
+  const activate = (userId: number, target: string, activationId: string) => { const attempt = createHermesQrAttempt(db, userId, '2026-08-09 09:00:00'); markHermesQrAwaitingContext(db, attempt.id, '2026-08-09 09:00:01'); activateHermesQrAttempt(db, { id: attempt.id, accountRef: attempt.account_ref, targetFingerprint: fingerprint(target), activationId }, '2026-08-09 09:00:02'); return attempt; };
+  const own = activate(1, 'remove-owner', '12345678-1234-4234-a234-123456789012');
+  const other = activate(2, 'remove-other', '00000000-0000-4000-8000-000000000002');
+  const rebind = createHermesQrAttempt(db, 1, '2026-08-09 09:01:00');
+  const insertTask = (userId: number, dedupe: string, status: string) => db.prepare(`INSERT INTO notification_logs(event_type,event_source,operation_id,subject_type,subject_id,recipient_user_id,recipient_binding_generation,recipient_account_ref,occurred_at,dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,expires_at,lease_token,lease_owner,lease_until)
+    VALUES ('scheduled_follow_overdue','remove-test',?,'lead',1,?,?,?,'2026-08-09 09:00:00',?,?,1,'{}','["hermes"]','hermes','{}',?,1,'2026-08-09 09:00:00','2026-08-10 09:00:00','lease','worker','2026-08-09 09:10:00')`).run(dedupe, userId, 1, userId === 1 ? own.account_ref : other.account_ref, dedupe, `${dedupe}-delivery`, status);
+  insertTask(1, 'remove-own', 'sending'); insertTask(2, 'remove-other', 'pending');
+  const removed = removeOwnedHermesBinding(db, 1, '2026-08-09 09:02:00');
+  assert.deepEqual(new Set(removed.accountRefs), new Set([own.account_ref, rebind.account_ref]));
+  assert.deepEqual({ ...(db.prepare('SELECT status,generation,account_ref,target_fingerprint,peer_fingerprint,active_activation_id_hash,prepared_generation,prepared_account_ref FROM hermes_bindings WHERE user_id=1').get() as object) }, { status: 'unbound', generation: 2, account_ref: null, target_fingerprint: null, peer_fingerprint: null, active_activation_id_hash: null, prepared_generation: null, prepared_account_ref: null });
+  assert.deepEqual({ ...(db.prepare('SELECT status,context_ready_at,activation_id_hash FROM hermes_login_attempts WHERE id=?').get(own.id) as object) }, { status: 'cancelled', context_ready_at: null, activation_id_hash: null });
+  assert.equal((db.prepare('SELECT status FROM hermes_login_attempts WHERE id=?').get(rebind.id) as { status: string }).status, 'cancelled');
+  assert.throws(() => activateHermesQrAttempt(db, { id: own.id, accountRef: own.account_ref, targetFingerprint: fingerprint('remove-owner'), activationId: '12345678-1234-4234-a234-123456789012' }, '2026-08-09 09:02:01'), /尚未取得账号专属会话上下文/);
+  assert.equal(publicHermesBinding(db, 1).status, 'unbound');
+  assert.deepEqual({ ...(db.prepare("SELECT status,cancellation_reason,lease_token,lease_owner,lease_until FROM notification_logs WHERE dedupe_key='remove-own'").get() as object) }, { status: 'cancelled', cancellation_reason: 'binding_removed', lease_token: null, lease_owner: null, lease_until: null });
+  assert.equal(publicHermesBinding(db, 2).status, 'active');
+  assert.equal((db.prepare("SELECT status FROM notification_logs WHERE dedupe_key='remove-other'").get() as { status: string }).status, 'pending');
+
+  const rollback = open(); const rollbackAttempt = createHermesQrAttempt(rollback, 1, '2026-08-09 09:00:00'); markHermesQrAwaitingContext(rollback, rollbackAttempt.id, '2026-08-09 09:00:01'); activateHermesQrAttempt(rollback, { id: rollbackAttempt.id, accountRef: rollbackAttempt.account_ref, targetFingerprint: fingerprint('rollback-remove'), activationId: '00000000-0000-4000-8000-000000000003' }, '2026-08-09 09:00:02');
+  rollback.prepare(`INSERT INTO notification_logs(event_type,event_source,operation_id,subject_type,subject_id,recipient_user_id,recipient_binding_generation,occurred_at,dedupe_key,delivery_idempotency_key,rule_version,rule_snapshot_json,channel_order_snapshot_json,channel,message_snapshot_json,status,max_attempts,available_at,expires_at)
+    VALUES ('scheduled_follow_overdue','remove-test','rollback-remove','lead',1,1,1,'2026-08-09 09:00:00','rollback-remove','rollback-remove-delivery',1,'{}','["hermes"]','hermes','{}','pending',1,'2026-08-09 09:00:00','2026-08-10 09:00:00')`).run();
+  rollback.exec("CREATE TRIGGER fail_remove_binding BEFORE UPDATE OF status ON notification_logs WHEN NEW.status='cancelled' BEGIN SELECT RAISE(ABORT, 'forced remove failure'); END;");
+  assert.throws(() => removeOwnedHermesBinding(rollback, 1, '2026-08-09 09:02:00'), /forced remove failure/);
+  assert.equal(publicHermesBinding(rollback, 1).status, 'active');
+  assert.equal((rollback.prepare("SELECT status FROM notification_logs WHERE dedupe_key='rollback-remove'").get() as { status: string }).status, 'pending');
+  assert.equal((rollback.prepare('SELECT status FROM hermes_login_attempts WHERE id=?').get(rollbackAttempt.id) as { status: string }).status, 'active');
+
+  const idempotent = open(); assert.deepEqual(removeOwnedHermesBinding(idempotent, 1, '2026-08-09 09:02:00').accountRefs, []);
+  assert.equal((idempotent.prepare('SELECT COUNT(*) AS count FROM hermes_bindings WHERE user_id=1').get() as { count: number }).count, 0);
+  idempotent.prepare("INSERT INTO hermes_bindings(user_id,status,generation,updated_at) VALUES (1,'unbound',7,'2026-08-09 09:00:00')").run();
+  removeOwnedHermesBinding(idempotent, 1, '2026-08-09 09:02:00'); removeOwnedHermesBinding(idempotent, 1, '2026-08-09 09:03:00');
+  assert.equal((idempotent.prepare('SELECT generation FROM hermes_bindings WHERE user_id=1').get() as { generation: number }).generation, 7);
 });
 
 test('legacy active 绑定迁移后仅提示重绑；新账号激活前不改旧任务，成功后原子切换', () => {

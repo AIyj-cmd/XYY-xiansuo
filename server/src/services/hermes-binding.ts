@@ -206,6 +206,33 @@ export function disableHermesBinding(database: DatabaseSync, userId: number, now
   }
 }
 
+/** Remove only one owner's Hermes binding.  Provider retirement is deliberately
+ * returned for the route to perform after this durable fail-closed commit. */
+export function removeOwnedHermesBinding(database: DatabaseSync, userId: number, now: string): { accountRefs: string[] } {
+  database.exec('BEGIN IMMEDIATE;');
+  try {
+    const refs = new Set<string>();
+    const binding = database.prepare('SELECT status,account_ref,prepared_account_ref,prepared_lifecycle FROM hermes_bindings WHERE user_id=?').get(userId) as { status: string; account_ref: string | null; prepared_account_ref: string | null; prepared_lifecycle: string | null } | undefined;
+    if (binding?.status === 'disabled') throw Object.assign(new Error('绑定已被管理员停用'), { code: 'HERMES_BINDING_DISABLED' });
+    if (binding?.status === 'active' && binding.account_ref) refs.add(binding.account_ref);
+    if (binding?.prepared_lifecycle === 'prepared' && binding.prepared_account_ref) refs.add(binding.prepared_account_ref);
+    const attempts = database.prepare(`SELECT account_ref FROM hermes_login_attempts WHERE user_id=? AND status IN ('waiting','scanned','awaiting_context','active')`).all(userId) as Array<{ account_ref: string }>;
+    for (const attempt of attempts) refs.add(attempt.account_ref);
+    database.prepare(`UPDATE hermes_bindings SET status='unbound',generation=generation+1,account_ref=NULL,target_fingerprint=NULL,peer_fingerprint=NULL,active_activation_id_hash=NULL,
+      binding_code_hash=NULL,binding_code_expires_at=NULL,last_code_issued_at=NULL,prepared_generation=NULL,prepared_account_ref=NULL,prepared_target_fingerprint=NULL,prepared_lifecycle=NULL,
+      prepared_code_hash=NULL,prepared_peer_fingerprint=NULL,prepared_activation_id=NULL,prepared_at=NULL,updated_at=? WHERE user_id=? AND status<>'unbound'`).run(now, userId);
+    database.prepare(`UPDATE notification_logs SET status='cancelled',cancellation_reason='binding_removed',cancelled_at=?,retain_until=datetime(?, '+180 days'),lease_token=NULL,lease_owner=NULL,lease_until=NULL,updated_at=?,row_version=row_version+1
+      WHERE channel='hermes' AND recipient_user_id=? AND status IN ('pending','retry_wait','sending')`).run(now, now, now, userId);
+    database.prepare(`UPDATE hermes_login_attempts SET status='cancelled',terminal_at=?,context_ready_at=NULL,activation_id_hash=NULL,error_code=NULL,updated_at=?
+      WHERE user_id=? AND status IN ('waiting','scanned','awaiting_context','active')`).run(now, now, userId);
+    database.exec('COMMIT;');
+    return { accountRefs: [...refs] };
+  } catch (error) {
+    try { database.exec('ROLLBACK;'); } catch { /* preserve original failure */ }
+    throw error;
+  }
+}
+
 /** Validate the HMAC only. Durable nonce consumption is a separate DB gate. */
 export function verifyHermesInternalSignature(secret: string, method: string, path: string, timestamp: string | undefined, nonce: string | undefined, rawBody: string, signature: string | undefined, now = Date.now()): boolean {
   if (!timestamp || !nonce || !signature || !/^\d{13}$/.test(timestamp) || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || Math.abs(now - Number(timestamp)) > 60_000) return false;

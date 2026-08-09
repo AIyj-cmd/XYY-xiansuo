@@ -211,3 +211,48 @@ test('Hermes QR 页面取消后停止轮询', async ({ page }) => {
   await page.getByTestId('hermes-qr-cancel').click(); await expect.poll(() => deletes).toBe(1);
   await page.waitForTimeout(2_300); expect(polls).toBe(0);
 });
+
+test('Hermes 已绑定页二次确认后才解除，取消不发请求且成功恢复未绑定', async ({ page }) => {
+  let bindingStatus: 'active' | 'unbound' = 'active'; let removes = 0;
+  await page.route('**/api/hermes-binding', async route => {
+    if (route.request().method() === 'DELETE') { removes += 1; bindingStatus = 'unbound'; return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, msg: 'ok', data: { status: 'unbound' } }) }); }
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, msg: 'ok', data: { status: bindingStatus, generation: bindingStatus === 'active' ? 3 : 4, expires_at: null, mode: 'per_user_qr' } }) });
+  });
+  await login(page, ADMIN); await page.goto(`${baseUrl}/pages/hermes-binding/index`);
+  await expect(page.getByTestId('hermes-binding-remove')).toBeVisible(); await expect(page.getByTestId('hermes-qr-create')).toHaveCount(0);
+  await page.getByTestId('hermes-binding-remove').click(); await expect(page.getByText('解除后将停止该机器人的通知，并需要重新绑定才能恢复。')).toBeVisible();
+  await page.getByText('取消', { exact: true }).last().click(); await page.waitForTimeout(100); expect(removes).toBe(0);
+  await page.getByTestId('hermes-binding-remove').click(); await page.getByText('解除绑定', { exact: true }).click(); await expect.poll(() => removes).toBe(1);
+  await expect(page.getByText('未绑定', { exact: true })).toBeVisible(); await expect(page.getByTestId('hermes-qr-create')).toBeVisible();
+});
+
+test('Hermes 解除请求失败时保持已绑定且不显示生成二维码', async ({ page }) => {
+  let removes = 0;
+  await page.route('**/api/hermes-binding', async route => {
+    if (route.request().method() === 'DELETE') { removes += 1; return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ code: 1, msg: '内部错误', data: null }) }); }
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, msg: 'ok', data: { status: 'active', generation: 3, expires_at: null, mode: 'per_user_qr' } }) });
+  });
+  await login(page, MEMBER); await page.goto(`${baseUrl}/pages/hermes-binding/index`);
+  await page.getByTestId('hermes-binding-remove').click(); await page.getByText('解除绑定', { exact: true }).click(); await expect.poll(() => removes).toBe(1);
+  await expect(page.getByText('已绑定', { exact: true })).toBeVisible(); await expect(page.getByTestId('hermes-binding-remove')).toBeVisible(); await expect(page.getByTestId('hermes-qr-create')).toHaveCount(0);
+});
+
+test('Hermes 二次确认及请求进行中全程禁用按钮，双击不重复 DELETE', async ({ page }) => {
+  let removes = 0; let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/hermes-binding', async route => {
+    if (route.request().method() === 'DELETE') { removes += 1; await held; return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, msg: 'ok', data: { status: 'unbound' } }) }); }
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, msg: 'ok', data: { status: 'active', generation: 3, expires_at: null, mode: 'per_user_qr' } }) });
+  });
+  await login(page, MEMBER); await page.goto(`${baseUrl}/pages/hermes-binding/index`);
+  const remove = page.getByTestId('hermes-binding-remove'); await remove.click();
+  await expect(remove).toHaveAttribute('disabled', 'true'); await remove.click({ force: true });
+  await page.getByText('解除绑定', { exact: true }).click(); await expect.poll(() => removes).toBe(1);
+  await expect(remove).toHaveAttribute('disabled', 'true'); await remove.click({ force: true }); await page.waitForTimeout(100); expect(removes).toBe(1);
+  release(); await expect(page.getByTestId('hermes-qr-create')).toBeVisible();
+});
+
+test('Hermes 旧绑定需重绑时只允许解除，不生成并行二维码', async ({ page }) => {
+  await page.route('**/api/hermes-binding', async route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, msg: 'ok', data: { status: 'rebind_required', generation: 3, expires_at: null, mode: 'per_user_qr' } }) }));
+  await login(page, MEMBER); await page.goto(`${baseUrl}/pages/hermes-binding/index`);
+  await expect(page.getByText('旧绑定需重新绑定', { exact: true })).toBeVisible(); await expect(page.getByTestId('hermes-binding-remove')).toBeVisible(); await expect(page.getByTestId('hermes-qr-create')).toHaveCount(0);
+});

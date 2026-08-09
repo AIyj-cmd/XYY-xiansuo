@@ -4,11 +4,12 @@
 
 - 追加唯一迁移 `009`（未改 `001`–`008`）：引入全局唯一活动的 `hermes_login_attempts`、独立 `account_ref`/target 指纹/prepared 生命周期及 notification outbox 的 `recipient_account_ref` 快照。旧 `008` 共享账号 active 与 pending 历史完全保留；`account_ref IS NULL` 仅在公开状态派生为 `rebind_required`，旧路径不自动发送，成功取得新账号上下文后才原子切换并取消旧代次待发。
 - H5 改为认证用户创建、恢复、取消自己的五分钟二维码 attempt；二维码只经 `Cache-Control: no-store` API 的受限 data URL 返回。QR token/payload 仅驻留 manager 进程内存，不进入 vault、SQLite、日志或静态制品。扫码后显示一次性 `确认 <activationId>`，未收到新 Bot 的精确私聊上下文绝不 active 或发送。
+- active/rebind_required 用户只显示“解除机器人”而不再显示生成二维码；自助解绑经二次确认，在一个 owner-only 事务中递增 generation、清除绑定引用并取消本人 live attempt/未完成 Hermes 任务，提交后 best-effort 退役 manager account。确认弹窗与请求全程使用同一互斥 guard，取消或失败保留原绑定页面。
 - 新增 loopback-only Hermes account manager：固定 v2026.8.3 仅调用 `get_bot_qrcode`/`get_qrcode_status` 底层原语，明确不调用 `qr_login`；精确归一化上游 `bot_token/baseurl` 字段，未知状态、凭据缺失和非固定 provider/redirect host 均失败关闭。二维码先在内存渲染，`qrcode` 不可用时不写入 attempt；凭据仅进入仓库外 0700、0600、flock、原子完整性加密 vault。每个 accountRef 独立 cursor/poll/target/context，错误账号、目标或命令零网络发送。
 - Gateway、Worker、Channel 和 overlay 现在将 `userId + generation + accountRef` 作为不可拆分三元组；vault 缺失、prepared/stale/swapped/retired 条目一律永久失败，无默认账号、peer fallback、tokenless 或重试发送。用户停用在 DB 事务内取消 attempt/待发任务，请求返回前同步尝试退役 manager account，manager 再以周期性精确 activation 复核覆盖暂时不可达窗口。
 - 新增 manager fake provider、migration 008→009、attempt TTL/所有权/全局锁/上下文门槛和精确路由离线测试。默认所有 Hermes/worker/live 开关仍为 `false`；本轮未登录、扫码、轮询真实账号或发送。
 - 复核生产依赖 `npm audit --omit=dev`：现有 R-1 仍报告 19 个 high、0 critical（Fastify/AJV/ExcelJS 传递链）；本范围未升级或修改依赖锁文件。
-- 验收阶段关闭生命周期与真实上游兼容缺口：prepared 超 TTL 会清除凭据并退役；回调丢响应后使用已持久 context 重放同一 activation；active 重放重新核验 activationId/target/generation/accountRef；重绑在单次 flock/原子 vault 替换内退役同用户旧 live account 并激活新账号；固定上游确认字段、扫码状态、host 和 QR 渲染依赖均有失败关闭回归。最终 Server 160/160、Gateway 59/59、overlay 29/29、H5 10/10。
+- 验收阶段关闭生命周期与真实上游兼容缺口：prepared 超 TTL 会清除凭据并退役；回调丢响应后使用已持久 context 重放同一 activation；active 重放重新核验 activationId/target/generation/accountRef；重绑在单次 flock/原子 vault 替换内退役同用户旧 live account 并激活新账号；固定上游确认字段、扫码状态、host 和 QR 渲染依赖均有失败关闭回归；自助解绑补齐确认弹窗等待期防重复。最终 Server 162/162、Gateway 59/59、overlay 30/30、H5 14/14。
 
 ## Unreleased — Hermes 1–10 用户网站绑定与定向通知（2026-08-08）
 
