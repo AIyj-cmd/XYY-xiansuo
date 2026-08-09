@@ -116,6 +116,24 @@ test.afterAll(async () => {
   if (tempDir) await rm(tempDir, { recursive: true, force: true });
 });
 
+test('H5 在 CSP 下正常启动，浏览器未报告 CSP 违规', async ({ page }) => {
+  const cspErrors: string[] = [];
+  page.on('console', message => {
+    if (message.type() === 'error' && /content security policy|csp|violat(?:es|ion)/i.test(message.text())) {
+      cspErrors.push(message.text());
+    }
+  });
+  page.on('pageerror', error => {
+    if (/content security policy|csp|violat(?:es|ion)/i.test(error.message)) cspErrors.push(error.message);
+  });
+
+  const response = await page.goto(`${baseUrl}/pages/login/index`);
+  expect(response?.headers()['content-security-policy']).toContain("script-src 'self'");
+  expect(response?.headers()['content-security-policy']).toContain("style-src 'self' 'unsafe-inline'");
+  await expect(page.getByText('账号登录')).toBeVisible();
+  expect(cspErrors).toEqual([]);
+});
+
 test('管理员登录、列表、深链刷新与负责人变更', async ({ page }) => {
   await login(page, ADMIN);
   await expect(page.getByText('H5运行测试联系人').first()).toBeVisible();
