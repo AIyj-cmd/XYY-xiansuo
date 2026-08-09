@@ -3,6 +3,8 @@
 # 使用方法：bash scripts/backup.sh
 # crontab 示例（每天 02:00 执行）：
 # 0 2 * * * cd /path/to/project && bash scripts/backup.sh >> /var/log/xiansuo-backup.log 2>&1
+set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 与服务一致：未设置时备份默认库；生产环境应传入绝对 DB_PATH。
@@ -14,6 +16,7 @@ TMP_BACKUP="$BACKUP_FILE.tmp"
 KEEP_DAYS=7
 
 mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
 
 if [ ! -f "$DB_FILE" ]; then
   echo "[$(date)] 数据库文件不存在: $DB_FILE"
@@ -22,7 +25,9 @@ fi
 
 # SQLite 在线备份能在服务仍有读写时生成一致快照，比直接复制 WAL 数据库可靠。
 sqlite3 "$DB_FILE" ".backup '$TMP_BACKUP'"
+chmod 600 "$TMP_BACKUP"
 mv "$TMP_BACKUP" "$BACKUP_FILE"
+chmod 600 "$BACKUP_FILE"
 echo "[$(date)] 备份完成: $BACKUP_FILE"
 
 # 保留最近 7 份

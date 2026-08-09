@@ -18,13 +18,6 @@ export async function initializeAdmin(db: DatabaseSync, logger: StartupLogger = 
     'INSERT INTO users (username, name, password_hash, role) VALUES (?,?,?,?)',
   ).run(identity.username, identity.name, hash, 'admin');
 
-  logger.log('======================================================');
-  logger.log('首次启动：已自动创建管理员账号');
-  logger.log(`用户名: ${identity.username}  初始密码: ${initialAdmin.password}`);
-  if (initialAdmin.generated) {
-    logger.log('未设置 ADMIN_INITIAL_PASSWORD，以上密码为随机生成且只显示一次');
-  }
-  logger.log('请登录后立即修改密码！');
-  logger.log('======================================================');
+  logger.log(`首次启动：已创建管理员账号 ${identity.username}；请使用受控环境变量中的初始密码登录后立即修改。`);
   return true;
 }

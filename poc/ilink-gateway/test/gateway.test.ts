@@ -25,7 +25,11 @@ import { publicSession } from '../src/cli/official-session-status.js'
 import { SYNTHETIC_MESSAGE, assertMessagePolicy } from '../src/message-policy.js'
 import noReplyPlugin from '../openclaw-plugins/xiansuo-no-reply/index.mjs'
 
-function directory(): string { const value = mkdtempSync(join(tmpdir(), 'xiansuo-ilink-')); chmodSync(value, 0o700); return value }
+function directory(): string {
+  const privateRoot = process.env.XIANSUO_TEST_HERMES_PRIVATE_ROOT
+  if (!privateRoot) throw new Error('XIANSUO_TEST_HERMES_PRIVATE_ROOT is required for Hermes path-security tests')
+  const value = mkdtempSync(join(privateRoot, 'xiansuo-ilink-')); chmodSync(value, 0o700); return value
+}
 function secretFile(dir: string): string { const file = join(dir, 'gateway.secret'); writeFileSync(file, 'a'.repeat(48), { mode: 0o600 }); chmodSync(file, 0o600); return file }
 function recipientMapFile(dir: string, mapping: unknown): string { const file = join(dir, 'recipients.json'); writeFileSync(file, JSON.stringify(mapping), { mode: 0o600 }); chmodSync(file, 0o600); return file }
 function openclawConfigPath(dir: string): string { const parent = join(dir, 'openclaw-config'); mkdirSync(parent, { recursive: true, mode: 0o700 }); chmodSync(parent, 0o700); return join(parent, 'openclaw.json') }
@@ -36,9 +40,12 @@ function hermesConfig(dir: string, extra: Record<string, string> = {}): GatewayC
   const overlayConfig = join(dir, 'hermes-config.json'); writeFileSync(overlayConfig, JSON.stringify({ host: '127.0.0.1', port: 38117, vault_dir: join(dir, 'manager-vault'), vault_key: 'A'.repeat(44), manager_secret: 'm'.repeat(32), server_url: 'http://127.0.0.1:3000', internal_secret: 'i'.repeat(32), enabled: false }), { mode: 0o600 }); chmodSync(overlayConfig, 0o600)
   mkdirSync(join(dir, 'manager-vault'), { recursive: true, mode: 0o700 }); chmodSync(join(dir, 'manager-vault'), 0o700)
   const overlayState = join(dir, 'hermes-state'); mkdirSync(overlayState, { recursive: true, mode: 0o700 }); chmodSync(overlayState, 0o700)
+  const hermesParent = join(dir, 'hermes-parent'); mkdirSync(hermesParent, { recursive: true, mode: 0o700 }); chmodSync(hermesParent, 0o700)
+  const hermesSource = join(hermesParent, 'hermes-source'); mkdirSync(hermesSource, { recursive: true, mode: 0o700 }); chmodSync(hermesSource, 0o700)
+  const hermesPython = join(dir, 'hermes-python'); writeFileSync(hermesPython, '#!/bin/sh\nexit 0\n', { mode: 0o700 }); chmodSync(hermesPython, 0o700)
   return loadConfig({
     ILINK_POC_TRANSPORT: 'hermes', ILINK_POC_LIVE_ENABLED: 'true', ILINK_HERMES_TRANSPORT_ENABLED: 'true',
-    ILINK_POC_STATE_DIR: dir, ILINK_GATEWAY_PORT: '38116', ILINK_GATEWAY_SECRET_FILE: secretFile(dir), ILINK_HERMES_SOURCE_DIR: dir,
+    ILINK_POC_STATE_DIR: dir, ILINK_GATEWAY_PORT: '38116', ILINK_GATEWAY_SECRET_FILE: secretFile(dir), ILINK_HERMES_PRIVATE_ROOT: process.env.XIANSUO_TEST_HERMES_PRIVATE_ROOT!, ILINK_HERMES_SOURCE_DIR: hermesSource, ILINK_HERMES_PYTHON: hermesPython,
     ILINK_HERMES_CONFIG_FILE: overlayConfig, ILINK_HERMES_STATE_DIR: overlayState,
     ...extra
   })
@@ -66,6 +73,39 @@ test('Hermes Gateway safety gate still rejects a group-writable repository launc
   }
 })
 
+test('Hermes config rejects temporary paths, repository paths, links, writable ancestors and source-local Python', () => {
+  const dir = directory(); const root = process.env.XIANSUO_TEST_HERMES_PRIVATE_ROOT!
+  try {
+    assert.throws(() => hermesConfig(dir, { ILINK_HERMES_SOURCE_DIR: '/tmp/hermes-agent-v2026.8.3' }), /临时目录/)
+    assert.throws(() => hermesConfig(dir, { ILINK_HERMES_SOURCE_DIR: join(process.cwd(), '..') }), /仓库/)
+    const linked = join(root, `linked-${randomUUID()}`); symlinkSync(dir, linked)
+    assert.throws(() => hermesConfig(dir, { ILINK_HERMES_SOURCE_DIR: linked }), /符号链接/)
+    const sourceParent = join(dir, 'hermes-parent'); const secure = hermesConfig(dir); chmodSync(sourceParent, 0o775)
+    assert.throws(() => hermesGatewayReadiness(secure), /祖先/)
+    chmodSync(sourceParent, 0o700)
+    const source = join(sourceParent, 'hermes-source'); const localPython = join(source, 'source-python'); writeFileSync(localPython, '#!/bin/sh\n', { mode: 0o700 }); chmodSync(localPython, 0o700)
+    assert.throws(() => hermesConfig(dir, { ILINK_HERMES_PYTHON: localPython, ILINK_HERMES_SOURCE_DIR: source }), /不得位于 Hermes 源码 checkout/)
+    assert.throws(() => hermesConfig(dir, { ILINK_HERMES_PYTHON: '/tmp/hermes-agent-v2026.8.3' }), /临时目录/)
+    rmSync(linked, { force: true })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('Hermes config accepts safe upper ancestors and rejects writable private-root ancestors', () => {
+  const dir = directory(); const base = process.env.XIANSUO_TEST_HERMES_PRIVATE_ROOT!; const outer = join(base, `outer-${randomUUID()}`)
+  try {
+    const privateRoot = join(outer, 'private'); const source = join(privateRoot, 'source'); const python = join(privateRoot, 'python')
+    mkdirSync(outer, { recursive: true, mode: 0o755 }); chmodSync(outer, 0o755)
+    mkdirSync(source, { recursive: true, mode: 0o700 }); chmodSync(privateRoot, 0o700); chmodSync(source, 0o700)
+    writeFileSync(python, '#!/bin/sh\nexit 0\n', { mode: 0o700 }); chmodSync(python, 0o700)
+    const values = { ILINK_HERMES_PRIVATE_ROOT: privateRoot, ILINK_HERMES_SOURCE_DIR: source, ILINK_HERMES_PYTHON: python }
+    assert.doesNotThrow(() => hermesConfig(dir, values))
+    chmodSync(outer, 0o775)
+    assert.throws(() => hermesConfig(dir, values), /祖先/)
+    chmodSync(outer, 0o722)
+    assert.throws(() => hermesConfig(dir, values), /祖先/)
+  } finally { rmSync(outer, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('Hermes /livez and /readyz do not invoke an adapter or launcher', async () => {
   const dir = directory(); try {
     const cfg = hermesConfig(dir, { ILINK_POC_LIVE_ENABLED: 'false', ILINK_HERMES_TRANSPORT_ENABLED: 'false' })
@@ -89,7 +129,7 @@ test('Hermes Gateway launcher clears inherited DB, JWT and DeepSeek values befor
       XIANSUO_HERMES_GATEWAY_NODE_BIN: fakeNode,
       ILINK_POC_TRANSPORT: 'hermes', ILINK_GATEWAY_HOST: '127.0.0.1', ILINK_GATEWAY_PORT: '38116', ILINK_POC_LIVE_ENABLED: 'false', ILINK_HERMES_TRANSPORT_ENABLED: 'false',
       ILINK_REQUEST_TIMEOUT_MS: '30000', ILINK_SESSION_CHECK_TIMEOUT_MS: '5000', ILINK_POC_STATE_DIR: join(dir, 'ledger'), ILINK_GATEWAY_SECRET_FILE: join(dir, 'secret'),
-      ILINK_HERMES_SOURCE_DIR: join(dir, 'source'), ILINK_HERMES_CONFIG_FILE: join(dir, 'manager.json'), ILINK_HERMES_STATE_DIR: join(dir, 'state'),
+      ILINK_HERMES_PRIVATE_ROOT: process.env.XIANSUO_TEST_HERMES_PRIVATE_ROOT!, ILINK_HERMES_SOURCE_DIR: join(dir, 'source'), ILINK_HERMES_PYTHON: fakeNode, ILINK_HERMES_CONFIG_FILE: join(dir, 'manager.json'), ILINK_HERMES_STATE_DIR: join(dir, 'state'),
     }, encoding: 'utf8' })
     assert.equal(result.status, 0); const environment = readFileSync(capture, 'utf8'); assert.equal(environment.includes('DB_PATH='), false); assert.equal(environment.includes('JWT_SECRET='), false); assert.equal(environment.includes('DEEPSEEK_API_KEY='), false)
     assert.equal(readFileSync(args, 'utf8').trim(), join(process.cwd(), 'dist/server.js'))
@@ -753,7 +793,7 @@ test('Hermes command runner SIGKILLs and reaps timeout or oversized-output child
     const marker = join(dir, `${mode}.pid`)
     const program = mode === 'timeout'
       ? `process.on('SIGTERM',()=>{});require('fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000)`
-      : `process.on('SIGTERM',()=>{});require('fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));process.stdout.write('x'.repeat(9000));setInterval(()=>{},1000)`
+      : `process.on('SIGTERM',()=>{});require('fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));process.stdout.write('x'.repeat(70000));setInterval(()=>{},1000)`
     const resultPromise = hermesCommandRunner.run(process.execPath, ['-e', program], '{}', mode === 'timeout' ? 500 : 2_000, process.env, new AbortController().signal)
     await waitForMarker(marker)
     const result = await resultPromise

@@ -57,6 +57,9 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   const app = Fastify({
     logger: false,
+    // Forwarded headers are accepted only when the directly connected proxy is
+    // loopback. Public clients cannot forge their source address.
+    trustProxy: (address) => address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1',
   });
 
   // 对 API、H5、上传文件和错误响应统一生效。HSTS 只由 HTTPS Nginx

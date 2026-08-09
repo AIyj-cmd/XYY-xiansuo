@@ -45,6 +45,8 @@ const configSchema = z.object({
   ILINK_GATEWAY_RATE_LIMIT_PER_MINUTE: positiveInt(1, 120, 30),
   ILINK_HERMES_TRANSPORT_ENABLED: bool,
   ILINK_HERMES_SOURCE_DIR: absolutePath.optional(),
+  ILINK_HERMES_PYTHON: absolutePath.optional(),
+  ILINK_HERMES_PRIVATE_ROOT: absolutePath.optional(),
   ILINK_HERMES_CONFIG_FILE: absolutePath.optional(),
   ILINK_HERMES_STATE_DIR: absolutePath.optional(),
   // Hermes has no peer map or separate CLI vault argument: the manager config
@@ -65,6 +67,9 @@ export type GatewayConfig = z.output<typeof configSchema> & {
   gatewaySecret: string
   recipientMap?: ReadonlyMap<number, { target: string; enabled: boolean }>
   hermesSourceDir?: string
+  hermesPython?: string
+  hermesPrivateRoot?: string
+  hermesPathIdentity?: Readonly<{ privateRoot: string; source: string; python: string }>
   hermesConfigPath?: string
   hermesStateDir?: string
   hermesLauncherPath?: string
@@ -113,19 +118,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
 }
 
 function loadHermesConfig(parsed: z.output<typeof configSchema>, stateDir: string, gatewaySecret: string, warnings: string[]): GatewayConfig {
-  if (!parsed.ILINK_HERMES_SOURCE_DIR || !parsed.ILINK_HERMES_CONFIG_FILE || !parsed.ILINK_HERMES_STATE_DIR) throw new Error('iLink Gateway 配置无效：Hermes transport 缺少固定源码、配置或状态路径')
+  if (!parsed.ILINK_HERMES_PRIVATE_ROOT || !parsed.ILINK_HERMES_SOURCE_DIR || !parsed.ILINK_HERMES_PYTHON || !parsed.ILINK_HERMES_CONFIG_FILE || !parsed.ILINK_HERMES_STATE_DIR) throw new Error('iLink Gateway 配置无效：Hermes transport 缺少私有根、固定源码、Python、配置或状态路径')
   // The Gateway ledger is itself persistent Hermes-mode state.  Unlike the
   // long-standing OpenClaw compatibility path, Hermes must never put it in
   // the checkout (or reach it through an ancestor link).
   requirePrivateExternalStateDirectory(stateDir, 'ILINK_POC_STATE_DIR')
-  const hermesSourceDir = requireSafeDirectory(parsed.ILINK_HERMES_SOURCE_DIR, 'ILINK_HERMES_SOURCE_DIR', true)
+  const hermesPrivateRoot = requireHermesPrivateRoot(parsed.ILINK_HERMES_PRIVATE_ROOT)
+  const hermesSourceDir = requireHermesSourceDirectory(parsed.ILINK_HERMES_SOURCE_DIR, hermesPrivateRoot)
+  const hermesPython = requireHermesPython(parsed.ILINK_HERMES_PYTHON, hermesPrivateRoot, hermesSourceDir)
   const hermesConfigPath = requirePrivateExternalFile(parsed.ILINK_HERMES_CONFIG_FILE, 'ILINK_HERMES_CONFIG_FILE')
   const hermesStateDir = requireSafeDirectory(parsed.ILINK_HERMES_STATE_DIR, 'ILINK_HERMES_STATE_DIR', true, true)
   ensurePrivateDirectory(hermesStateDir, 'ILINK_HERMES_STATE_DIR')
   const hermesLauncherPath = join(repositoryRoot, 'poc/hermes-weixin-transport/run-hermes-weixin-transport.sh')
   requireRepositoryLauncher(hermesLauncherPath)
   const hermesManagerEnabled = validateHermesManagerConfig(hermesConfigPath)
-  return { ...parsed, stateDir, gatewaySecret, hermesSourceDir, hermesConfigPath, hermesStateDir, hermesLauncherPath, hermesManagerEnabled, openclawConfigPath: '', deprecatedWarnings: warnings }
+  const hermesPathIdentity = captureHermesPathIdentity(hermesPrivateRoot, hermesSourceDir, hermesPython)
+  return { ...parsed, stateDir, gatewaySecret, hermesPrivateRoot, hermesSourceDir, hermesPython, hermesPathIdentity, hermesConfigPath, hermesStateDir, hermesLauncherPath, hermesManagerEnabled, openclawConfigPath: '', deprecatedWarnings: warnings }
 }
 
 /** Read a private manager config structurally only. It never contacts manager. */
@@ -146,9 +154,13 @@ function validateHermesManagerConfig(path: string): boolean {
  * health must not poll, spawn its launcher, or contact a manager/provider. */
 export function hermesGatewayReadiness(config: GatewayConfig): Record<string, unknown> {
   if (config.ILINK_POC_TRANSPORT !== 'hermes') return { service: 'xiansuo-hermes-gateway', status: 'not_ready', transport: config.ILINK_POC_TRANSPORT }
-  if (!config.hermesLauncherPath || !config.hermesConfigPath || !config.hermesStateDir || config.ILINK_GATEWAY_HOST !== '127.0.0.1' || config.ILINK_GATEWAY_PORT !== 38116) throw new Error('Hermes Gateway readiness 配置无效')
+  if (!config.hermesLauncherPath || !config.hermesPrivateRoot || !config.hermesSourceDir || !config.hermesPython || !config.hermesPathIdentity || !config.hermesConfigPath || !config.hermesStateDir || config.ILINK_GATEWAY_HOST !== '127.0.0.1' || config.ILINK_GATEWAY_PORT !== 38116) throw new Error('Hermes Gateway readiness 配置无效')
   requirePrivateExternalStateDirectory(config.stateDir, 'ILINK_POC_STATE_DIR')
   requirePrivateExternalFile(config.hermesConfigPath, 'ILINK_HERMES_CONFIG_FILE')
+  const privateRoot = requireHermesPrivateRoot(config.hermesPrivateRoot)
+  const source = requireHermesSourceDirectory(config.hermesSourceDir, privateRoot)
+  const python = requireHermesPython(config.hermesPython, privateRoot, source)
+  assertHermesPathIdentity(config.hermesPathIdentity, privateRoot, source, python)
   requireSafeDirectory(config.hermesStateDir, 'ILINK_HERMES_STATE_DIR', true)
   requireRepositoryLauncher(config.hermesLauncherPath)
   return { service: 'xiansuo-hermes-gateway', status: 'ready', transport: 'hermes', liveEnabled: config.ILINK_POC_LIVE_ENABLED, transportEnabled: config.ILINK_HERMES_TRANSPORT_ENABLED, managerEnabled: config.hermesManagerEnabled === true, checks: { config: 'ok', ledger: 'ok', launcher: 'ok', managerConfig: 'ok', timeout: 'ok' } }
@@ -213,6 +225,59 @@ function requirePrivateExternalFile(path: string, variable: string): string {
   try { state = lstatSync(resolved); actual = realpathSync(resolved) } catch { throw new Error(`${variable} 必须是存在的仓库外文件`) }
   if (!state.isFile() || state.isSymbolicLink() || state.nlink !== 1 || (state.mode & 0o777) !== 0o600 || state.uid !== currentUid() || actual !== resolved) throw new Error(`${variable} 必须是当前用户拥有、权限精确 0600、无链接的仓库外普通文件`)
   return resolved
+}
+const systemTemporaryRoots = ['/tmp', '/var/tmp', '/dev/shm']
+function isUnder(pathname: string, root: string): boolean { return pathname === root || pathname.startsWith(`${root}${sep}`) }
+function rejectHermesUntrustedLocation(pathname: string, variable: string): void {
+  if (isUnder(pathname, repositoryRoot) || systemTemporaryRoots.some((root) => isUnder(pathname, root))) throw new Error(`${variable} 不得位于仓库或系统临时目录`)
+}
+function requireHermesPrivateRoot(value: string): string {
+  const resolved = resolve(value); let state: ReturnType<typeof lstatSync>; let actual: string
+  try { state = lstatSync(resolved); actual = realpathSync(resolved) } catch { throw new Error('ILINK_HERMES_PRIVATE_ROOT 必须是存在的私有目录') }
+  rejectHermesUntrustedLocation(actual, 'ILINK_HERMES_PRIVATE_ROOT')
+  if (!state.isDirectory() || state.isSymbolicLink() || actual !== resolved || state.uid !== currentUid() || (state.mode & 0o777) !== 0o700) throw new Error('ILINK_HERMES_PRIVATE_ROOT 必须由当前用户拥有、非链接且权限精确0700')
+  requireHermesRootAncestors(resolved, 'ILINK_HERMES_PRIVATE_ROOT')
+  return resolved
+}
+function requireHermesRootAncestors(privateRoot: string, variable: string): void {
+  for (let cursor = privateRoot;; cursor = dirname(cursor)) {
+    let state: ReturnType<typeof lstatSync>
+    try { state = lstatSync(cursor) } catch { throw new Error(`${variable} 祖先目录不可用`) }
+    if (!state.isDirectory() || state.isSymbolicLink() || (state.uid !== currentUid() && state.uid !== 0) || (state.mode & 0o022) !== 0) throw new Error(`${variable} 的祖先目录不安全`)
+    if (cursor === dirname(cursor)) return
+  }
+}
+function hermesPathIdentity(pathname: string): string {
+  const state = lstatSync(pathname)
+  return `${state.dev}:${state.ino}`
+}
+function captureHermesPathIdentity(privateRoot: string, source: string, python: string): Readonly<{ privateRoot: string; source: string; python: string }> {
+  return { privateRoot: hermesPathIdentity(privateRoot), source: hermesPathIdentity(source), python: hermesPathIdentity(python) }
+}
+function assertHermesPathIdentity(expected: Readonly<{ privateRoot: string; source: string; python: string }>, privateRoot: string, source: string, python: string): void {
+  const actual = captureHermesPathIdentity(privateRoot, source, python)
+  if (actual.privateRoot !== expected.privateRoot || actual.source !== expected.source || actual.python !== expected.python) throw new Error('Hermes 路径在校验期间发生变化')
+}
+function requireHermesDescendant(value: string, privateRoot: string, variable: string, directory: boolean, exactMode?: number, allowRootOwner = false): string {
+  const resolved = resolve(value); let state: ReturnType<typeof lstatSync>; let actual: string
+  try { state = lstatSync(resolved); actual = realpathSync(resolved) } catch { throw new Error(`${variable} 必须是存在的绝对非链接路径`) }
+  rejectHermesUntrustedLocation(actual, variable)
+  if (!isUnder(actual, privateRoot) || actual !== resolved) throw new Error(`${variable} 必须位于 ILINK_HERMES_PRIVATE_ROOT 内且不得经过符号链接`)
+  if ((directory && !state.isDirectory()) || (!directory && !state.isFile()) || state.isSymbolicLink() || (state.uid !== currentUid() && (!allowRootOwner || state.uid !== 0)) || (!directory && state.nlink !== 1)) throw new Error(`${variable} 类型、属主或链接不安全`)
+  if (exactMode !== undefined ? (state.mode & 0o777) !== exactMode : (state.mode & 0o022) !== 0) throw new Error(`${variable} 权限不安全`)
+  let cursor = directory ? actual : dirname(actual)
+  while (cursor !== privateRoot) {
+    const ancestor = lstatSync(cursor)
+    if (!ancestor.isDirectory() || ancestor.isSymbolicLink() || ancestor.uid !== currentUid() || (ancestor.mode & 0o022) !== 0) throw new Error(`${variable} 的私有根目录下祖先不安全`)
+    cursor = dirname(cursor)
+  }
+  return actual
+}
+function requireHermesSourceDirectory(value: string, privateRoot: string): string { return requireHermesDescendant(value, privateRoot, 'ILINK_HERMES_SOURCE_DIR', true, 0o700) }
+function requireHermesPython(value: string, privateRoot: string, sourceDir: string): string {
+  const python = requireHermesDescendant(value, privateRoot, 'ILINK_HERMES_PYTHON', false, undefined, true)
+  if ((lstatSync(python).mode & 0o100) === 0 || isUnder(python, sourceDir)) throw new Error('ILINK_HERMES_PYTHON 必须可执行且不得位于 Hermes 源码 checkout 内')
+  return python
 }
 
 /** Hermes-mode Gateway ledger roots are external, private and link-free. */

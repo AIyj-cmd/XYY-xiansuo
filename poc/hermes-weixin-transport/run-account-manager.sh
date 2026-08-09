@@ -8,11 +8,13 @@ set -euo pipefail
 readonly OVERLAY_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 : "${HERMES_SOURCE_DIR:?必须提供固定 Hermes 源码目录}"
 : "${HERMES_PYTHON:?必须提供固定 Hermes Python 路径}"
-readonly SAFE_PATH="${PATH:?PATH 不可用}"
+: "${HERMES_PRIVATE_ROOT:?必须提供私有根目录}"
+readonly SAFE_PATH="/usr/bin:/bin"
 
 exec env -i \
   PATH="$SAFE_PATH" \
   LANG="${LANG:-C.UTF-8}" \
+  HERMES_PRIVATE_ROOT="$HERMES_PRIVATE_ROOT" \
   HERMES_SOURCE_DIR="$HERMES_SOURCE_DIR" \
   HERMES_PYTHON="$HERMES_PYTHON" \
   "$OVERLAY_DIR/run-hermes-weixin-transport.sh" account-manager "$@"

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import type { AdapterDeliveryRequest, AdapterHealth, ChannelAdapter, ChannelDeliveryResult } from '../types.js'
 import type { GatewayConfig } from '../config.js'
 
-const MAX_CLI_OUTPUT_BYTES = 8 * 1024
+const MAX_CLI_OUTPUT_BYTES = 64 * 1024
 const TERM_GRACE_MS = 250
 
 export type HermesCommandResult = { exitCode: number | null; stdout: string; spawnError?: NodeJS.ErrnoException; timedOut?: boolean; aborted?: boolean; invalidOutput?: boolean }
@@ -33,16 +33,17 @@ export const hermesCommandRunner: HermesCommandRunner = {
       const abort = () => terminate({ exitCode: null, stdout: '', aborted: true })
       const timer = setTimeout(() => terminate({ exitCode: null, stdout: '', timedOut: true }), timeoutMs)
       if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true })
+      const totalOutputExceeded = () => stdoutBytes + stderrBytes > MAX_CLI_OUTPUT_BYTES
       child.stdout?.on('data', (chunk: Buffer) => {
         if (terminating) return
         stdoutBytes += chunk.length
-        if (stdoutBytes > MAX_CLI_OUTPUT_BYTES) terminate({ exitCode: null, stdout: '', invalidOutput: true })
+        if (totalOutputExceeded()) terminate({ exitCode: null, stdout: '', invalidOutput: true })
         else stdout += chunk.toString('utf8')
       })
       // Never propagate or log child stderr: it can contain sensitive upstream
       // diagnostics and is not part of this strict response contract.
-      child.stderr?.on('data', (chunk: Buffer) => { if (!terminating) { stderrBytes += chunk.length; if (stderrBytes > MAX_CLI_OUTPUT_BYTES) terminate({ exitCode: null, stdout: '', invalidOutput: true }) } })
-      child.on('error', (spawnError) => finish({ exitCode: null, stdout: '', spawnError }))
+      child.stderr?.on('data', (chunk: Buffer) => { if (!terminating) { stderrBytes += chunk.length; if (totalOutputExceeded()) terminate({ exitCode: null, stdout: '', invalidOutput: true }) } })
+      child.on('error', (spawnError) => { if (!terminating) terminating = { exitCode: null, stdout: '', spawnError } })
       child.on('close', (exitCode) => finish(terminating ?? { exitCode, stdout }))
       child.stdin?.on('error', () => terminate({ exitCode: null, stdout: '' }))
       try { child.stdin?.end(stdin, 'utf8') } catch { terminate({ exitCode: null, stdout: '' }) }
@@ -100,20 +101,21 @@ export class HermesAdapter implements ChannelAdapter {
   }
   async send(request: AdapterDeliveryRequest, signal: AbortSignal): Promise<ChannelDeliveryResult> {
     if (!this.config.ILINK_POC_LIVE_ENABLED || !this.config.ILINK_HERMES_TRANSPORT_ENABLED) return { status: 'permanent_failure', errorCode: 'ILINK_LIVE_DISABLED' }
-    if (!this.config.hermesLauncherPath || !this.config.hermesSourceDir || !this.config.hermesConfigPath || !this.config.hermesStateDir || !request.recipientUserId || !request.recipientBindingGeneration || !request.recipientAccountRef) return { status: 'result_unknown', errorCode: 'ILINK_SEND_RESULT_UNKNOWN' }
+    if (!this.config.hermesLauncherPath || !this.config.hermesPrivateRoot || !this.config.hermesSourceDir || !this.config.hermesPython || !this.config.hermesConfigPath || !this.config.hermesStateDir || !request.recipientUserId || !request.recipientBindingGeneration || !request.recipientAccountRef) return { status: 'result_unknown', errorCode: 'ILINK_SEND_RESULT_UNKNOWN' }
     const text = `${request.message.title}\n${request.message.body}`
     if (text.length > 2000) return { status: 'permanent_failure', errorCode: 'ILINK_MESSAGE_TOO_LONG' }
     const input = JSON.stringify({ userId: request.recipientUserId, generation: request.recipientBindingGeneration, accountRef: request.recipientAccountRef, text, idempotencyKey: request.idempotencyKey })
     // Do not inherit the Gateway/PM2 environment into the overlay child.  In
     // particular DB/JWT/DeepSeek values must never cross this process boundary.
     const environment: NodeJS.ProcessEnv = {
-      PATH: process.env.PATH, LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, TZ: process.env.TZ,
+      PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', TZ: 'Asia/Shanghai',
+      HERMES_PRIVATE_ROOT: this.config.hermesPrivateRoot,
       HERMES_SOURCE_DIR: this.config.hermesSourceDir,
       HERMES_HOME: this.config.hermesStateDir,
       HOME: this.config.hermesStateDir,
       XDG_CONFIG_HOME: this.config.hermesStateDir,
       XDG_DATA_HOME: this.config.hermesStateDir,
-      HERMES_PYTHON: '',
+      HERMES_PYTHON: this.config.hermesPython,
       PYTHONPATH: ''
     }
     const started = performance.now()

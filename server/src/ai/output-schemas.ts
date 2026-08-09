@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { containsSensitiveText } from './redaction.js';
 
 const safeText = (max: number) => z.string().min(1).max(max);
 export const scheduledFollowOutputSchema = z.object({
@@ -12,11 +13,10 @@ export const dailyReportOutputSchema = z.object({
 export type ScheduledFollowOutput = z.infer<typeof scheduledFollowOutputSchema>;
 export type DailyReportOutput = z.infer<typeof dailyReportOutputSchema>;
 
-const forbidden = [/(?:\+?86[- ]?)?1[3-9]\d{9}/, /(?:wxid[_-]?|微信(?:号)?\s*[:：]?\s*)[A-Za-z][A-Za-z0-9_-]{5,}/i, /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\./, /(?:sk|api)[_-]?[A-Za-z0-9]{16,}/i, /[A-Za-z0-9+/]{40,}={0,2}/];
 export function assertSafeAiOutput(value: unknown, maxBytes = 8192): void {
   const text = JSON.stringify(value);
   if (Buffer.byteLength(text, 'utf8') > maxBytes) throw Object.assign(new Error('AI 输出超过限制'), { code: 'AI_OUTPUT_REJECTED' });
-  if (forbidden.some((pattern) => pattern.test(text))) throw Object.assign(new Error('AI 输出包含敏感信息'), { code: 'AI_OUTPUT_REJECTED' });
+  if (containsSensitiveText(text)) throw Object.assign(new Error('AI 输出包含敏感信息'), { code: 'AI_OUTPUT_REJECTED' });
 }
 export function validateScheduledOutput(value: unknown, inputRefs: readonly string[]): ScheduledFollowOutput {
   const output = scheduledFollowOutputSchema.parse(value); assertSafeAiOutput(output);

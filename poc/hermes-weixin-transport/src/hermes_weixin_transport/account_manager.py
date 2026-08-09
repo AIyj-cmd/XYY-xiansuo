@@ -17,6 +17,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .security import ensure_state_directory, open_private_lock, require_private_file
+from .upstream_gate import VerifiedUpstream, load_verified_weixin
 
 _REF = re.compile(r"^hr_[A-Za-z0-9_-]{16,96}$")
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -136,10 +137,15 @@ class AccountVault:
 
 class HermesPrimitiveProvider:
     """Adapter over pinned v2026.8.3 primitives, with no upstream persistence."""
-    def __init__(self, source_root: Path):
-        import sys, importlib
-        if str(source_root) not in sys.path: sys.path.insert(0,str(source_root))
-        self.wx=importlib.import_module("gateway.platforms.weixin")
+    def __init__(self, source_root: VerifiedUpstream|Path):
+        if not isinstance(source_root, VerifiedUpstream):
+            # Offline unit tests may inject a module object; this never imports
+            # a mutable file. Production paths always take verify_upstream.
+            import sys
+            if "gateway.platforms.weixin" not in sys.modules:
+                from .upstream_gate import verify_upstream
+                source_root=verify_upstream(source_root)
+        self.wx=load_verified_weixin(source_root)
     async def create_qr(self) -> dict[str,str]:
         wx=self.wx; connector=wx._make_ssl_connector()
         try:
@@ -210,10 +216,10 @@ class AccountManager:
         self._qr: dict[str,tuple[str,str,str]]={}; self._runtime_lock=threading.RLock(); self._last_auth: dict[str,float]={}
     def livez(self)->dict[str,Any]:
         return {"service":"hermes-account-manager","status":"live","enabled":self.config.enabled}
-    def readyz(self, source_root:Path|None=None)->dict[str,Any]:
+    def readyz(self, source_root:Path|VerifiedUpstream|None=None)->dict[str,Any]:
         """Offline-only readiness.  Never touches the provider or internal API."""
         from .upstream_gate import verify_upstream
-        verify_upstream(source_root)
+        if not isinstance(source_root, VerifiedUpstream): verify_upstream(source_root)
         import qrcode  # noqa: F401 - QR rendering is a required local dependency.
         # Opening the vault verifies its private directory and encrypted state
         # format without starting reconciliation or any poll thread.

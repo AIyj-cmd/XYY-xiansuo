@@ -11,6 +11,8 @@ import stat
 import tempfile
 import threading
 import unittest
+import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -22,7 +24,7 @@ from hermes_weixin_transport.cli import _capture
 from hermes_weixin_transport.config import ConfigError, load_config
 from hermes_weixin_transport.state import StateError, TokenState
 from hermes_weixin_transport.transport import RequestError, SendRequest, deterministic_client_id, parse_send_request, send_once
-from hermes_weixin_transport.upstream_gate import UpstreamGateError, verify_upstream
+from hermes_weixin_transport.upstream_gate import UpstreamGateError, validate_runtime_paths, verify_upstream
 
 
 SOURCE = Path(os.environ.get("HERMES_SOURCE_DIR", "/tmp/hermes-agent-v2026.8.3"))
@@ -53,9 +55,60 @@ class TransportOverlayTests(unittest.TestCase):
 
     def test_01_gate_verifies_the_fixed_clean_upstream_before_import(self) -> None:
         source = verify_upstream(SOURCE)
-        self.assertEqual(source, SOURCE.resolve())
+        self.assertEqual(source.root, SOURCE.resolve())
         manifest = json.loads((OVERLAY / "UPSTREAM_MANIFEST.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["upstream"]["commit"], "3c27eb6234bf91b8ceee9e9071591b31e9b148cb")
+
+    def test_01b_runtime_paths_require_private_root_and_reject_temp_repo_link_modes_and_source_venv(self) -> None:
+        private_root = Path(os.environ["HERMES_PRIVATE_ROOT"])
+        fixture = private_root / f"path-fixture-{os.getpid()}"
+        source = fixture / "source"; parent = fixture / "secure"; python = parent / "python"
+        outer: Path | None = None
+        try:
+            fixture.mkdir(mode=0o700); fixture.chmod(0o700)
+            source.mkdir(mode=0o700); source.chmod(0o700)
+            parent.mkdir(mode=0o700); parent.chmod(0o700)
+            python.write_text("#!/bin/sh\nexit 0\n"); python.chmod(0o700)
+            self.assertEqual(validate_runtime_paths(source, python)[1:], (source, python))
+            marker = fixture / "safe-interpreter-ran"
+            python.write_text(f"#!/bin/sh\ntouch {marker}\nexit 0\n"); python.chmod(0o700)
+            env = {**os.environ, "HERMES_PRIVATE_ROOT": str(private_root), "HERMES_SOURCE_DIR": str(source), "HERMES_PYTHON": str(python)}
+            result = subprocess.run([str(OVERLAY / "run-hermes-weixin-transport.sh"), "--help"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            self.assertEqual(result.returncode, 0, "0700 Python must pass the shell mode expression")
+            self.assertTrue(marker.exists(), "safe launcher path must execute candidate Python once")
+            with self.assertRaises(UpstreamGateError): validate_runtime_paths(Path("/tmp/hermes-agent-v2026.8.3"), python)
+            with self.assertRaises(UpstreamGateError): validate_runtime_paths(OVERLAY, python)
+            linked = fixture / "linked-source"; os.symlink(source, linked)
+            with self.assertRaises(UpstreamGateError): validate_runtime_paths(linked, python)
+            source.chmod(0o775)
+            with self.assertRaises(UpstreamGateError): validate_runtime_paths(source, python)
+            source.chmod(0o700); fixture.chmod(0o775)
+            with self.assertRaises(UpstreamGateError): validate_runtime_paths(source, python)
+            fixture.chmod(0o700)
+            venv_python = source / ".venv-python"; venv_python.write_text("#!/bin/sh\nexit 0\n"); venv_python.chmod(0o700)
+            with self.assertRaises(UpstreamGateError): validate_runtime_paths(source, venv_python)
+            with self.assertRaises(UpstreamGateError): validate_runtime_paths(source, Path("/tmp/python"))
+            outer = private_root / f"outer-ancestor-{os.getpid()}"; nested_root = outer / "private"
+            nested_source = nested_root / "source"; nested_python = nested_root / "python"
+            outer.mkdir(mode=0o755); outer.chmod(0o755); nested_root.mkdir(mode=0o700); nested_root.chmod(0o700)
+            nested_source.mkdir(mode=0o700); nested_source.chmod(0o700)
+            nested_python.write_text("#!/bin/sh\nexit 0\n"); nested_python.chmod(0o700)
+            self.assertEqual(validate_runtime_paths(nested_source, nested_python, nested_root)[0], nested_root)
+            outer.chmod(0o775)
+            with self.assertRaises(UpstreamGateError): validate_runtime_paths(nested_source, nested_python, nested_root)
+            outer.chmod(0o722)
+            with self.assertRaises(UpstreamGateError): validate_runtime_paths(nested_source, nested_python, nested_root)
+            marker = outer / "interpreter-ran"
+            nested_python.write_text(f"#!/bin/sh\ntouch {marker}\nexit 0\n"); nested_python.chmod(0o700)
+            env = {**os.environ, "HERMES_PRIVATE_ROOT": str(nested_root), "HERMES_SOURCE_DIR": str(nested_source), "HERMES_PYTHON": str(nested_python)}
+            result = subprocess.run([str(OVERLAY / "run-hermes-weixin-transport.sh"), "--help"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists(), "launcher must reject an unsafe upper ancestor before executing candidate Python")
+        finally:
+            if outer is not None:
+                outer.chmod(0o700)
+                shutil.rmtree(outer, ignore_errors=True)
+            shutil.rmtree(fixture, ignore_errors=True)
 
     def test_02_config_requires_0600_and_static_allowlist_of_1_to_10(self) -> None:
         self.config_path.chmod(0o644)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib
 import json
 import re
 import sys
@@ -14,6 +13,7 @@ from typing import Any, Awaitable, Callable
 
 from .config import TransportConfig
 from .state import StateError, TokenState
+from .upstream_gate import VerifiedUpstream, load_verified_weixin
 
 
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
@@ -49,15 +49,11 @@ def deterministic_client_id(config: TransportConfig, request: SendRequest) -> st
     return "xiansuo-hermes-" + hashlib.sha256(material).hexdigest()
 
 
-def _load_weixin_api(source_root: Path):
-    """Import exactly after the caller has passed the provenance gate."""
-    source_text = str(source_root)
-    if source_text not in sys.path:
-        sys.path.insert(0, source_text)
-    return importlib.import_module("gateway.platforms.weixin")
+def _load_weixin_api(snapshot: VerifiedUpstream):
+    return load_verified_weixin(snapshot)
 
 
-async def _call_upstream_once(source_root: Path, config: TransportConfig, request: SendRequest, context_token: str) -> dict[str, Any]:
+async def _call_upstream_once(source_root: VerifiedUpstream, config: TransportConfig, request: SendRequest, context_token: str) -> dict[str, Any]:
     weixin = _load_weixin_api(source_root)
     connector = weixin._make_ssl_connector()
     try:
@@ -163,11 +159,11 @@ def _classify_response(response: object, request: SendRequest) -> dict[str, str]
     return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", "unrecognized_object", request)
 
 
-PostOnce = Callable[[Path, TransportConfig, SendRequest, str], Awaitable[dict[str, Any]]]
+PostOnce = Callable[[VerifiedUpstream, TransportConfig, SendRequest, str], Awaitable[dict[str, Any]]]
 
 
 async def send_once(
-    source_root: Path,
+    source_root: VerifiedUpstream,
     config: TransportConfig,
     state: TokenState,
     request: SendRequest,
@@ -188,7 +184,7 @@ async def send_once(
     return _classify_response(response, request)
 
 
-async def send_bound_once(source_root: Path, config: TransportConfig, vault: Any, user_id: int, generation: int, text: str, idempotency_key: str, *, post_once: PostOnce = _call_upstream_once) -> dict[str, str]:
+async def send_bound_once(source_root: VerifiedUpstream, config: TransportConfig, vault: Any, user_id: int, generation: int, text: str, idempotency_key: str, *, post_once: PostOnce = _call_upstream_once) -> dict[str, str]:
     """Send only after resolving an exact user/generation from the private vault."""
     try:
         binding = vault.get(user_id, generation)
@@ -204,7 +200,7 @@ async def send_bound_once(source_root: Path, config: TransportConfig, vault: Any
         return _classify_exception(exc, request)
     return _classify_response(response, request)
 
-async def send_account_bound_once(source_root: Path, vault: Any, user_id: int, generation: int, account_ref: str, text: str, idempotency_key: str) -> dict[str, str]:
+async def send_account_bound_once(source_root: VerifiedUpstream, vault: Any, user_id: int, generation: int, account_ref: str, text: str, idempotency_key: str) -> dict[str, str]:
     """Exact per-account send: no static config, default account or fallback."""
     request = SendRequest(peer="", text=text, idempotency_key=idempotency_key)
     try: entry = vault.get(account_ref)

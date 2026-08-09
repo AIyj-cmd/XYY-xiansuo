@@ -1,6 +1,7 @@
 import type { AiProvider, AiProviderError, AiProviderResult } from './provider.js';
 import { buildPromptContext } from '../prompt.js';
 import { assertSafeAiOutput } from '../output-schemas.js';
+import { redactUnknown } from '../redaction.js';
 
 async function readBoundedBody(response: Response, maxBytes: number): Promise<string> {
   const contentLength = response.headers.get('content-length');
@@ -50,7 +51,8 @@ export class DeepSeekProvider implements AiProvider {
       if (controller.signal.aborted) throw Object.assign(new Error('cancelled'), { code: 'AI_REQUEST_CANCELLED' });
       started = performance.now();
       requestStarted = true;
-      const response = await this.fetchImpl(`${this.config.baseUrl}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${this.config.apiKey}` }, signal: controller.signal, body: JSON.stringify({ model: this.config.model, stream: false, response_format: { type: 'json_object' }, thinking: { type: 'disabled' }, max_tokens: this.config.maxOutputTokens ?? 2048, messages: [{ role: 'system', content: options.systemPrompt }, { role: 'user', content: buildPromptContext(options.context) }] }) });
+      const safeContext = redactUnknown(options.context);
+      const response = await this.fetchImpl(`${this.config.baseUrl}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${this.config.apiKey}` }, signal: controller.signal, body: JSON.stringify({ model: this.config.model, stream: false, response_format: { type: 'json_object' }, thinking: { type: 'disabled' }, max_tokens: this.config.maxOutputTokens ?? 2048, messages: [{ role: 'system', content: options.systemPrompt }, { role: 'user', content: buildPromptContext(safeContext) }] }) });
       if (!response.ok) { const code = response.status === 429 ? 'AI_PROVIDER_RATE_LIMITED' : response.status >= 500 ? 'AI_PROVIDER_UNAVAILABLE' : response.status === 401 || response.status === 402 || response.status === 403 ? 'AI_PROVIDER_AUTH_FAILED' : 'AI_RESPONSE_INVALID'; throw Object.assign(new Error(code), { code, retryable: response.status === 429 || response.status === 500 || response.status === 503 }); }
       const raw = await readBoundedBody(response, 32_768);
       let parsed: any; try { parsed = JSON.parse(raw); } catch { throw Object.assign(new Error('response not json'), { code: 'AI_RESPONSE_INVALID' }); }

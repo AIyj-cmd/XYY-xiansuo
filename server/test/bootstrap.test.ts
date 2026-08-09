@@ -24,7 +24,8 @@ test('空数据库使用合法环境变量创建一次管理员，已有用户�
 
   assert.equal(await initializeAdmin(database, logger), true);
   assert.equal((database.prepare('SELECT username, name, role FROM users').get() as { username: string; name: string; role: string }).username, 'first-admin');
-  assert.ok(logs.some((line) => line.includes('safe-initial-password')));
+  assert.ok(logs.some((line) => line.includes('first-admin')));
+  assert.equal(logs.some((line) => line.includes('safe-initial-password')), false);
 
   process.env.NODE_ENV = 'production';
   delete process.env.ADMIN_INITIAL_PASSWORD;

@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -40,6 +40,31 @@ export const defaultMigrationLogger: MigrationLogger = {
 
 let db: DatabaseSync | undefined;
 
+function assertNoSymlinkPath(target: string, includeTarget = false): void {
+  const resolved = path.resolve(target);
+  const components = resolved.split(path.sep).filter(Boolean);
+  let cursor = path.parse(resolved).root;
+  for (let index = 0; index < components.length - (includeTarget ? 0 : 1); index += 1) {
+    cursor = path.join(cursor, components[index]);
+    let entry: ReturnType<typeof lstatSync>;
+    try { entry = lstatSync(cursor); } catch { throw new Error(`数据库路径祖先不可用: ${cursor}`); }
+    if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error('数据库路径不得经过符号链接或非目录祖先');
+  }
+  if (includeTarget && existsSync(resolved) && lstatSync(resolved).isSymbolicLink()) throw new Error('数据库文件不得是符号链接');
+}
+
+function secureWritableDatabaseArtifacts(databasePath: string): void {
+  const parent = path.dirname(databasePath);
+  assertNoSymlinkPath(parent, true);
+  chmodSync(parent, 0o700);
+  for (const artifact of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
+    if (!existsSync(artifact)) continue;
+    const entry = lstatSync(artifact);
+    if (entry.isSymbolicLink() || !entry.isFile()) throw new Error('数据库工件必须为非链接普通文件');
+    chmodSync(artifact, 0o600);
+  }
+}
+
 /** DB_PATH 相对路径以进程工作目录为准；默认值始终是 server/data/app.db。 */
 export function getDatabasePath(value = process.env.DB_PATH): string {
   return value ? path.resolve(process.cwd(), value) : DEFAULT_DB_PATH;
@@ -76,10 +101,17 @@ export function openReadOnlyDatabase(databasePath = getDatabasePath()): Database
 export function getDb(): DatabaseSync {
   if (!db) {
     const databasePath = getDatabasePath();
-    mkdirSync(path.dirname(databasePath), { recursive: true });
+    // Do not weaken an existing umask; all files created by this process are
+    // private even before the post-open permission assertion runs.
+    process.umask(process.umask() | 0o077);
+    const parent = path.dirname(databasePath);
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    assertNoSymlinkPath(parent, true);
+    if (existsSync(databasePath) && lstatSync(databasePath).isSymbolicLink()) throw new Error('数据库文件不得是符号链接');
     try {
       db = new DatabaseSync(databasePath, { enableForeignKeyConstraints: true });
       configureConnection(db);
+      secureWritableDatabaseArtifacts(databasePath);
     } catch (error) {
       try { db?.close(); } catch { /* ignore close failure after connection error */ }
       db = undefined;

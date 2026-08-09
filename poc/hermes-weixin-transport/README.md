@@ -2,7 +2,7 @@
 
 这是一个本地、窄边界的 PoC：它不是 Hermes Gateway，绝不启动登录、扫码、轮询、typing、Agent、Provider、工具或媒体路径。
 
-每次运行先校验显式 `HERMES_SOURCE_DIR`（默认仅由两个仓库脚本指向 `/tmp/hermes-agent-v2026.8.3`）：非链接路径、remote、精确 tag、commit、tree、干净工作树、包版本、MIT 和 `UPSTREAM_MANIFEST.json` 中逐文件 SHA-256。校验失败时，CLI 在读取配置或状态、导入 Hermes 或创建网络客户端之前退出。
+每次运行都要求显式、仓库外且私有的绝对 `HERMES_PRIVATE_ROOT`、`HERMES_SOURCE_DIR` 与 `HERMES_PYTHON`；私有根必须是当前用户拥有的非链接 `0700` 目录，源码也必须在其内且精确 `0700`，解释器不得位于源码 checkout。拒绝 `/tmp`、仓库树和源码内 venv 默认值。运行前校验非链接路径、remote、精确 tag、commit、tree、干净工作树、包版本、MIT 和 `UPSTREAM_MANIFEST.json` 中逐文件 SHA-256；随后从已验证的 `weixin.py` 字节快照 `compile/exec`，不会按可变路径导入该模块。校验失败时，CLI 在读取配置或状态、导入 Hermes 或创建网络客户端之前退出。
 
 配置是一个由当前用户拥有的 `0600` JSON 普通文件：
 

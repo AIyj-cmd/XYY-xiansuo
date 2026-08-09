@@ -6,6 +6,7 @@ from urllib.request import Request, urlopen
 from typing import Any
 from .config import TransportConfig
 from .multi_user import MultiUserVault, capture_inbound, peer_fingerprint
+from .upstream_gate import VerifiedUpstream, load_verified_weixin
 
 class InternalClient:
     def __init__(self, base_url: str, secret: str): self.base_url, self.secret = base_url.rstrip("/"), secret
@@ -24,11 +25,9 @@ class InternalClient:
     def commit(self, user: int, generation: int, fp: str, activation_id: str) -> None: self.post("/internal/hermes-bindings/commit", {"userId":user,"activationId":activation_id,"peerFingerprint":fp,"generation":generation})
     def refresh(self, user: int, generation: int, fp: str) -> None: self.post("/internal/hermes-bindings/refresh", {"userId":user,"peerFingerprint":fp,"generation":generation})
 
-async def run_capture_daemon(source_root: Path, config: TransportConfig, vault: MultiUserVault, client: InternalClient, stop: asyncio.Event, poll_interval: float = 0.1) -> None:
+async def run_capture_daemon(source_root: VerifiedUpstream, config: TransportConfig, vault: MultiUserVault, client: InternalClient, stop: asyncio.Event, poll_interval: float = 0.1) -> None:
     """Long poll only. No agent lifecycle, response, typing, media or AI path exists."""
-    import sys, importlib
-    if str(source_root) not in sys.path: sys.path.insert(0, str(source_root))
-    weixin = importlib.import_module("gateway.platforms.weixin")
+    weixin = load_verified_weixin(source_root)
     cursor = vault.cursor()
     timeout_ms = int(getattr(weixin, "LONG_POLL_TIMEOUT_MS", 35_000))
     failures = 0

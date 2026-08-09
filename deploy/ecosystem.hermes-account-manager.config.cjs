@@ -26,6 +26,7 @@ module.exports = {
     kill_timeout: 15000, restart_delay: 5000, max_restarts: 10, min_uptime: '10s', merge_logs: false,
     out_file: path.join(logDir, 'hermes-account-manager.out.log'), error_file: path.join(logDir, 'hermes-account-manager.err.log'), log_date_format: 'YYYY-MM-DD HH:mm:ss',
     env: {
+      HERMES_PRIVATE_ROOT: requiredAbsoluteDirectory('XIANSUO_HERMES_PRIVATE_ROOT'),
       HERMES_SOURCE_DIR: requiredAbsoluteDirectory('XIANSUO_HERMES_SOURCE_DIR'),
       HERMES_PYTHON: requiredAbsolutePath('XIANSUO_HERMES_PYTHON'),
     },

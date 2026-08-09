@@ -97,16 +97,17 @@ test('DB_PATH 默认值、绝对/相对解析、导入后动态读取、独立�
   process.env.DB_PATH = path.join(testDirectory, 'dynamic', 'second.db');
 });
 
-test('管理员初始化在生产空库缺密码时阻断启动，开发随机密码仅首次输出且不记录哈希', { concurrency: false }, async () => {
+test('管理员初始化在所有环境空库缺密码时阻断启动，显式密码绝不输出或记录哈希', { concurrency: false }, async () => {
   const previous = { nodeEnv: process.env.NODE_ENV, password: process.env.ADMIN_INITIAL_PASSWORD, dbPath: process.env.DB_PATH };
   process.env.NODE_ENV = 'production';
   delete process.env.ADMIN_INITIAL_PASSWORD;
   process.env.DB_PATH = path.join(testDirectory, 'production-missing-password.db');
   closeDb();
-  await assert.rejects(buildApp(), /首次初始化必须设置/);
+  await assert.rejects(buildApp(), /必须设置/);
   closeDb();
 
   process.env.NODE_ENV = 'test';
+  process.env.ADMIN_INITIAL_PASSWORD = 'test-explicit-initial-password';
   const database = new DatabaseSync(':memory:');
   configureConnection(database);
   // Exercise the frozen 005 recovery contract before applying 006; a current
@@ -114,12 +115,10 @@ test('管理员初始化在生产空库缺密码时阻断启动，开发随机�
   runMigrations(database, MIGRATIONS.slice(0, 5));
   const logs: string[] = [];
   assert.equal(await initializeAdmin(database, { log: (message: string) => logs.push(message) }), true);
-  const passwordLine = logs.find((message) => message.startsWith('用户名: '));
-  assert.ok(passwordLine);
-  const generatedPassword = passwordLine!.split('初始密码: ')[1];
-  assert.ok(generatedPassword.length >= 20);
+  assert.ok(logs.some((message) => message.includes('已创建管理员账号')));
+  assert.equal(logs.some((message) => message.includes('test-explicit-initial-password')), false);
   const hash = (database.prepare('SELECT password_hash FROM users').get() as { password_hash: string }).password_hash;
-  assert.equal(await verifyPassword(generatedPassword, hash), true);
+  assert.equal(await verifyPassword('test-explicit-initial-password', hash), true);
   assert.ok(!logs.some((message) => message.includes(hash)));
   logs.length = 0;
   assert.equal(await initializeAdmin(database, { log: (message: string) => logs.push(message) }), false);

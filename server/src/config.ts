@@ -1,4 +1,3 @@
-import { randomBytes } from 'crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -14,17 +13,12 @@ export function requireJwtSecret(value = process.env.JWT_SECRET): string {
 
 export function resolveInitialAdminPassword(
   value = process.env.ADMIN_INITIAL_PASSWORD,
-  generate = () => randomBytes(18).toString('base64url'),
-): { password: string; generated: boolean } {
+): { password: string } {
   if (value && value.length < 12) {
     throw new Error('ADMIN_INITIAL_PASSWORD 至少需要 12 位');
   }
-  if (!value && process.env.NODE_ENV === 'production') {
-    throw new Error('生产环境首次初始化必须设置至少 12 位的 ADMIN_INITIAL_PASSWORD');
-  }
-  return value
-    ? { password: value, generated: false }
-    : { password: generate(), generated: true };
+  if (!value) throw new Error('空数据库首次初始化必须设置至少 12 位的 ADMIN_INITIAL_PASSWORD');
+  return { password: value };
 }
 
 export function resolveInitialAdminIdentity(): { username: string; name: string } {

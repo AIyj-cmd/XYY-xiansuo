@@ -1,12 +1,15 @@
 #!/bin/bash
 # 在本机执行，将代码打包上传到服务器
 # 用法：bash deploy/deploy.sh <服务器> <仓库外应用目录>
-set -e
+set -euo pipefail
+umask 077
 
 SERVER=${1:?请提供服务器连接，例如 deploy@example.net}
 APP_DIR=${2:?请提供仓库外应用目录}
 PACK=/tmp/xiansuo-pack.tar.gz
-HERMES_SOURCE_DIR=${HERMES_SOURCE_DIR:-/tmp/hermes-agent-v2026.8.3}
+: "${HERMES_SOURCE_DIR:?必须显式提供仓库外私有 HERMES_SOURCE_DIR}"
+: "${HERMES_PYTHON:?必须显式提供仓库外私有 HERMES_PYTHON}"
+: "${HERMES_PRIVATE_ROOT:?必须显式提供仓库外私有 HERMES_PRIVATE_ROOT}"
 
 echo "====== [1/4] 构建前端 H5 ======"
 cd "$(dirname "$0")/.."
@@ -24,7 +27,7 @@ fi
 # Provenance/hash/clean and local dependency checks happen before source is
 # archived.  This dry-run creates only a temporary fake config/vault/state and
 # never starts a service, uses DNS/socket, reads the business DB, or sends.
-HERMES_SOURCE_DIR="$HERMES_SOURCE_DIR" ./poc/hermes-weixin-transport/run-hermes-weixin-transport.sh dry-run
+HERMES_PRIVATE_ROOT="$HERMES_PRIVATE_ROOT" HERMES_SOURCE_DIR="$HERMES_SOURCE_DIR" HERMES_PYTHON="$HERMES_PYTHON" ./poc/hermes-weixin-transport/run-hermes-weixin-transport.sh dry-run
 # Git/tar preserve executable status but not the non-group-writable 0755 mode.
 # This fixed-allowlist tool never accepts paths and cannot touch runtime data.
 node ./poc/ilink-gateway/scripts/normalize-runtime-launchers.mjs
@@ -36,6 +39,8 @@ tar -czf "$PACK" \
   --exclude='server/dist' \
   --exclude='server/data' \
   --exclude='server/uploads' \
+  --exclude='server/upload-staging' \
+  --exclude='server/backups' \
   --exclude='poc/ilink-gateway/node_modules' \
   --exclude='poc/ilink-gateway/dist' \
   --exclude='poc/hermes-weixin-transport/__pycache__' \
@@ -77,7 +82,7 @@ tar -xzf xiansuo-pack.tar.gz -C /tmp/xiansuo-src
 node /tmp/xiansuo-src/poc/ilink-gateway/scripts/normalize-runtime-launchers.mjs
 
 # 同步 server 代码
-rsync -a --exclude='data' --exclude='uploads' /tmp/xiansuo-src/server/ "$APP_DIR/server/"
+rsync -a --exclude='data' --exclude='uploads' --exclude='upload-staging' --exclude='backups' /tmp/xiansuo-src/server/ "$APP_DIR/server/"
 
 # 同步内部通知 Gateway；会话、状态、Secret 和接收人映射始终位于仓库外。
 mkdir -p "$APP_DIR/poc/ilink-gateway"

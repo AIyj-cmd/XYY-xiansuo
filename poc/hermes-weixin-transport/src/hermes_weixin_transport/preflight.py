@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .account_manager import AccountManager, HermesPrimitiveProvider, load_account_manager_config
+from .upstream_gate import VerifiedUpstream
 from .security import ensure_state_directory, require_private_file, require_state_directory
 
 
@@ -51,7 +52,7 @@ def _gateway_environment() -> None:
     require_private_file(Path(secret_file), kind="Gateway Secret 文件")
 
 
-def run_preflight(config_path: Path, source_root: Path) -> dict[str, Any]:
+def run_preflight(config_path: Path, source_root: VerifiedUpstream) -> dict[str, Any]:
     """Validate only local files/imports. No socket, DNS, child service or DB."""
     config = load_account_manager_config(config_path)
     _fixed_fields(config)
@@ -71,7 +72,7 @@ def run_preflight(config_path: Path, source_root: Path) -> dict[str, Any]:
     }
 
 
-def run_dry_run(source_root: Path) -> dict[str, Any]:
+def run_dry_run(source_root: VerifiedUpstream) -> dict[str, Any]:
     """Use a temporary disabled config and empty vault; never bind or connect."""
     with tempfile.TemporaryDirectory(prefix="xiansuo-hermes-dry-run-") as root:
         root_path = Path(root)

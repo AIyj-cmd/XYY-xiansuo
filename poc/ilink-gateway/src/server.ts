@@ -29,6 +29,8 @@ export function createGateway(config: GatewayConfig = loadConfig(), adapter?: Ch
   const service = new GatewayService(config, adapter ?? createConfiguredAdapter(config), new IdempotencyStore(store), store)
   const replay = new ReplayStore(store)
   const rate = new Map<string, number[]>()
+  let healthCache: { expiresAt: number; value: Record<string, unknown> } | undefined
+  let healthFlight: Promise<Record<string, unknown>> | undefined
   const secretList = [config.gatewaySecret]
   const authorized = (request: IncomingMessage, body: Buffer, path: string): string | undefined => {
     const timestamp = request.headers[SIGNATURE_HEADERS.timestamp] as string | undefined
@@ -45,6 +47,14 @@ export function createGateway(config: GatewayConfig = loadConfig(), adapter?: Ch
     starts.push(now); rate.set(key, starts)
     return undefined
   }
+  const cachedHealth = async (): Promise<Record<string, unknown>> => {
+    const now = Date.now()
+    if (healthCache && healthCache.expiresAt > now) return healthCache.value
+    if (!healthFlight) healthFlight = service.health().then((value) => {
+      healthCache = { value, expiresAt: Date.now() + 2_000 }; return value
+    }).finally(() => { healthFlight = undefined })
+    return healthFlight
+  }
   const server = createServer(async (request, response) => {
     const method = request.method ?? 'GET'; const path = new URL(request.url ?? '/', 'http://localhost').pathname
     const loopback = request.socket.remoteAddress === '127.0.0.1' || request.socket.remoteAddress === '::1' || request.socket.remoteAddress === '::ffff:127.0.0.1'
@@ -58,8 +68,12 @@ export function createGateway(config: GatewayConfig = loadConfig(), adapter?: Ch
       catch { return json(response, 503, { service: 'xiansuo-hermes-gateway', status: 'not_ready', transport: config.ILINK_POC_TRANSPORT }) }
     }
     if ((method === 'GET' && (path === '/health' || path === '/session/status'))) {
-      // Read-only observability remains bound to loopback; clients still need no secret for liveness only.
-      return json(response, 200, await service.health())
+      // Observable state can reveal channel readiness, so it has exactly the
+      // delivery HMAC/replay/rate gate. GET uses the SHA-256 of an empty body.
+      const authError = authorized(request, Buffer.alloc(0), path)
+      if (authError) return json(response, authError === 'ILINK_RATE_LIMITED' ? 429 : 401, { code: authError, msg: '请求认证失败', data: null })
+      try { return json(response, 200, await cachedHealth()) }
+      catch { return json(response, 503, { code: 'ILINK_HEALTH_UNAVAILABLE', msg: '健康检查失败', data: null }) }
     }
     if (method !== 'POST' || path !== '/deliveries') return json(response, 404, { code: 'ILINK_NOT_FOUND', msg: '未找到接口', data: null })
     try {

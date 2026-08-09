@@ -89,7 +89,7 @@ test('上传仅在 MIME 与真实签名一致时原子发布为 0600，成功包
     assert.deepEqual(Object.keys(body).sort(), ['code', 'data', 'msg']);
     assert.equal(body.code, 0);
     assert.equal(body.msg, '上传成功');
-    assert.match(body.data.url, /^\/uploads\/\d+_[a-f0-9]{24}\.(jpg|png|gif|webp|heic)$/);
+    assert.match(body.data.url, /^\/uploads\/u\d+_\d+_[a-f0-9]{24}\.(jpg|png|gif|webp|heic)$/);
 
     const filepath = path.join(UPLOADS_DIR, path.basename(body.data.url));
     publishedFiles.push(filepath);
