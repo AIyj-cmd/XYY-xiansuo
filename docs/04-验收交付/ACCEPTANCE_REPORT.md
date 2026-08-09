@@ -1,10 +1,10 @@
 # 当前版本离线收尾验收报告
 
-日期：2026-08-02
+最新验收日期：2026-08-09
 
-基线：`75f29bc`
+最新基线：`chore/project-health-remediation-v2` @ `2d5ce5964c7f00ff25a4cdb31f5157bf6d8b6866`
 
-结论：**单账号/单接收人发布冻结通过，可形成本地提交；生产上线仍为 CONDITIONAL GO，不授权任何生产操作。多账号定向发送为 NO-GO。**
+最新结论：**项目健康离线整改 P1=0、P2=0、P3=0，允许进入合并评审；生产迁移、发布、Hermes 真实 Pilot/启用仍未授权。** 历史验收结论保留在下文，本轮详见第 13 节。
 
 ## 1. 验收边界
 
@@ -284,3 +284,41 @@
 - 下一门禁必须由人工冻结两名测试用户、两套独立账号、唯一接收人、固定消息、窗口和停止条件；依次完成串行 QR、精确确认、重启/停用/重绑、两账号交叉交换零网络、各一条 owner_changed 单次发送与人工收件核对。任何 unknown、错投、重复、fallback、重试或账本不一致立即停止。
 
 因此，本工作区**可以提交但不应部署**；真实双人扫码/发送和生产部署在完成上述人工门禁前保持 **NO-GO**。
+
+## 13. 项目健康整改 v2 最终验收（2026-08-09）
+
+### 验收结论
+
+**离线代码验收 PASS；P1=0、P2=0、P3=0；允许进入合并评审。**
+本结论不授权 push/merge/部署、生产数据库操作、真实扫码、真实微信发送或 DeepSeek 调用。
+
+### 批准范围符合性
+
+- A/B/C/D/E/F/G1/D-1 均已关闭：通知能力矩阵、Hermes 关闭态、Server 依赖审计、Gateway timeout 竞态、旧 JWT 撤销、浏览器安全头、上传内容签名/私有 staging 及 Hermes 离线服务链均通过独立复验与验收再跑。D-1 的“关闭”仅指离线打包、配置、preflight/readiness 和 dry-run，不表示已部署。
+- dashboard summary/export 公司级可见性为用户已批准的产品口径，本轮未修改，不计 P 级。普通 `/api/export` 仍对 member 按本人 owner 限制，admin 仍为公司范围。
+- 九个提交与批准整改单元一一对应；`2d5ce59` 仅更新测试报告。未修改 dashboard/导出代码，未修改 `server/data`，未重构 T-1 大页面，未夹带新功能或无关生产依赖。
+- 迁移 001–009 字节不变，只新增 010 `token_version`。fresh、历史升级、重复、checksum 冲突、故障回滚、`integrity_check` 和 `foreign_key_check` 全部通过。
+- 受控扫描未发现真实 JWT、DeepSeek key、微信凭据、QR、target/context/cursor 或 Secret 实值进入本轮交付。
+
+### 最终复测
+
+| 范围 | 验收结果 |
+| --- | --- |
+| Server | build PASS，**170/170**；`npm audit --omit=dev` 为 0。 |
+| Gateway | build PASS，**62/62**；独立阶段另有连续三轮 62/62；生产审计为 0。 |
+| Hermes overlay | **33/33**；dry-run 明确无网络、无业务库、无常驻进程。 |
+| H5 | build + Playwright **17/17**；只生成 H5。 |
+| 合计 | **282/282**，无 skip/cancel/fail。 |
+| 完整性 | `git diff --check` PASS；`server/data` 验收前后逐文件 SHA-256 一致。 |
+
+验收阶段没有发现测试报告之外的可复现范围内问题，因此未修改业务源码。
+
+### 残余风险与上线建议
+
+- **R-1：** App 完整 audit effect graph 真实报告 **29 high / 1 moderate**，critical=0；根因是既有 Vite 5.2.8、nanoid/postcss 和 uni-app 传递链。开发服务器只监听 loopback，生产只发布静态 H5，CI 只以 critical 阻断。该风险是已批准保留，不是“已修复”。
+- **R-2 / G2：** 已完成文件签名、私有 staging、失败清理和原子发布；用户/公司配额、文件保留期、孤儿判定和清理窗口需产品给出具体值，继续作为 R-2 保留。
+- **R-3：** 生产一致性备份、迁移 010/008–009 演练和恢复没有授权，不得把离线 migration 测试写成生产通过。
+- **T-1：** 大页面保持原状，本轮不重构。
+- **Hermes：** 当前整改版本的真实 Pilot 与部署未授权；历史单条收件事实不是当前多用户 QR/部署链的放行证据。
+
+**合并评审：GO。实际 merge/push：未授权。生产发布：NO-GO，直到 R-3 和明确部署授权完成。Hermes 真实启用：NO-GO，直到另行批准并通过真实 Pilot。**

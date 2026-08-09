@@ -1,5 +1,7 @@
 # XYY-xiansuo 项目收尾、功能健康与技术债审计报告
 
+> **最新状态（2026-08-09）：** 第 1–13 节保留整改前的首次审计与失败证据；整改后的当前结论以第 14 节为准：P1=0、P2=0、P3=0，合并评审 GO，生产发布与 Hermes 真实启用仍未授权。
+
 ## 1. 审计结论
 
 审计日期：2026-08-09
@@ -269,3 +271,45 @@ Hermes 真实启用：NO-GO
 ```
 
 建议继续以当前分支和完整 SHA 管理，不切换到 `main`，不合并服务号或历史 OpenClaw 多人研究代码。修复应按小提交拆分，每个 P1 独立测试、独立验收，避免再次把渠道、权限和部署改动混在一个提交中。
+
+## 14. 项目健康整改最终状态（2026-08-09）
+
+本节是对第 1–13 节历史快照的追加结论，不删除首次失败证据。验收分支为
+`chore/project-health-remediation-v2`，验收基线为
+`2d5ce5964c7f00ff25a4cdb31f5157bf6d8b6866`；`82c15dc` 为祖先提交，验收开始时工作区干净。
+
+### 14.1 闭环结论
+
+| 单元 | 最终状态 | 核心证据 |
+| --- | --- | --- |
+| A 通知事件×渠道 | 已关闭 | 唯一能力矩阵允许 `owner_changed + hermes`，拒绝 `daily_report/scheduled_follow_overdue + hermes`；管理保存、preview、AI 入队、Worker 和人工重试共用同一判定。 |
+| B Hermes 关闭态 H5 | 已关闭 | 服务端 runtime capability 优先；菜单、深链、QR 创建/轮询/解绑均 fail-closed，关闭时请求数为 0。 |
+| C Server 依赖门禁（Loop G-1） | 已关闭 | `npm audit --omit=dev` 为 0 vulnerability，未使用 `--force` 或 `--legacy-peer-deps`。 |
+| D Gateway timeout 竞态 | 已关闭 | 独立复验连续 3 轮 62/62，验收再跑 62/62；未放宽 SIGKILL/reap/unknown 断言。 |
+| E 改密后旧 JWT | 已关闭 | 新增迁移 `010` 的 `token_version`；本人改密和管理员重置均立即使旧 token 401，新 token 可用。 |
+| F 浏览器安全头 | 已关闭 | API/H5/上传统一 CSP、nosniff、frame、Referrer-Policy 和 Permissions-Policy；HTTP 应用不伪造 HSTS。 |
+| G1 上传内容与发布安全 | 已关闭 | MIME 与 PNG/JPEG/GIF/WebP/HEIC 签名匹配、私有 staging、0600 原子发布、失败清理和静态隔离均通过。 |
+| D-1 Hermes 离线服务链 | 已关闭（仅离线） | overlay/固定上游打包、manager/Gateway 单实例单元、loopback、preflight/readiness、环境隔离和 dry-run 通过；真实开关仍默认关闭。 |
+
+第 37 节记录的 dashboard summary/export 公司级可见性是用户已批准的产品行为，不是越权缺陷，本轮未增加 owner 过滤。普通 `/api/export` 仍只导出 member 本人负责线索，admin 仍可导出公司范围。
+
+### 14.2 提交、数据和范围核验
+
+- `947597c`、`172f63d`、`4e5a9b7`、`f2136fd`、`a015d40`、`e725b9f`、`d72ecea`、`ebf6d44` 分别对应上述最小整改单元，`2d5ce59` 仅追加独立复验记录。未修改 dashboard/导出权限代码，未重构 T-1 大页面。
+- 相对批准基线，迁移 001–009 对象字节完全一致（抽取块 SHA-256 均为 `6c40433f1d7e72ddc6b203dda176a255fbfbbc876248a59026b3e2789fa0cd5c`）；只新增 010。空库、历史升级、重复、checksum 冲突、故障回滚、integrity 和 foreign key 复验通过。
+- `server/data` 未出现 Git 差异，验收前后 8 个数据/备份文件的 SHA-256 逐文件一致。测试只使用 `/tmp` 隔离库。
+- 受控源码扫描未发现真实 JWT、DeepSeek key、三段式 token 或微信业务凭据；新增 `.env.example` 只含空值路径占位。本结论不替代 Git 托管平台密钥扫描。
+
+### 14.3 最终验证与风险
+
+验收阶段再跑 Server 170/170、Gateway 62/62、Hermes overlay 33/33、H5 17/17，合计 **282/282**；四项构建/测试命令均退出 0。Server/Gateway 生产依赖审计均为 0。Hermes dry-run 返回 `offline=true`、`network=not_used`、`businessDatabase=not_used`、`residentProcess=not_started`。
+
+本轮最终统计：**P1=0、P2=0、P3=0**。仍保留：
+
+- **R-1：** App `npm audit --omit=dev` 的完整 effect graph 真实输出 **29 high + 1 moderate**（根因摘要为 nanoid/postcss 与 Vite/uni-app 链，不是 30 个独立根因），critical=0；开发服务器只允许 loopback，生产只发布静态 H5，CI 以 critical 为阻断门禁。禁止 force/legacy peer/跨大版本伪修复。
+- **R-2 / G2：** 上传配额、保留期、孤儿文件判定及清理时间窗仍未定义；这些需要产品给出具体值后另立设计，不得由验收代理臆造。
+- **R-3：** 未获授权访问生产路径、一致性备份、迁移或恢复；010 及已有 Hermes 迁移的生产演练未执行。
+- **T-1：** `leads/list.vue`、`leads/detail.vue`、`pool/index.vue` 大页面技术债按批准范围保留，本轮未重构。
+- **Hermes 外部门禁：** 本整改版本没有新的真实 Pilot 或部署授权。历史单条 Pilot 事实不等于当前多用户链路已验证；真实扫码、发送、PM2/Nginx 操作和多人开放仍未授权。
+
+最终建议：**允许进入合并评审（GO），但不授权合并、推送或生产发布。生产发布为 NO-GO，直到 R-3 迁移/恢复演练及明确发布授权完成；Hermes 必须继续关闭，直到另行批准并通过真实 Pilot。**

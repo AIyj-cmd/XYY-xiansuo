@@ -127,3 +127,14 @@ P3 自定义 HMAC 流加密风险的后续迁移也必须采用新 schema 版本
 5. 用户停用、重绑或自助解绑后发现旧 manager account 未退役时，继续保持数据库 binding 和通知关闭，记录 opaque accountRef 的受控哈希，由获授权运维执行单账号退役；不得降低已提交的 unbound/generation 撤权状态或恢复旧账号发送能力。
 6. 回退后至少重跑 Server、Gateway、overlay、H5 受影响套件及 migration/trigger/integrity 定向检查；任何真实扫码或发送仍需新的明确授权。
 7. 若固定上游 QR 状态字段、`bot_token/baseurl`、redirect host 或 `qrcode` 依赖契约变化，保持所有 Hermes 开关关闭并停止 manager；不得接受别名字段、动态 host、刷新 QR 或调用 `qr_login` 规避门禁。修复必须重新固定上游并完成独立审计与离线回归。
+
+## 12. 项目健康整改 v2 回滚补充（2026-08-09）
+
+本轮没有部署、生产迁移、真实 Pilot 或外发，因此当前无运行时/数据回滚动作。如后续在另行授权下发布，使用以下补充：
+
+1. 先关闭新通知规则及 `HERMES_BINDING_ENABLED`、`HERMES_CHANNEL_ENABLED`、`ILINK_POC_LIVE_ENABLED`、`ILINK_HERMES_TRANSPORT_ENABLED`；按 Worker → API → Gateway → manager 顺序停止。保留 ledger、vault、nonce、attempt、outbox 和脱敏日志，不重试 `result_unknown`、不换 key、不 fallback。
+2. 应用回退使用受控 Git revert/上一已验证制品，不使用 `reset --hard`，不删除用户工作区。通知能力矩阵、JWT 撤销和安全头属于安全修复；不得为回退快速恢复已知不安全行为，应优先关闭受影响功能并向前修复。
+3. `010` 是只追加列的前向迁移。若已迁移但未恢复业务写入，可在验证旧制品兼容后保留新列并回退应用；若需恢复旧 schema，只能从迁移前一致性备份恢复到新路径再原子切换。禁止手工删 `token_version`、修改 `schema_migrations` 或改 checksum。
+4. 如 010 后已有业务写入，不直接恢复旧备份。先停写、保存当前 DB/WAL/SHM 一致性快照，评估新增数据和 token version 影响；未经业务对账与数据恢复授权不覆盖。
+5. 若上传异常，先暂停上传入口，保全公开 uploads 与私有 staging 的文件清单/权限/时间戳证据。未定义 R-2/G2 产品保留值前不执行批量清理，不以删文件代替事故调查。
+6. 回滚后必须复核登录/改密、admin/member 权限、dashboard 公司级批准口径、普通导出 owner 限制、通知矩阵、上传反向用例、安全头、迁移完整性及 Server/Gateway/overlay/H5 受影响套件。真实微信和 DeepSeek 不作为回滚冒烟。

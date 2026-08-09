@@ -1,5 +1,19 @@
 # 变更日志
 
+## Unreleased — 项目健康整改 v2（2026-08-09）
+
+- `947597c`：建立唯一的通知事件×渠道能力矩阵；Hermes 只支持 `owner_changed`，管理规则、preview、AI 事件、Worker 和人工重试统一 fail-closed。
+- `172f63d`：在受认证 binding status 中暴露 runtime `enabled`；Hermes 关闭或 capability 请求失败时，H5 菜单和深链均不展示可执行动作，QR 相关请求为 0。
+- `4e5a9b7`：以最小兼容依赖更新关闭 Server `brace-expansion`/`minimatch`/`fast-uri` 生产审计门禁，不使用 force 或 legacy peer。
+- `f2136fd`：以可观察文件/进程条件稳定 Gateway timeout PID 回收测试，保留 SIGKILL、reap 和 `result_unknown` 断言。
+- `a015d40`：新增唯一迁移 `010` 和 `users.token_version`；用户改密、管理员重置密码后撤销目标旧 JWT，保留实时角色/停用/删除校验。
+- `e725b9f`：为 API、H5 和上传响应统一添加 CSP、nosniff、frame、Referrer-Policy 和 Permissions-Policy；HSTS 只保留在 HTTPS Nginx 层。
+- `d72ecea`：新增 PNG/JPEG/GIF/WebP/HEIC 内容签名与 MIME 一致性校验，使用不公开的 0700 staging、0600 文件和原子发布，失败时清理。配额/保留周期因缺产品具体值保留为 R-2/G2。
+- `ebf6d44`：打包 Hermes overlay 与固定上游，增加 manager/Gateway 独立单实例 PM2 模板、清空继承环境的 wrapper、loopback 端口、preflight/readiness/dry-run 及回滚文档；部署脚本仍不自动启动真实 Hermes 链。
+- `2d5ce59`：追加项目健康整改独立复验证据；最终独立结论 P1=0、P2=0、P3=0。
+- 验收复测：Server 170/170、Gateway 62/62、Hermes overlay 33/33、H5 17/17，共 282/282；Server/Gateway 生产审计为 0，H5 critical 门禁通过。dashboard/export 公司级口径按用户批准保留，001–009 不变、只新增 010，`server/data` 不变。
+- 明确不包含：上传配额/生命周期产品值、Vite/uni-app 跨版本升级、T-1 大页面重构、生产迁移/恢复、新的 Hermes 真实 Pilot 或部署。
+
 ## Unreleased — 每用户 Hermes/iLink QR 账号绑定（2026-08-09）
 
 - 追加唯一迁移 `009`（未改 `001`–`008`）：引入全局唯一活动的 `hermes_login_attempts`、独立 `account_ref`/target 指纹/prepared 生命周期及 notification outbox 的 `recipient_account_ref` 快照。旧 `008` 共享账号 active 与 pending 历史完全保留；`account_ref IS NULL` 仅在公开状态派生为 `rebind_required`，旧路径不自动发送，成功取得新账号上下文后才原子切换并取消旧代次待发。

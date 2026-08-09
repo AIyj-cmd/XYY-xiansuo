@@ -196,3 +196,25 @@ OpenClaw 的安装、会话检查和入站静默插件只按 [运行手册](OPEN
 未来另获单独部署授权时，启动顺序只能是：**manager → Hermes Gateway → API → notification-worker**；health/readiness 均通过后才能进入下一项，且真实开关和规则仍先保持关闭。停止顺序严格反向：**notification-worker → API → Hermes Gateway → manager**。任一失败只保全账本/vault/日志并停止，不用网络消息作验证。
 
 监控新增：全局 live attempt 数/最老年龄、prepared 超 TTL、manager 401/409/不可达、周期授权拒绝、同用户旧账号退役失败、vault live 用户数、QR 进程重启失效、`rebind_required` 完成率，以及三元组不匹配取消数。日志不得记录 QR、activationId、accountRef 原值、provider account/token、target/context/cursor 或消息正文。
+
+## 12. 项目健康整改 v2 发布说明（2026-08-09）
+
+### 当前可交付边界
+
+- 代码 SHA 冻结为 `2d5ce5964c7f00ff25a4cdb31f5157bf6d8b6866`。当前只建议进入合并评审，本文不授权 merge/push/部署。
+- dashboard summary/export 对 member 保持公司级可见，这是用户批准行为；普通 `/api/export` 仍按 member 本人 owner 限制。部署验证不得以“安全修复”名义改变该口径。
+- 迁移 001–009 保持不变，唯一新迁移是 010 `token_version`。任何生产执行前都必须先获得 R-3 授权，用一致性备份在隔离恢复路径验证 009→010、重复启动、checksum、完整性、外键和旧 JWT 撤销；未授权前不得运行。
+- App 完整 audit effect graph 仍为 29 high/1 moderate、critical=0。生产只能发布 `app/dist/build/h5/` 静态制品；Vite 开发服务器不得绑定公网，CI 继续以 critical 阻断，不运行 force/legacy peer 修复。
+
+### Hermes 必须保持的状态
+
+- 新的真实 Pilot 和生产部署均未授权。历史单条 Pilot 不能替代当前多用户 QR/三元组/服务链验证。
+- `HERMES_BINDING_ENABLED`、`HERMES_CHANNEL_ENABLED`、`ILINK_POC_LIVE_ENABLED`、`ILINK_HERMES_TRANSPORT_ENABLED` 和全部真实通知规则必须为 `false`。`deploy.sh` 可打包两个离线单元，但不得自动加载它们。
+- 获得未来授权后，启动顺序为 manager → Gateway → API → Worker，停止顺序反向。manager/Gateway 只能侦听 `127.0.0.1:38117/38116`，先通过 preflight、`/livez`、`/readyz`，真实开关仍先保持关闭。
+
+### 发布前仍需人工确定
+
+- R-2/G2 需产品明确每用户/公司上传配额、保留期、孤儿定义、清理频率与宽限窗口；未定值前不新增自动删除任务。
+- 监控除第 11 节 Hermes 信号外，还应覆盖 401 突增/改密后重登录成功率、迁移 010 失败/checksum 冲突、上传 400/413/500 比率、staging 遗留数、CSP 违规、Server/Gateway audit 和 H5 critical 门禁。日志和告警不得携带密码、JWT、QR、target/context/cursor 或客户数据。
+
+**发布判定：合并评审 GO；生产部署 NO-GO，直到发布和 R-3 授权及演练完成；Hermes 开启 NO-GO，直到新的真实 Pilot 获批并通过。**
