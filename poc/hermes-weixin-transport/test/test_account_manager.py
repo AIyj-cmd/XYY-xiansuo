@@ -1,14 +1,14 @@
-import base64, tempfile, unittest
+import asyncio, base64, sys, tempfile, types, unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hermes_weixin_transport.account_manager import AccountManager, AccountManagerConfig, AccountVault, _normalize_qr_status
+from hermes_weixin_transport.account_manager import AccountManager, AccountManagerConfig, AccountVault, HermesPrimitiveProvider, _normalize_qr_status
 
 class FakeProvider:
     def __init__(self): self.polls=[]; self.updates=[]; self.sends=[]
     async def create_qr(self): return {"qrToken":"qr-a","qrPayload":"fake-qr"}
     async def qr_status(self, _): return {"ilink_bot_id":"bot-a","ilink_bot_token":"token-a","base_url":"https://ilinkai.weixin.qq.com","status":"confirmed"}
-    async def get_updates(self, account, token, base, cursor): self.polls.append((account,token,base,cursor)); return self.updates.pop(0) if self.updates else {"msgs":[],"get_updates_buf":cursor}
+    async def get_updates(self, account, token, base, cursor, lifecycle): self.polls.append((account,token,base,cursor,lifecycle)); return self.updates.pop(0) if self.updates else {"msgs":[],"get_updates_buf":cursor}
     async def send(self,*args): self.sends.append(args); return {"ret":0}
 
 class AccountManagerTests(unittest.TestCase):
@@ -28,6 +28,46 @@ class AccountManagerTests(unittest.TestCase):
         })
         aliases=_normalize_qr_status({"status":"confirmed","ilink_bot_id":"bot-a","ilink_bot_token":"wrong","base_url":"https://ilinkai.weixin.qq.com"})
         self.assertEqual(aliases["ilink_bot_token"],""); self.assertEqual(aliases["base_url"],"")
+    def test_primitive_updates_normalize_real_items_filter_official_group_and_skip_active_text(self):
+        modules={key:sys.modules.get(key) for key in ("gateway","gateway.platforms","gateway.platforms.weixin")}; calls=[]
+        class Connector:
+            async def close(self): calls.append("connector_closed")
+        class Session:
+            async def __aenter__(self): return self
+            async def __aexit__(self,*_args): return False
+        wx=types.ModuleType("gateway.platforms.weixin"); wx.LONG_POLL_TIMEOUT_MS=1000; wx._make_ssl_connector=lambda:Connector(); wx.aiohttp=types.SimpleNamespace(ClientSession=lambda **_kwargs:Session())
+        def guess(message, account):
+            calls.append(("guess",message.get("from_user_id"),account))
+            return ("group","official-channel") if message.get("msg_type") == 1 and message.get("to_user_id") != account else ("dm",str(message.get("from_user_id") or ""))
+        def extract(items): calls.append(("extract",items)); return items[0]["text_item"]["text"]
+        wx._guess_chat_type=guess; wx._extract_text=extract
+        async def updates(_session, **kwargs):
+            calls.append(("get_updates",kwargs))
+            return {"msgs":[
+                {"from_user_id":"official-peer","to_user_id":"official-channel","msg_type":1,"context_token":"group-context","item_list":[{"type":1,"text_item":{"text":"确认 group"}}]},
+                {"from_user_id":"wrong-account","to_user_id":"other-bot","msg_type":0,"context_token":"wrong-context","item_list":[{"type":1,"text_item":{"text":"确认 wrong"}}]},
+                {"from_user_id":"dm-peer","to_user_id":"bot-a","context_token":"dm-context","item_list":[{"type":1,"text_item":{"text":"确认 exact"}}]},
+            ],"get_updates_buf":"cursor-1"}
+        wx._get_updates=updates; sys.modules["gateway"]=types.ModuleType("gateway"); sys.modules["gateway.platforms"]=types.ModuleType("gateway.platforms"); sys.modules["gateway.platforms.weixin"]=wx
+        try:
+            provider=HermesPrimitiveProvider(Path("/tmp"))
+            prepared=asyncio.run(provider.get_updates("bot-a","token","https://ilinkai.weixin.qq.com","","prepared"))
+            self.assertEqual(prepared,{"msgs":[{"from_user_id":"dm-peer","to_user_id":"bot-a","context_token":"dm-context","text":"确认 exact"}],"get_updates_buf":"cursor-1"})
+            self.assertEqual(len([call for call in calls if isinstance(call,tuple) and call[0] == "extract"]),1)
+            active=asyncio.run(provider.get_updates("bot-a","token","https://ilinkai.weixin.qq.com","cursor-1","active"))
+            self.assertEqual(active,{"msgs":[{"from_user_id":"dm-peer","to_user_id":"bot-a","context_token":"dm-context"}],"get_updates_buf":"cursor-1"})
+            self.assertEqual(len([call for call in calls if isinstance(call,tuple) and call[0] == "extract"]),1)
+            self.assertIn(("guess","official-peer","bot-a"),calls)
+            with tempfile.TemporaryDirectory() as root:
+                directory=Path(root); directory.chmod(0o700); manager=AccountManager(self.config(directory),provider)
+                manager.vault.put({"accountRef":"hr_abcdefghijklmnopqrstuv","attemptId":"12345678-1234-4234-a234-123456789012","userId":7,"generation":3,"lifecycle":"prepared","expiresAt":"2099-08-09 10:00:00","cursor":"","providerAccountId":"bot-a","token":"token-a","baseUrl":"https://ilinkai.weixin.qq.com","target":"","context":"","activationId":"exact"})
+                with patch.object(manager,"_callback",return_value="accepted") as callback: manager.poll_once("hr_abcdefghijklmnopqrstuv"); callback.assert_called_once()
+                activated=manager.vault.get("hr_abcdefghijklmnopqrstuv"); assert activated
+                self.assertEqual((activated["lifecycle"],activated["target"],activated["context"],activated["cursor"]),("active","dm-peer","dm-context","cursor-1"))
+        finally:
+            for key,value in modules.items():
+                if value is None: sys.modules.pop(key,None)
+                else: sys.modules[key]=value
     def test_qr_render_failure_creates_no_vault_entry(self):
         with tempfile.TemporaryDirectory() as root:
             directory=Path(root); directory.chmod(0o700); manager=AccountManager(self.config(directory),FakeProvider())
@@ -59,6 +99,7 @@ class AccountManagerTests(unittest.TestCase):
             self.assertEqual(confirmed,{"status":"awaiting_context","confirmationCommand":f"确认 {entry['activationId']}"})
             manager.poll_once("hr_abcdefghijklmnopqrstuv")
             self.assertEqual(provider.polls[-1][0],"bot-a")
+            self.assertEqual(provider.polls[-1][-1],"prepared")
             self.assertEqual(entry["lifecycle"],"prepared")
             self.assertNotIn("token-a",repr(confirmed))
 
@@ -69,7 +110,7 @@ class AccountManagerTests(unittest.TestCase):
             manager.create({"id":"12345678-1234-4234-a234-123456789012","userId":7,"accountRef":"hr_abcdefghijklmnopqrstuv","generation":3,"expiresAt":"2099-08-09 10:00:00"})
             with patch.object(manager,"_start_poll"): manager.status("hr_abcdefghijklmnopqrstuv")
             entry=manager.vault.get("hr_abcdefghijklmnopqrstuv"); assert entry
-            provider.updates.append({"msgs":[{"to_user_id":"other-bot","from_user_id":"wrong","context_token":"ctx","text":f"确认 {entry['activationId']}"},{"to_user_id":"bot-a","from_user_id":"wrong","context_token":"ctx","text":"确认 bad"}],"get_updates_buf":"cursor-wrong"})
+            provider.updates.append({"msgs":[{"to_user_id":"other-bot","from_user_id":"wrong","context_token":"ctx","text":f"确认 {entry['activationId']}"},{"to_user_id":"bot-a","from_user_id":"wrong","context_token":"ctx","text":f"确认 {entry['activationId']} "}],"get_updates_buf":"cursor-wrong"})
             with patch.object(manager,"_callback",return_value=True) as callback:
                 manager.poll_once("hr_abcdefghijklmnopqrstuv")
                 callback.assert_not_called()

@@ -1339,3 +1339,12 @@ P2：无。
 - `scanned`/`awaiting_context` 均展示“我已发送确认命令”。手动 GET 返回 scanned 或 awaiting_context 时分别显示等待确认/接收的提示，且断言不存在成功文案；网络失败时显示“查询绑定状态失败，请稍后重试”，同样不显示成功。
 - 仅 `active` 分支会 `clear()`、重新 `load()` binding 并展示成功；浏览器回归确认绑定状态刷新为“已绑定”。非终态错误在自动轮询的 `finally` 中仍安排下一轮，不改变原有轮询恢复语义；取消用例仍验证 DELETE 一次且随后 2.3 秒无 poll。
 - 执行：`cd app && npm run build:h5` 通过；`cd app && npm run test:h5` 通过，Playwright **10/10**。为覆盖此前未覆盖的网络失败路径，本验证阶段在既有 Hermes H5 用例补充了请求 abort 后的失败提示/无成功断言，未放宽原断言。`git diff --check` 通过。
+
+#### 36.4 AccountManager pinned item_list 解析复核（2026-08-09）
+
+**结论：PASS，允许提交；P1=0、P2=0、P3=0。** 差异仅为 `account_manager.py` 与对应单元测试，没有 API、数据库、依赖或 Agent 路径变更。
+
+- `HermesPrimitiveProvider.get_updates()` 先使用固定上游 `_guess_chat_type` 拒绝非 DM/官方群聊，再要求 `to_user_id` 严格等于当前 account、sender/context 均非空；仅在 `prepared` 生命周期读取真实 `item_list` 并调用固定上游 `_extract_text`。
+- 独立回归以 pinned 原语形状的 `item_list` 注入：精确正文经 provider 归一化后贯穿 `AccountManager.poll_once()`，回调接受时状态变为 active，且 target/context/cursor 均来自同一 DM；官方群聊、错误 account 与带尾随空格的非精确确认命令均为零激活。active 调用不读取 `_extract_text`。
+- `poll_once()` 不调用 provider `send`，实现亦无 Agent/AI/reply/typing/media 路径；既有错误路径断言 `provider.sends=[]` 保持。
+- 执行：`cd poc/hermes-weixin-transport && ./run-tests.sh`，**30/30 通过**；`git diff --check` 通过。本验证阶段仅补充上述最小回归与本报告，未修改业务实现。

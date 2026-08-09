@@ -39,7 +39,7 @@ def _normalize_qr_status(data: Any) -> dict[str,str]:
 class AccountProvider(Protocol):
     async def create_qr(self) -> dict[str, str]: ...
     async def qr_status(self, qr_token: str) -> dict[str, str]: ...
-    async def get_updates(self, account_id: str, token: str, base_url: str, cursor: str) -> dict[str, Any]: ...
+    async def get_updates(self, account_id: str, token: str, base_url: str, cursor: str, lifecycle: str) -> dict[str, Any]: ...
     async def send(self, account_id: str, token: str, base_url: str, target: str, context: str, text: str, client_id: str) -> dict[str, Any]: ...
 
 class AccountVault:
@@ -158,12 +158,32 @@ class HermesPrimitiveProvider:
         finally:
             if connector is not None: await connector.close()
         return _normalize_qr_status(data)
-    async def get_updates(self, account_id:str, token:str, base_url:str, cursor:str)->dict[str,Any]:
+    async def get_updates(self, account_id:str, token:str, base_url:str, cursor:str, lifecycle:str)->dict[str,Any]:
         wx=self.wx; connector=wx._make_ssl_connector()
         try:
-            async with wx.aiohttp.ClientSession(connector=connector,trust_env=False) as session: return await wx._get_updates(session,base_url=base_url,token=token,sync_buf=cursor,timeout_ms=wx.LONG_POLL_TIMEOUT_MS)
+            async with wx.aiohttp.ClientSession(connector=connector,trust_env=False) as session:
+                response=await wx._get_updates(session,base_url=base_url,token=token,sync_buf=cursor,timeout_ms=wx.LONG_POLL_TIMEOUT_MS)
         finally:
             if connector is not None: await connector.close()
+        if not isinstance(response,dict): return {"msgs":[],"get_updates_buf":cursor}
+        messages: list[dict[str,Any]]=[]
+        for message in response.get("msgs",[]) if isinstance(response.get("msgs"),list) else []:
+            if not isinstance(message,dict): continue
+            chat_type,_=wx._guess_chat_type(message,account_id)
+            if chat_type != "dm": continue
+            sender,message_account,context=message.get("from_user_id"),message.get("to_user_id"),message.get("context_token")
+            if message_account != account_id or not isinstance(sender,str) or not sender or not isinstance(context,str) or not context: continue
+            normalized={"from_user_id":sender,"to_user_id":message_account,"context_token":context}
+            if lifecycle == "prepared":
+                items=message.get("item_list")
+                if not isinstance(items,list): continue
+                try: text=wx._extract_text(items)
+                except Exception: continue
+                if not isinstance(text,str): continue
+                normalized["text"]=text
+            messages.append(normalized)
+        next_cursor=response.get("get_updates_buf")
+        return {"msgs":messages,"get_updates_buf":next_cursor if isinstance(next_cursor,str) else cursor}
     async def send(self, account_id:str, token:str, base_url:str, target:str, context:str, text:str, client_id:str)->dict[str,Any]:
         wx=self.wx; connector=wx._make_ssl_connector()
         try:
@@ -266,13 +286,13 @@ class AccountManager:
             authorized=self._callback(entry)
             if authorized=="accepted": self.vault.activate_exclusive(ref); self._last_auth[ref]=time.monotonic(); return
             if authorized=="rejected": self._retire(ref); return
-        try: response=asyncio.run(self.provider.get_updates(str(entry["providerAccountId"]),str(entry["token"]),str(entry["baseUrl"]),str(entry.get("cursor") or "")))
+        try: response=asyncio.run(self.provider.get_updates(str(entry["providerAccountId"]),str(entry["token"]),str(entry["baseUrl"]),str(entry.get("cursor") or ""),str(entry["lifecycle"])))
         except Exception: return
         for item in response.get("msgs",[]) if isinstance(response.get("msgs"),list) else []:
             if not isinstance(item,dict) or item.get("to_user_id") != entry["providerAccountId"] or item.get("room_id") or item.get("chat_room_id"): continue
-            target,context,text=item.get("from_user_id"),item.get("context_token"),item.get("text")
-            if not isinstance(target,str) or not isinstance(context,str) or not context or not isinstance(text,str): continue
-            if entry["lifecycle"]=="prepared" and text == f"确认 {entry['activationId']}":
+            target,context=item.get("from_user_id"),item.get("context_token")
+            if not isinstance(target,str) or not isinstance(context,str) or not context: continue
+            if entry["lifecycle"]=="prepared" and item.get("text") == f"确认 {entry['activationId']}":
                 entry.update({"target":target,"context":context,"cursor":str(response.get("get_updates_buf") or entry.get("cursor") or "")})
                 self.vault.put(entry)
                 authorized=self._callback(entry)
