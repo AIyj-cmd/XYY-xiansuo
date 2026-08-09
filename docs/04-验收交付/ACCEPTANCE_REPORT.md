@@ -2,9 +2,9 @@
 
 最新验收日期：2026-08-09
 
-最新基线：`chore/project-health-remediation-v2` @ `2d5ce5964c7f00ff25a4cdb31f5157bf6d8b6866`
+最新基线：`release/single-account-openclaw-v1`；本报告所随 launcher P1 闭环提交（父提交 `6576f0bc7f2352b857bf808a14c36eb7cf0dbff5`）
 
-最新结论：**项目健康离线整改 P1=0、P2=0、P3=0，允许进入合并评审；生产迁移、发布、Hermes 真实 Pilot/启用仍未授权。** 历史验收结论保留在下文，本轮详见第 13 节。
+最新结论：**release 合并后 launcher P1 已闭环，P1=0、P2=0、P3=0；允许将当前精确差异形成本地提交，并在提交后工作区干净时创建本地 RC tag。生产迁移、发布、push 和 Hermes 真实 Pilot/启用仍未授权。** 历史验收结论保留在下文，本轮详见第 14 节。
 
 ## 1. 验收边界
 
@@ -322,3 +322,35 @@
 - **Hermes：** 当前整改版本的真实 Pilot 与部署未授权；历史单条收件事实不是当前多用户 QR/部署链的放行证据。
 
 **合并评审：GO。实际 merge/push：未授权。生产发布：NO-GO，直到 R-3 和明确部署授权完成。Hermes 真实启用：NO-GO，直到另行批准并通过真实 Pilot。**
+
+## 14. Release 合并后 launcher P1 最终验收（2026-08-09）
+
+### 验收结论
+
+**PASS；P1=0、P2=0、P3=0。允许本地提交；该提交完成且工作区干净后，允许在同一提交上创建本地 RC tag。**
+
+本结论只冻结 `release/single-account-openclaw-v1` 上的 launcher 权限修复与已合并的项目健康整改；不授权 push、PR、远程 tag、部署、PM2 启动、生产数据库操作、真实登录/扫码/渠道发送或 DeepSeek 调用。
+
+### 范围与安全复核
+
+- 修复仅涉及固定三 launcher 的 Node 权限规范化器、Gateway lifecycle 脚本/测试、部署打包与解包/`rsync -a` 后的恢复点以及现有文档。未改 `server/src`、`app/src`、迁移、API、权限、渠道语义、锁文件或生产依赖。
+- 规范化器不接受路径参数；对全部白名单先以 `O_NOFOLLOW` 打开并通过 descriptor `fstat` 校验当前 UID、普通文件和单硬链接，才使用 `fchmod` 设为精确 `0755`；初检失败时不会部分修改。
+- Gateway `requireRepositoryLauncher` 的 fail-closed 校验未改；手工改为 `0775` 仍明确拒绝。符号链接、多硬链接、非属主、缺失和非普通文件反例均失败关闭。
+- `deploy/deploy.sh` 在 tar 前、远端解包后且任一 `rsync` 前、Hermes/Gateway `rsync -a` 后且任一构建/PM2 前恢复权限；打包后对三个 tar 成员精确校验 `-rwxr-xr-x`。
+- `server/data` 验收前后 SHA-256 一致；未访问生产 DB，未启动真实服务或外部通道。
+
+### 最终验证
+
+| 范围 | 结果 |
+| --- | --- |
+| 独立验证 Gateway | 连续三轮 **72/72、72/72、72/72**，无 skip/cancel/fail。 |
+| 验收再跑 Gateway | `0775 + umask 0002` 起点的 build PASS、全量 **72/72**、prestart PASS；三 launcher 每次均为精确 `0755`。 |
+| 制品/部署静态检查 | tar 三成员均为 `-rwxr-xr-x`；`bash -n deploy/deploy.sh` 和恢复顺序通过。未执行部署脚本。 |
+| 必要回归 | Server build/test **170/170**、H5 build/Playwright **17/17**、Hermes overlay **33/33** 及 dry-run 由第 40 节独立验证通过；本差异未触及其业务实现。 |
+| 完整性 | `git diff --check` PASS；`server/data` 验收前后不变。 |
+
+### 残余风险与放行建议
+
+- R-1 App 依赖风险仍按批准口径保留：29 high / 1 moderate / 0 critical，只发布静态 H5，开发服务器仅 loopback。
+- R-2/G2 上传配额/生命周期产品值、R-3 生产备份/迁移/恢复演练、Hermes 真实 Pilot 与生产监控仍是外部或人工门禁，未被本次离线验收覆盖。
+- **本地提交：GO。本地 RC tag：CONDITIONAL GO，仅在本次精确差异已提交、所有必需文档纳入同一 RC 候选集且工作区干净后创建。远端发布/生产/Hermes 真实启用：NO-GO。**

@@ -1556,3 +1556,98 @@ P2：无。
 - 测试开始时工作区干净；结束时 `git status --short` 与 `git diff --name-only` 仅有本报告 `docs/03-测试验证/TEST_REPORT.md`。没有新增业务源码、迁移、脚本、部署、锁文件或 `server/data` 改动；构建/依赖/临时产物均未进入 Git 状态。
 - 已关闭复验：历史 P1（通知能力矩阵、Hermes 关闭态）、P2（旧 JWT、安全头/上传）、P3（Gateway timeout）及 D-1 的**离线**服务链要求均通过。
 - **结论：允许进入验收阶段（代码验收放行）。** R-1 已按用户批准保留，并继续保持生产静态 H5、开发服务器 loopback 与 critical 依赖门禁；真实 Hermes/微信开关必须保持关闭。此结论不授权生产部署、生产迁移、扫码、真实发送或多人开放。
+
+## 39. `release/single-account-openclaw-v1` 合并后独立验证（2026-08-09）
+
+### 39.1 测试环境、基线与计划
+
+- 工作目录：`/home/yj/xiansuo`；分支：`release/single-account-openclaw-v1`；合并提交/HEAD：`6576f0bc7f2352b857bf808a14c36eb7cf0dbff5`（`merge: integrate project health remediation v2`）。
+- 开始前已阅读根 `AGENTS.md`、`docs/01-审计与设计/PROJECT_HEALTH_REMEDIATION_LOOP_PROMPT.md` 与本报告第 38 节。开始及测试结束前，`git status --short`、`git diff --name-only`、暂存差异和 `git diff --check` 均为空；没有待保护的用户未提交改动。
+- 开始前 `server/data` SHA-256：`app.db=8b8bc326ab3ac27a553b22ea7cacf6e34681d1f471246277907a8ed0a061d5f2`、`app.db-shm=42a2baf333a04f32142eed5a6b9eb477ae1a8c1ffc38e7124e0342c561b74c38`、`app.db-wal=194c0753141ffbc228cc791ef5627e5a1e4da3dbad325296547b25b32a839c4e`、`leads.db/xiansuo.db` 均为空文件 SHA-256；结束后逐项相同。
+- 计划：运行 Server/Gateway/Hermes/App 基线和适用生产依赖审计；Gateway 完整测试连续三轮；复核 Hermes 33 项与离线 dry-run；运行 001–010 迁移定向测试；检查历史 migration 不变、数据哈希、外部边界、归档分支和批准的 dashboard/export 产品口径。仅验证 H5，不构建或验收小程序。
+
+### 39.2 已执行命令与结果
+
+| 范围 | 命令 | 结果 |
+| --- | --- | --- |
+| Server 安装、构建、全量 | `cd server && npm ci && npm run build && npm test` | PASS；安装、TypeScript 构建通过，全量 **170/170**，无 skip/cancel。 |
+| Server 生产审计 | `cd server && npm audit --omit=dev --json` | PASS；0 vulnerabilities。 |
+| Server 迁移 | `cd server && npx tsx --test test/migrations.test.ts` | PASS；**10/10**。 |
+| Gateway 安装、构建 | `cd poc/ilink-gateway && npm ci && npm run build` | PASS。 |
+| Gateway 全量，第 1 轮 | `cd poc/ilink-gateway && npm test` | FAIL；**55/62**，7 项失败。 |
+| Gateway 全量，第 2 轮 | `cd poc/ilink-gateway && npm test` | FAIL；**55/62**，同一 7 项失败。 |
+| Gateway 全量，第 3 轮 | `cd poc/ilink-gateway && npm test` | FAIL；**55/62**，同一 7 项失败。 |
+| Gateway 生产审计 | `cd poc/ilink-gateway && npm audit --omit=dev --json` | PASS；0 vulnerabilities。 |
+| Hermes overlay | `cd poc/hermes-weixin-transport && ./run-tests.sh` | PASS；**33/33**。 |
+| Hermes 离线检查 | `cd poc/hermes-weixin-transport && ./run-hermes-weixin-transport.sh dry-run` | PASS；`offline=true`、`network=not_used`、`businessDatabase=not_used`、`residentProcess=not_started`。 |
+| App 安装、H5 构建 | `cd app && npm ci && npm run build:h5` | PASS；只构建 H5。 |
+| App H5 回归 | `cd app && npm run test:h5` | PASS；**17/17**。 |
+| App 独立 E2E | `cd app && npm run test:e2e` | PASS；**17/17**。 |
+| App 生产审计（R-1） | `cd app && npm audit --omit=dev --json` | 已执行，退出码 1：**29 high、1 moderate、0 critical**；保留为第 38.5 节已批准的 R-1 真实证据，未误报为通过。 |
+
+### 39.3 通过项、范围与安全边界
+
+- 迁移定向测试（证据：[server/test/migrations.test.ts](/home/yj/xiansuo/server/test/migrations.test.ts)）覆盖空库、历史升级、重复执行、checksum 冲突、010 故障注入回滚、`integrity_check` 和 `foreign_key_check`。相对循环基线 `82c15dc..HEAD` 的 [server/src/db.ts](/home/yj/xiansuo/server/src/db.ts) 差异仅为 010 的 35 行新增；001–009 未改。
+- Server 全量测试覆盖认证、角色变更即时生效、停用/删除、无权限 403、JWT 失效、通知 capability、Hermes 本人解绑/重绑状态机、上传签名和 staging 边界。App 浏览器测试覆盖 member 管理 API 越权 403、401 清会话、Hermes 关闭/请求失败的深链 fail-closed 与 QR POST/解绑/轮询次数为零。公司级 dashboard 和 dashboard export 按已批准口径保留，不作为越权缺陷；普通 `/api/export` 的 member 负责人隔离继续由 Server 回归覆盖。
+- Hermes overlay 的测试与 dry-run 均为本地/临时配置路径；未启动真实渠道、未扫码或发送微信、未访问生产数据库、未调用 DeepSeek、未执行部署。`bash -n` 对部署和三个 launcher 通过；PM2 配置在缺少必填的仓库外目录环境变量时拒绝载入，属于 fail-closed，未触发服务启动。
+- `archive/openclaw-multi-peer-research-20260802` 不是 HEAD 祖先（`git merge-base --is-ancestor ... HEAD` 返回 1）；合并提交父节点仅为 `364f761` 与批准整改提交 `d868bc5`，合并文件清单未含 archive/服务号分支路径。
+- 受控静态扫描未发现真实 JWT、DeepSeek key、微信 secret/token 或绝对生产 DB 路径赋值；命中的 `DB_PATH`/`DEEPSEEK_API_KEY` 仅在 Gateway 的隔离测试断言中，用来证明 wrapper 会清除继承变量。此扫描不替代密钥托管平台审计。
+
+### 39.4 失败项：P1 Gateway/Hermes launcher 权限门禁
+
+- **严重级别：P1（发布阻断）。** Gateway 的 Hermes 模式不能通过自身配置加载，故 Hermes Gateway 的 readiness、adapter 输入输出、三元组转发和 ledger 隔离 7 项回归无法完成。
+- **最小复现：**
+
+  ```bash
+  cd /home/yj/xiansuo/poc/ilink-gateway
+  npm test
+  ```
+
+  三轮均复现 `tests=62, pass=55, fail=7`。失败项包括 `Hermes readiness is local-only...`、`Hermes /livez...`、`Hermes adapter uses only bounded JSON...`、`...result_unknown...`、`...stdout contract...` 和精确 user/generation/accountRef 三元组转发。
+- **预期：** 仓库内受控 launcher 通过 [requireRepositoryLauncher](/home/yj/xiansuo/poc/ilink-gateway/src/config.ts:244) 的安全前置校验，Gateway 全量三轮稳定通过。
+- **实际：** 三个 launcher 实际模式均为 `775`：`poc/hermes-weixin-transport/run-hermes-weixin-transport.sh`、`run-account-manager.sh` 和 `poc/ilink-gateway/run-hermes-gateway.sh`；当前 `umask` 为 `0002`。校验明确拒绝组/其他用户可写的 launcher，报错为“`Hermes launcher 必须是仓库内当前用户拥有、非链接且不可被组或其他用户写入的可执行普通文件`”。Git 索引只能记录 `100755`，不能记录去掉组写的 `0755`，因此本工作区与 `tar/rsync -a` 型发布链都会保留该风险。
+- **证据：** [poc/ilink-gateway/src/config.ts](/home/yj/xiansuo/poc/ilink-gateway/src/config.ts:244) 的门禁、[poc/ilink-gateway/test/gateway.test.ts](/home/yj/xiansuo/poc/ilink-gateway/test/gateway.test.ts:34) 的 Hermes 配置测试，以及测试临时日志 `/tmp/xiansuo-gateway-merge-test-{1,2,3}.log`。
+- **建议修复方向：** 保持 fail-closed 校验，不要放宽断言或跳过测试；由实现/验收代理在受控构建或部署准备步骤中明确将三个 launcher 设为 owner-executable 且非组/其他可写（例如部署制品/目标目录统一 `0755`），并补充覆盖 `umask 0002` 与 `rsync -a` 的回归。修复后须重新执行 Gateway build、连续三轮 62/62 与 Hermes dry-run。
+
+### 39.5 未覆盖范围、测试阶段变化与结论
+
+- 未覆盖：真实微信/Hermes 渠道登录与发送、真实 DeepSeek、生产数据库迁移/恢复、远端部署与多人开放；这些均不在本次授权范围内。App 的非 H5 小程序未构建或验收。
+- 本验证未修改 `app/src`、`server/src`、`scripts`、`deploy`、迁移、锁文件或 `server/data`。测试产生的 node_modules、dist、Playwright 与 `/tmp` 日志均为工具产物且未进入 Git 状态。报告追加后，测试阶段唯一预期的受跟踪文件变化是本文件 `docs/03-测试验证/TEST_REPORT.md`。
+- **结论：不允许进入验收阶段，也不创建本地 RC tag。** Server、App、迁移、Hermes overlay/dry-run 和 R-1 记录均已完成，但 Gateway 关键全量回归三轮稳定失败。修复第 39.4 节 P1 后必须独立复验；即使复验全绿，结论也仅可允许创建本地 RC tag，**不授权 push、部署、生产迁移、真实渠道或外部发送**。
+
+## 40. Launcher 权限 P1 修复独立闭环验证（2026-08-09）
+
+### 40.1 测试环境、基线与范围
+
+- 工作目录/分支/HEAD：`/home/yj/xiansuo`、`release/single-account-openclaw-v1`、`6576f0bc7f2352b857bf808a14c36eb7cf0dbff5`。已重新阅读根 `AGENTS.md` 并保护第 39 节既有 **58 行**失败证据；该证据未删除、未改写。
+- 开始基线已有实施改动：`deploy/deploy.sh`、`poc/ilink-gateway/package.json`、`poc/ilink-gateway/test/gateway.test.ts`、新增 `poc/ilink-gateway/scripts/` 与 `test/runtime-launcher-normalizer.test.ts`、`docs/04-验收交付/DEPLOYMENT_NOTES.md`，以及第 39 节测试报告。它们均早于本轮测试，未被本验证恢复、覆盖或清理。
+- 本轮覆盖固定三 launcher：`poc/hermes-weixin-transport/run-hermes-weixin-transport.sh`、`poc/hermes-weixin-transport/run-account-manager.sh`、`poc/ilink-gateway/run-hermes-gateway.sh`。未运行 `deploy/deploy.sh`、`npm start`、PM2 或任何真实渠道命令。
+
+### 40.2 权限安全语义与恢复路径
+
+| 验证项 | 命令/证据 | 结果 |
+| --- | --- | --- |
+| 固定白名单与参数边界 | `cd poc/ilink-gateway && npm test`；[normalizer 测试](/home/yj/xiansuo/poc/ilink-gateway/test/runtime-launcher-normalizer.test.ts) | PASS；工具不接收路径或其他输入，非白名单文件保持不变。 |
+| 链接/属主/硬链接防御 | 同上 | PASS；`O_NOFOLLOW` 拒绝符号链接；descriptor `fstat` 校验普通文件、当前 UID 和 `nlink=1`；后置 symlink、硬链接、缺失、目录和伪造其他 UID 均 fail-closed。 |
+| 两阶段无部分修改 | 同上 | PASS；先打开/校验全部三路径，后续任一路径无效时前两个 `0775` launcher 保持未修改；正常路径关闭 FD 后逐项 `lstat` 复核。 |
+| 精确权限与幂等 | 同上 | PASS；`umask 000/002/022/077` fixture 与重复运行均将三项精确归一化为 `0755`，内容 SHA-256 不变。 |
+| 原 Gateway 门禁 | Gateway 全量中的 `Hermes Gateway safety gate still rejects a group-writable repository launcher` | PASS；手工 `0775` 仍被 [requireRepositoryLauncher](/home/yj/xiansuo/poc/ilink-gateway/src/config.ts:244) 拒绝，未放宽 fail-closed 门禁。 |
+| build 前恢复 | `umask 0002`、三路径手工 `chmod 0775` 后执行 `npm run build` | PASS；构建前均为 `775`，结束后均为 `755`，TypeScript 构建通过。 |
+| test 前恢复 | 同样的 `umask 0002`/手工 `0775` 起点后执行 `npm test` | PASS；结束后三路径均为 `755`，Gateway 全量 **72/72**。 |
+| start 前恢复（不启动） | 同样的 `umask 0002`/手工 `0775` 起点后仅执行 `npm run prestart` | PASS；只运行 `normalize:runtime-launchers`，三路径 `775 → 755`；未执行 `npm start`，未监听端口。 |
+| Gateway 连续回归 | `cd poc/ilink-gateway && npm test` 连续三轮 | PASS；**72/72、72/72、72/72**，无 skip/cancel；含既有 timeout/SIGKILL 回归。 |
+
+### 40.3 制品、部署边界与必要回归
+
+- 隔离 `tar` 制品只含上述三项时，逐个成员严格匹配 `-rwxr-xr-x`，验证通过。未上传、未解包到远端、未执行部署。
+- `bash -n deploy/deploy.sh` 通过；静态顺序断言确认 `normalize-runtime-launchers.mjs` 恰有三处调用：第 30 行在 `tar -czf` 前，第 77 行在远端 `tar -xzf` 后且任一 `rsync` 前，第 95 行在 Hermes/Gateway `rsync -a` 后且第一个 `npm ci` 前。故覆盖打包前、远端解包后、rsync 后的权限恢复点，不会越过构建/PM2。
+- Server `npm run build && npm test`：PASS，**170/170**。App 仅 H5：`npm run test:h5` PASS，**17/17**。Hermes overlay `./run-tests.sh` PASS，**33/33**；`./run-hermes-weixin-transport.sh dry-run` 返回 `offline=true`、`network=not_used`、`businessDatabase=not_used`、`residentProcess=not_started`。
+- 本修复未改变生产依赖或锁文件，故未重复依赖审计；第 39 节的 Server/Gateway 0 vulnerabilities 与 App R-1（29 high、1 moderate、0 critical）证据继续有效。未构建小程序。
+
+### 40.4 数据、外部边界、文件变化与放行
+
+- `server/data` 前后 SHA-256 完全一致：`app.db=8b8bc326ab3ac27a553b22ea7cacf6e34681d1f471246277907a8ed0a061d5f2`、`app.db-shm=42a2baf333a04f32142eed5a6b9eb477ae1a8c1ffc38e7124e0342c561b74c38`、`app.db-wal=194c0753141ffbc228cc791ef5627e5a1e4da3dbad325296547b25b32a839c4e`，其余两个 DB 文件为空。未改迁移或 `server/src`/`app/src`。
+- 无 Node、Python、PM2 常驻进程；未启动服务、未访问生产 DB、未调用 DeepSeek、未登录/扫码/发送真实微信、未执行网络部署。受控扫描仅命中 Gateway 测试中用于验证 `env -i` 清除 `DB_PATH`/`DEEPSEEK_API_KEY` 的假值。
+- 本轮测试新增的工作区状态只有本报告追加章节，以及由明确验证动作将三个 launcher 的**未被 Git 追踪**权限从 `775` 规范为 `755`；其余 Git 差异均为开始前已有实施改动。`git diff --check` 通过。
+- **缺陷统计：P1=0、P2=0、P3=0。** 第 39.4 节 P1 已独立复现关闭；R-1 仍为已批准残余依赖风险，不重新分类为 P 级。
+- **结论：允许进入验收阶段，并仅允许创建本地 RC tag。** 不授权 push、PR、远端部署、生产迁移、PM2 启动、真实渠道、扫码、DeepSeek 调用或任何外部发送；真实生产验证仍是未覆盖范围。

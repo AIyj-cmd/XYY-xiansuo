@@ -188,6 +188,8 @@ OpenClaw 的安装、会话检查和入站静默插件只按 [运行手册](OPEN
 
 本节只描述已打包的离线部署单元；**不授权执行 PM2、Nginx、服务器、登录、扫码、轮询或发送操作**。`deploy/deploy.sh` 会把 `poc/hermes-weixin-transport/` 和固定的 `hermes-agent-v2026.8.3` 源码副本放入制品，但只重载 API，绝不自动加载下面两个 Hermes PM2 模板。
 
+Git 只能保存三个 launcher 的可执行位，不能保存去除组写位的 `0755`。因此本地 Gateway 的 `build`、`test` 和 `start` 前、部署打包前，以及远端解包后、`rsync -a` 前后且任何构建/PM2 动作前，均会运行固定白名单的 `poc/ilink-gateway/scripts/normalize-runtime-launchers.mjs`。它不接收路径参数，先以 `O_NOFOLLOW` 打开**全部**三个受控 launcher 并以 `fstat` 校验当前 UID、普通文件和单硬链接；仅在全部初检成功后才以文件描述符统一设为 `0755`，关闭后逐项复核。任一初检失败不会修改任何 launcher。制品创建后还会逐项验证 tar 成员恰好为 `-rwxr-xr-x`。符号链接、多硬链接、非属主或无法复核均失败关闭；它绝不处理 `.env`、Secret、manager JSON、vault、账本或其他用户路径。Gateway 的 `requireRepositoryLauncher` 仍会拒绝任何组/其他用户可写 launcher，规范化不是放宽运行时门禁。
+
 - `ecosystem.hermes-account-manager.config.cjs`：单实例、固定 overlay `cwd`、仅 `127.0.0.1:38117`，配置只通过 argv 中的仓库外 `0600` JSON 路径传入；启动包装器会清空继承环境，只保留 PATH、语言、源码/Python 路径，不能含 DB、JWT、DeepSeek 或任何 Secret 实值。
 - `ecosystem.hermes-gateway.config.cjs`：单实例、固定 Gateway `cwd`、仅 `127.0.0.1:38116`。启动包装器同样以 `env -i` 清空 PM2 shell 继承值，只把 PATH/LANG/LC_ALL/TZ、明确的 `ILINK_*` 路径与固定开关传给 Node；因此 DB、JWT、DeepSeek 和 Secret 实值不会进入 Gateway。`ILINK_POC_LIVE_ENABLED=false` 与 `ILINK_HERMES_TRANSPORT_ENABLED=false` 被硬编码。两个模板均使用 15 秒正常停止窗口、5 秒重启退避、最多 10 次重启及仓库外日志目录。
 - manager JSON 默认且必须保持 `"enabled": false`。关闭态仍可在 loopback 返回 `/livez` 和纯本地 `/readyz`，但 QR、poll、内部 callback 与 send 全部拒绝，也不会创建 poll thread。Gateway `/livez`、`/readyz` 只检查配置、账本、launcher、manager 配置和超时，不调用 adapter、不启动子进程或访问网络。
@@ -218,3 +220,12 @@ OpenClaw 的安装、会话检查和入站静默插件只按 [运行手册](OPEN
 - 监控除第 11 节 Hermes 信号外，还应覆盖 401 突增/改密后重登录成功率、迁移 010 失败/checksum 冲突、上传 400/413/500 比率、staging 遗留数、CSP 违规、Server/Gateway audit 和 H5 critical 门禁。日志和告警不得携带密码、JWT、QR、target/context/cursor 或客户数据。
 
 **发布判定：合并评审 GO；生产部署 NO-GO，直到发布和 R-3 授权及演练完成；Hermes 开启 NO-GO，直到新的真实 Pilot 获批并通过。**
+
+## 13. Release launcher 权限与 RC 冻结说明（2026-08-09）
+
+- 合并基线为 `release/single-account-openclaw-v1` @ `6576f0bc7f2352b857bf808a14c36eb7cf0dbff5`；当前 launcher P1 修复尚未提交。只有将验收报告、变更日志、部署说明、回滚计划与精确实现/测试差异形成同一本地提交，且 `git status --short` 为空后，才允许在该提交上创建本地 RC tag。
+- RC 前必须保持三 launcher 为当前 UID 拥有、单硬链接、无符号链接的普通文件；`npm run build`、`npm test`、`npm start` 的 prestart 会先运行固定白名单规范化。任一校验失败都应停止，不得改为 `chmod -R`、扩大白名单或放宽 Gateway 运行时门禁。
+- 未执行 `deploy/deploy.sh`。未来另获部署授权时，打包前规范化三项并检查 tar 成员精确 `-rwxr-xr-x`；远端解包后、任一 `rsync` 前以及 Hermes/Gateway `rsync -a` 后、构建/PM2 前必须再运行同一工具。任一处失败立即中止制品或部署流程。
+- 监控仍须包含 Gateway 启动权限门禁失败、制品 launcher 权限偏离、manager/Gateway readiness、`result_unknown`、超时子进程回收和三元组不匹配取消；日志不得含 Secret、QR、accountRef 原值、target/context/cursor 或正文。
+
+**本地提交：GO。本地 RC tag：提交后工作区干净时 GO。push/远程 tag/部署/真实渠道：NO-GO。**

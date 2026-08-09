@@ -54,6 +54,18 @@ test('Hermes readiness is local-only and accepts all real switches false', () =>
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('Hermes Gateway safety gate still rejects a group-writable repository launcher', () => {
+  const dir = directory(); const launcher = join(process.cwd(), '../hermes-weixin-transport/run-hermes-weixin-transport.sh')
+  const originalMode = lstatSync(launcher).mode & 0o777
+  try {
+    chmodSync(launcher, 0o775)
+    assert.throws(() => hermesConfig(dir), /Hermes launcher 必须是仓库内当前用户拥有、非链接且不可被组或其他用户写入的可执行普通文件/)
+  } finally {
+    chmodSync(launcher, originalMode)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('Hermes /livez and /readyz do not invoke an adapter or launcher', async () => {
   const dir = directory(); try {
     const cfg = hermesConfig(dir, { ILINK_POC_LIVE_ENABLED: 'false', ILINK_HERMES_TRANSPORT_ENABLED: 'false' })

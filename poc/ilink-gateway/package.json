@@ -5,8 +5,10 @@
   "type": "module",
   "engines": { "node": ">=22.13" },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "tsx --test test/*.test.ts",
+    "normalize:runtime-launchers": "node scripts/normalize-runtime-launchers.mjs",
+    "build": "npm run normalize:runtime-launchers && tsc -p tsconfig.json",
+    "test": "npm run normalize:runtime-launchers && tsx --test test/*.test.ts",
+    "prestart": "npm run normalize:runtime-launchers",
     "start": "tsx src/server.ts",
     "gateway:health": "tsx src/cli/health.ts",
     "gateway:recipient-map-check": "node dist/cli/recipient-map-check.js",

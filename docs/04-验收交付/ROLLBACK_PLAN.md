@@ -138,3 +138,13 @@ P3 自定义 HMAC 流加密风险的后续迁移也必须采用新 schema 版本
 4. 如 010 后已有业务写入，不直接恢复旧备份。先停写、保存当前 DB/WAL/SHM 一致性快照，评估新增数据和 token version 影响；未经业务对账与数据恢复授权不覆盖。
 5. 若上传异常，先暂停上传入口，保全公开 uploads 与私有 staging 的文件清单/权限/时间戳证据。未定义 R-2/G2 产品保留值前不执行批量清理，不以删文件代替事故调查。
 6. 回滚后必须复核登录/改密、admin/member 权限、dashboard 公司级批准口径、普通导出 owner 限制、通知矩阵、上传反向用例、安全头、迁移完整性及 Server/Gateway/overlay/H5 受影响套件。真实微信和 DeepSeek 不作为回滚冒烟。
+
+## 13. Release launcher 权限 P1 修复回退（2026-08-09）
+
+本修复尚未部署、未启动真实服务、无数据库/API/渠道状态变更，因此当前回退仅是本地代码/文档回退，不存在数据恢复动作。
+
+1. 提交前不采纳时，仅从拟提交集排除 normalizer、Gateway lifecycle/测试、`deploy/deploy.sh` 差异和本次四份交付文档；不得清理、覆盖或回滚用户其他未提交改动。
+2. 提交或本地 RC tag 后不采纳时，对 launcher P1 的单一提交使用正常 `git revert`，保留历史；不使用 `git reset --hard`，不移动 tag 伪造原 RC 指向。
+3. 若未来已制作但未部署制品，废弃该制品并回到上一已批准制品；不修改制品内 launcher 权限后继续冒充原 RC。重新生成时必须重跑 tar 精确权限检查。
+4. 若未来在另行授权下已部署，先保持所有 Hermes/live/通知规则关闭，按 Worker → API → Gateway → manager 停止，保留 ledger/vault/日志；切回上一已验证制品。本修复无 schema 变更，不得恢复或改写数据库作为 launcher 回退手段。
+5. 回退验证：三 launcher 为当前 UID 拥有的非链接普通文件；所选制品内权限与其已批准安全门禁一致；Gateway 受影响测试、`bash -n deploy/deploy.sh`、`git diff --check` 通过；`server/data` 哈希不变；无 PM2/Gateway/manager/Worker 常驻进程。

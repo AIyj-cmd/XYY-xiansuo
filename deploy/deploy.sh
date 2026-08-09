@@ -25,6 +25,9 @@ fi
 # archived.  This dry-run creates only a temporary fake config/vault/state and
 # never starts a service, uses DNS/socket, reads the business DB, or sends.
 HERMES_SOURCE_DIR="$HERMES_SOURCE_DIR" ./poc/hermes-weixin-transport/run-hermes-weixin-transport.sh dry-run
+# Git/tar preserve executable status but not the non-group-writable 0755 mode.
+# This fixed-allowlist tool never accepts paths and cannot touch runtime data.
+node ./poc/ilink-gateway/scripts/normalize-runtime-launchers.mjs
 tar -czf "$PACK" \
   --exclude='node_modules' \
   --exclude='.git' \
@@ -45,6 +48,16 @@ tar -czf "$PACK" \
   app/dist/build/h5/ \
   deploy/ \
   -C "$(dirname "$HERMES_SOURCE_DIR")" "$(basename "$HERMES_SOURCE_DIR")"
+for launcher in \
+  poc/hermes-weixin-transport/run-hermes-weixin-transport.sh \
+  poc/hermes-weixin-transport/run-account-manager.sh \
+  poc/ilink-gateway/run-hermes-gateway.sh; do
+  listing="$(tar -tvzf "$PACK" "$launcher")"
+  if [ "$(printf '%s\n' "$listing" | awk -v expected="$launcher" '$1 == "-rwxr-xr-x" && $NF == expected { count += 1 } END { print count + 0 }')" != "1" ]; then
+    echo "部署制品中的 launcher 必须恰好为 -rwxr-xr-x：$launcher" >&2
+    exit 1
+  fi
+done
 
 echo "====== [3/4] 上传到服务器 ======"
 scp "$PACK" "$SERVER:/tmp/"
@@ -60,6 +73,9 @@ tar -xzf xiansuo-pack.tar.gz -C /tmp/xiansuo-src
 
 : "${APP_DIR:?远端 APP_DIR 未设置}"
 
+# Validate the extracted artifact before any rsync can preserve its mode.
+node /tmp/xiansuo-src/poc/ilink-gateway/scripts/normalize-runtime-launchers.mjs
+
 # 同步 server 代码
 rsync -a --exclude='data' --exclude='uploads' /tmp/xiansuo-src/server/ "$APP_DIR/server/"
 
@@ -73,6 +89,10 @@ rsync -a /tmp/xiansuo-src/poc/ilink-gateway/ "$APP_DIR/poc/ilink-gateway/"
 mkdir -p "$APP_DIR/poc/hermes-weixin-transport" "$APP_DIR/vendor"
 rsync -a /tmp/xiansuo-src/poc/hermes-weixin-transport/ "$APP_DIR/poc/hermes-weixin-transport/"
 rsync -a /tmp/xiansuo-src/hermes-agent-v2026.8.3/ "$APP_DIR/vendor/hermes-agent-v2026.8.3/"
+
+# rsync -a can preserve a group-writable mode produced under umask 0002.
+# Normalize only the three repository runtime launchers before any build/PM2.
+node "$APP_DIR/poc/ilink-gateway/scripts/normalize-runtime-launchers.mjs"
 
 # 同步前端产物
 mkdir -p "$APP_DIR/app/dist/build/h5"
