@@ -155,8 +155,10 @@ def _classify_response(response: object, request: SendRequest) -> dict[str, str]
             return _result("sent", "ILINK_SENT", "ret_zero_errcode_zero", request)
         return _result("sent", "ILINK_SENT", "ret_zero", request)
 
-    # errcode=0 without ret is not a documented send success shape.
-    return _result("result_unknown", "ILINK_SEND_RESULT_UNKNOWN", "unrecognized_object", request)
+    # The pinned official runtime can acknowledge a submitted send with only
+    # errcode=0.  Its value is validated above as a real integer, so accepting
+    # this narrow shape does not reinterpret bools, strings or null as success.
+    return _result("sent", "ILINK_SENT", "errcode_zero", request)
 
 
 PostOnce = Callable[[VerifiedUpstream, TransportConfig, SendRequest, str], Awaitable[dict[str, Any]]]

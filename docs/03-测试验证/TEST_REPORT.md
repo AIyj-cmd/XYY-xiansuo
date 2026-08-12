@@ -1809,3 +1809,31 @@ P2：无。
 - 未覆盖：真实消息/AI/Hermes/OpenClaw 调用、真实登录写操作、上传写入、并发写入、重启和生产迁移执行；这些均被本次只读授权明确排除。自动化测试已覆盖相关的权限、异常、并发/幂等与恢复路径。
 - 测试前本地工作树 clean，`server/data` 五个文件的 SHA-256 在测试后保持不变；构建/测试未新增受跟踪或未跟踪文件。测试阶段唯一工作区变化是本报告的本节追加。
 - **允许进入验收阶段（带条件 GO）**：P1/P2 均为 0，部署、运行库、恢复副本与五分钟稳定性门禁均通过。条件是将 P3-1 纳入后续依赖升级计划；在未取得新的明确授权前，继续保持所有 Notification/AI/Hermes/OpenClaw/worker 开关为 false，不进行真实外发或重启操作。
+
+## 45. Hermes `errcode=0` 响应修复独立快速复核（2026-08-12）
+
+### 45.1 环境、基线与范围
+
+- 本轮开始前已有 6 个受跟踪改动：`transport.py`、响应分类 fixture、Gateway Hermes adapter 与测试、overlay README、开发变更日志；均属于待验收修复，未恢复、覆盖或清理。`git diff --check` 通过。
+- 核验范围严格限于官方运行时仅含真正整数 `errcode=0` 的成功形态。未修改 `server/src`、迁移、Worker、绑定、幂等账本、模板、部署或任何真实渠道配置。
+- 未启动常驻服务，未访问真实业务数据库，未执行 QR、登录、扫码或微信发送；历史 `result_unknown` 记录未改写。
+
+### 45.2 已执行命令与结果
+
+| 范围 | 命令或证据 | 结果 |
+| --- | --- | --- |
+| 差异与格式 | `git status --short`、`git diff --name-only`、`git diff --check` | PASS；差异仅为上述 6 个受控文件，格式检查通过。 |
+| `0.0` 负例独立定向检查 | `PYTHONPATH=poc/hermes-weixin-transport/src python3 -c '… _classify_response({"errcode":0.0}, SendRequest(...)) …'` | PASS；精确返回 `result_unknown` / `ILINK_SEND_RESULT_UNKNOWN` / `invalid_code_type`。这确认 Python 中 `0.0 == 0` 不会绕过 `_is_real_int`。 |
+| fixture 审阅 | `response-classification.json` | PASS；新增 `{"errcode":0.0}` 断言为上述 unknown 形态；同时覆盖真正整数 0、带 opaque 字段的脱敏、bool/string/null、冲突、非零、未知对象与非对象。 |
+| Overlay 全量（实施方同轮证据） | 合规私有根下 `./run-tests.sh` | PASS；**34/34**。包含 fixture 的单次调用、固定四字段输出和 opaque 不回显验证。 |
+| Gateway（实施方同轮证据） | 合规私有根下 `npm run build`、`npm test` | PASS；build 成功、**74/74**。strict stdout 仅接纳四字段、`errcode_zero` 与 `sent/ILINK_SENT/exit 0` 配对，成功回执为确定性 `hermes-local:<sha256>`；额外字段、未知 shape 与非法 pairing 失败关闭。 |
+| Server 回归（同轮既有证据） | `cd server && npm run build && npm test` | PASS；**171/171**。 |
+
+### 45.3 结果、覆盖边界与结论
+
+- `errcode_zero` 是唯一新增成功 shape；`ret/errcode` 非零、冲突、类型错误和未知结构保持既有失败关闭语义。
+- Gateway 只在固定 stdout 契约匹配时将该 shape 映射为本地确定性 receipt；`result_unknown` 的终态幂等和禁止自动重试由 Gateway 既有 74/74 回归覆盖，未因本次变更放宽。
+- 本轮未重复执行长全套；Overlay、Gateway、Server 的完整通过数为同一修复轮的可复查执行证据，独立测试本轮额外完成了新 `0.0` 关键负例的直接行为核验与差异审阅。
+- 结束前受跟踪差异除本报告新增本节外仍为修复的 6 个文件；无新增业务源码、迁移、数据或运行服务变化。
+
+**缺陷统计：P1=0、P2=0、P3=0。允许进入验收阶段。** 本结论仅覆盖离线响应解析修复；不授权或暗示重新投递历史 `result_unknown`，也不授权真实微信发送。

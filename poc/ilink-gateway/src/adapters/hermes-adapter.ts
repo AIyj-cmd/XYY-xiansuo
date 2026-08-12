@@ -52,7 +52,7 @@ export const hermesCommandRunner: HermesCommandRunner = {
 }
 
 type OverlayResponseShape =
-  | 'empty_object' | 'ret_zero' | 'ret_zero_errcode_zero'
+  | 'empty_object' | 'ret_zero' | 'ret_zero_errcode_zero' | 'errcode_zero'
   | 'ret_nonzero' | 'errcode_nonzero' | 'both_codes_nonzero'
   | 'unrecognized_object' | 'invalid_code_type' | 'conflicting_codes' | 'non_object'
   | 'timeout' | 'http_client_error' | 'http_server_error' | 'transport_error' | 'not_attempted'
@@ -63,7 +63,7 @@ const allowedCodes: Record<OverlayResponse['status'], ReadonlySet<string>> = {
   result_unknown: new Set(['ILINK_SEND_TIMEOUT', 'ILINK_SEND_RESULT_UNKNOWN'])
 }
 const allowedResponseShapes: Record<OverlayResponse['status'], ReadonlySet<OverlayResponseShape>> = {
-  sent: new Set(['empty_object', 'ret_zero', 'ret_zero_errcode_zero']),
+  sent: new Set(['empty_object', 'ret_zero', 'ret_zero_errcode_zero', 'errcode_zero']),
   permanent_failure: new Set(['ret_nonzero', 'errcode_nonzero', 'both_codes_nonzero', 'http_client_error', 'not_attempted']),
   result_unknown: new Set(['unrecognized_object', 'invalid_code_type', 'conflicting_codes', 'non_object', 'timeout', 'http_server_error', 'transport_error'])
 }

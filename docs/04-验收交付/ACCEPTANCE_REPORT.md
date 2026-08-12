@@ -1,6 +1,37 @@
 # 安全整改生产部署最终验收报告
 
-最新验收日期：2026-08-09
+最新验收日期：2026-08-12
+
+## Hermes `errcode=0` 响应解析修复最终验收（2026-08-12）
+
+**代码验收 GO；P1=0、P2=0、P3=0。可以形成范围清晰的本地提交；本轮未授权部署、重启、扫码或真实发送。**
+
+本轮原始目标是修复已人工确认送达、但技术结果被记为
+`result_unknown` 后发现的一个严格解析缺口：固定 Hermes 官方运行时允许仅真正整数
+`errcode=0` 的明确成功形态，而原 Overlay 未识别该形态。由于历史实发未持久化
+`responseShape`，不得倒推它必然就是本形态。验收依据为用户明确
+批准的窄边界、当前实现差异与 [`TEST_REPORT.md`](../03-测试验证/TEST_REPORT.md)
+第 45 节。历史 `result_unknown` 技术与人工事实不改写、不重跑、不换 key、不补发。
+
+| 验收项 | 结果 | 证据与语义 |
+| --- | --- | --- |
+| 唯一新增成功形态 | PASS | 仅“存在 `errcode`、不存在 `ret`、且值是真正 Python `int` 0”新增映射为 `sent / ILINK_SENT / errcode_zero`。 |
+| 类型失败关闭 | PASS | `0.0`、`true`、`"0"`、`null` 均为 `result_unknown / invalid_code_type`；Python `bool` 不会因是 `int` 子类被接受。 |
+| 冲突、非零与未知 | PASS | `ret/errcode` 的 0/非零冲突继续为 `result_unknown`；真正整数非零继续为明确拒绝；未知对象、非对象、超时、断线、5xx 和坏 JSON 不变。 |
+| Gateway 原子契约 | PASS | strict stdout 仅接受四字段契约及 `sent/ILINK_SENT/errcode_zero/exit 0` 的合法组合；额外字段、未知 shape 或非法 pairing 仍为 unknown。 |
+| 回执语义 | PASS | 成功时的 `providerMessageId` 是确定性 `hermes-local:<sha256>` 本地幂等/审计 receipt，不是 Hermes/微信 Provider message ID，不得对外冒充官方回执。 |
+| 范围与数据 | PASS | 未修改 Worker、通知状态机、幂等账本、绑定、API、schema/迁移、依赖或部署脚本；不回写既有记录。 |
+
+最终验证证据：Hermes overlay **34/34**、Gateway build + **74/74**、Server build +
+**171/171**，以及独立 `0.0` 负例与 `git diff --check` 均通过。未发送第二条消息。
+
+本修复就代码与离线回归而言具备部署候选资格，但当前工作区仍是未提交差异，本轮也没有
+生产部署授权。因此当前上线建议为：**允许提交；部署须另行明确授权并以提交 SHA
+制作/核对候选制品；在此之前保持 `owner_changed` 规则关闭、Worker 停止。
+Hermes Manager/Gateway 当前仍作为已授权的测试站基础服务运行，本轮不改变其开关。**
+
+以下历史章节中将“单独 `errcode=0`”归为 unknown 的旧分类口径，自本节起仅作当时
+验收事实保留，不得作为当前实现口径；其他生产状态、P3 依赖风险和真实渠道授权边界不受本窄修复改变。
 
 已部署代码：`deployed_code_sha=7bb238f76e35e11e298d32175f8d406383e4e0f6`；GitHub
 `fix/codex-security-remediation` 精确指向该 SHA，`main` 仍为
@@ -155,7 +186,7 @@
 | 验收项 | 结果 | 证据摘要 |
 | --- | --- | --- |
 | 已知成功形态 | 通过 | 精确空对象 `{}` 映射为 `sent / ILINK_SENT / empty_object`；真正整数 `ret=0`（可带真正整数 `errcode=0`）映射为 `sent`。 |
-| 明确失败与未知结果 | 通过 | 不冲突的真正整数非零 `ret`/`errcode` 为 `permanent_failure`；0/非零冲突、单独 `errcode=0`、bool/string/null/float、未知对象与非对象均失败关闭为 `result_unknown`。 |
+| 明确失败与未知结果 | 通过（当时口径） | 本节当时将单独 `errcode=0` 归为 unknown；该项已被 2026-08-12 最新验收节的窄契约覆盖。非零、冲突、类型异常及其他未知结构的既有语义不变。 |
 | 最小响应与脱敏 | 通过 | overlay stdout 恰好为 `status`、`code`、固定枚举 `responseShape`、`idempotencyKey` 四字段；不回显原始响应、未知字段和值、正文、token、context token 或 peer。对抗 canary 只存在于测试 fixture。 |
 | 单次调用 | 通过 | 每个 fake provider 用例断言 `post_once` 调用恰好一次；无 retry、fallback、chunk、typing 或 media 路径，无 context token 时零调用。 |
 | Gateway 严格消费 | 通过 | 旧三字段、额外字段、未知 shape、status/shape 或退出码不匹配均收敛为 `result_unknown`；Hermes adapter 保持 `single_attempt`，永不返回 `retryable_failure`。 |

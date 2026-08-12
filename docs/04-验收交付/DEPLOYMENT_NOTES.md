@@ -1,5 +1,21 @@
 # 当前版本部署与运行记录
 
+> **Hermes `errcode=0` 待部署补丁（2026-08-12）：**
+> 当前工作区补丁只将固定官方运行时的“仅真正整数 `errcode=0`”增加为
+> `sent/ILINK_SENT/errcode_zero`；`0.0`/bool/string/null、冲突、非零、超时和未知响应不变。
+> 代码已通过 overlay 34/34、Gateway 74/74 和 Server 171/171，但**本轮未授权部署**；
+> 下方 `7bb238f` 仍是已部署代码事实，不得把未提交工作区差异写成已上线。
+>
+> 若另行获得部署授权：（1）先形成并固定提交 SHA；（2）用合规的仓库外
+> private root/source/python 重跑 overlay 与 Gateway build/test；（3）部署候选制品后仅做本地
+> readiness/版本/配置核对，不以真实微信作冒烟；（4）继续保持 `owner_changed`
+> Hermes 规则关闭、Worker 停止。当前测试站 Manager/Gateway 基础服务可保持现状，
+> 但不得启动 Worker 或重跑历史任务。本地 receipt
+> `hermes-local:<sha256>` 只是幂等/审计证据，不是 Provider message ID。
+>
+> 部署后监控 `responseShape=errcode_zero`、`result_unknown`、重复/错投、Worker/规则意外激活和
+> Gateway readiness；任一未知或契约不匹配立即停止，不换 key、不自动重试、不回写历史 unknown。
+
 > **当前发布记录（2026-08-09，覆盖下方所有历史“未部署/NO-GO”口径）：**
 > `deployed_code_sha=7bb238f76e35e11e298d32175f8d406383e4e0f6`，环境仅为
 > `xs.tomatopia.top`。GitHub 候选分支与该 SHA 一致，`main` 未改，未创建 PR。

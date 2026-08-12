@@ -185,6 +185,16 @@ P3 自定义 HMAC 流加密风险的后续迁移也必须采用新 schema 版本
 真实开关为 false，无常驻异常进程，`integrity_check=ok`、`foreign_key_check` 为空，且没有删除测试、放宽
 断言、丢失账本或数据覆盖。
 
+## 16. Hermes `errcode=0` 响应解析修复回退（2026-08-12）
+
+本修复尚未部署，没有 schema、数据、依赖、账号状态或真实发送变化，因此当前回退只涉及代码与文档：
+
+1. 提交前不采纳时，从拟提交范围排除本轮 overlay/Gateway 解析、fixture/测试、README 及四份交付文档差异；不清理或覆盖其他工作区改动。
+2. 提交后或未来部署后需撤回时，使用正常 `git revert`/上一已验证制品；不使用 `git reset --hard`，不回退数据库，不删除 Gateway ledger、outbox、attempt、binding 或人工确认。
+3. 若未来已部署，先确保 `owner_changed` Hermes 规则关闭并停止 Worker，再按既有顺序停止下游单元、切回上一制品；不启动真实渠道验证回退。
+4. 已有那条人工确认收到的历史投递仍保留原技术 `result_unknown/failed`、人工 `manually_confirmed_received`、实际收到 1 条和自动重试 0 的独立事实；不用新或旧分类器重跑它，不换 key、不补发。
+5. 回退后重跑 overlay 响应分类套件、Gateway build/test、Server build/test 和 `git diff --check`；确认规则仍关、Worker 仍停、无真实发送。若回退是因新形态误判，保全脱敏 stdout shape、Gateway 本地 receipt 和既有账本供调查；不保存或输出 provider 原始敏感响应。
+
 ## 15. `7bb238f` 实际生产回滚方案（2026-08-09）
 
 ### 优先级和禁止项

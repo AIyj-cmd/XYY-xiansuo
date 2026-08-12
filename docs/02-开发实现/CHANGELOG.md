@@ -1,5 +1,11 @@
 # 变更日志
 
+## Unreleased — Hermes `errcode=0` 成功响应修复（2026-08-12）
+
+- Hermes transport 将固定官方运行时仅含真正整数 `errcode=0` 的响应分类为 `sent/ILINK_SENT/errcode_zero`；布尔、字符串和 `null` 仍失败关闭为 `result_unknown`，`ret` 与 `errcode` 的冲突及非零分类保持不变。
+- Gateway strict stdout 枚举接纳 `errcode_zero`，并继续为该成功响应生成既有确定性 `hermes-local` receipt；未修改 Worker、幂等、绑定、模板、迁移或任何真实投递路径。
+- 离线验收证据为 overlay 34/34、Gateway build + 74/74、Server build + 171/171；`0.0` 负例及四字段原子 stdout 契约均通过。历史 `result_unknown/failed` 及人工收件事实不改写、不重跑。
+
 ## `7bb238f7` — Codex Security 整改生产发布（2026-08-09）
 
 - 已将 `fix/codex-security-remediation` 同步至 GitHub，远端分支精确为

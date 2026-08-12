@@ -9,8 +9,12 @@
   {"response": {"ret": 0, "errcode": 1}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "conflicting_codes"},
   {"response": {"ret": true}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "invalid_code_type"},
   {"response": {"ret": "0"}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "invalid_code_type"},
+  {"response": {"errcode": true}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "invalid_code_type"},
+  {"response": {"errcode": "0"}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "invalid_code_type"},
+  {"response": {"errcode": 0.0}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "invalid_code_type"},
   {"response": {"errcode": null}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "invalid_code_type"},
-  {"response": {"errcode": 0}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "unrecognized_object"},
+  {"response": {"errcode": 0}, "status": "sent", "code": "ILINK_SENT", "responseShape": "errcode_zero"},
+  {"response": {"errcode": 0, "opaque": "raw-provider-body-token-peer"}, "status": "sent", "code": "ILINK_SENT", "responseShape": "errcode_zero", "redactionProbe": "raw-provider-body-token-peer"},
   {"response": {"opaque": "fixture"}, "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "unrecognized_object"},
   {"response": [0], "status": "result_unknown", "code": "ILINK_SEND_RESULT_UNKNOWN", "responseShape": "non_object"}
 ]

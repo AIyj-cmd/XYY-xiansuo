@@ -753,6 +753,7 @@ test('Hermes strict stdout contract accepts only the atomic fixed response-shape
     const valid = [
       { exitCode: 0, status: 'sent', code: 'ILINK_SENT', responseShape: 'empty_object' },
       { exitCode: 0, status: 'sent', code: 'ILINK_SENT', responseShape: 'ret_zero_errcode_zero' },
+      { exitCode: 0, status: 'sent', code: 'ILINK_SENT', responseShape: 'errcode_zero' },
       { exitCode: 1, status: 'permanent_failure', code: 'ILINK_PROVIDER_REJECTED', responseShape: 'both_codes_nonzero' },
       { exitCode: 1, status: 'result_unknown', code: 'ILINK_SEND_RESULT_UNKNOWN', responseShape: 'conflicting_codes' },
     ] as const
@@ -762,6 +763,7 @@ test('Hermes strict stdout contract accepts only the atomic fixed response-shape
       const outcome = await adapter.send(item, new AbortController().signal)
       assert.equal(outcome.status, expected.status)
       assert.equal(outcome.errorCode, expected.code)
+      if (expected.status === 'sent') assert.match(outcome.providerMessageId ?? '', /^hermes-local:[a-f0-9]{64}$/)
     }
     for (const invalid of [
       { status: 'sent', code: 'ILINK_SENT', responseShape: 'ret_zero', extra: 'forbidden' },

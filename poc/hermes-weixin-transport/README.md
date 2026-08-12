@@ -26,7 +26,7 @@ printf '%s' '{"peer":"peer-a","text":"通知正文","idempotencyKey":"business-k
   ./poc/hermes-weixin-transport/run-hermes-weixin-transport.sh send --config /absolute/config.json --state-dir /absolute/state
 ```
 
-发送使用由账号、peer 与业务幂等键确定的 `client_id`，只调用一次 `ilink/bot/sendmessage`。精确 `{}`、或真正整数 `ret=0`（`errcode` 缺失或真正整数 `0`）报告 `sent`；任一真正整数 `ret`/`errcode` 非零报告永久失败；布尔、字符串、`null`、不一致或无法识别的非空对象、非对象均报告 `result_unknown`。stdout 的 `responseShape` 是固定枚举，只表达安全的响应形态，不包含上游值、未知字段名、正文、token、peer 或幂等键以外的请求信息；Gateway 仅接受包含该字段的四字段契约，旧输出失败关闭为未知。超时、断线、5xx、坏 JSON 都报告 `result_unknown`，4xx 等明确拒绝报告永久失败；不重试、分块、降级、typing 或媒体。stderr 只输出固定中文错误，不含 token、context 或正文。
+发送使用由账号、peer 与业务幂等键确定的 `client_id`，只调用一次 `ilink/bot/sendmessage`。精确 `{}`、真正整数 `ret=0`（`errcode` 缺失或真正整数 `0`），或固定官方运行时契约的仅真正整数 `errcode=0`，报告 `sent`；任一真正整数 `ret`/`errcode` 非零报告永久失败；布尔、字符串、`null`、不一致或无法识别的非空对象、非对象均报告 `result_unknown`。stdout 的 `responseShape` 是固定枚举，只表达安全的响应形态，不包含上游值、未知字段名、正文、token、peer 或幂等键以外的请求信息；Gateway 仅接受包含该字段的四字段契约，旧输出失败关闭为未知。超时、断线、5xx、坏 JSON 都报告 `result_unknown`，4xx 等明确拒绝报告永久失败；不重试、分块、降级、typing 或媒体。stderr 只输出固定中文错误，不含 token、context 或正文。
 
 运行离线测试（测试注入 fake transport，不发网络）：
 
