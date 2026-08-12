@@ -1,11 +1,11 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import staticFiles from '@fastify/static';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initDb, getDb } from './db.js';
-import { hashPassword } from './utils/password.js';
+import { initDb, getDb, getDatabasePath } from './db.js';
+import { initializeAdmin } from './bootstrap.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
 import { userRoutes } from './routes/users.js';
@@ -16,31 +16,68 @@ import { uploadRoutes, UPLOADS_DIR } from './routes/upload.js';
 import { tagRoutes } from './routes/tags.js';
 import { memoRoutes } from './routes/memo.js';
 import { notificationRoutes } from './routes/notifications.js';
+import { notificationAdminRoutes } from './routes/notification-admin.js';
+import { aiAdminRoutes } from './routes/ai-admin.js';
+import { hermesBindingRoutes } from './routes/hermes-bindings.js';
+import { resolveNotificationConfig } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = parseInt(process.env.PORT || '3000');
 const HOST = process.env.HOST || '0.0.0.0';
 
-async function bootstrap(): Promise<void> {
+// 仅允许当前同源 H5 所需的能力：H5 构建产物不再依赖内联脚本，图片上传和
+// uni-app 的运行时样式仍需要 data:/blob: 图片及内联样式。
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "media-src 'self' blob:",
+  "worker-src 'self' blob:",
+].join('; ');
+
+const PERMISSIONS_POLICY = 'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()';
+
+export async function buildApp(): Promise<FastifyInstance> {
+  // 在任何数据库或 HTTP 副作用之前验证全部阶段三开关。
+  resolveNotificationConfig();
   // 初始化数据库
   initDb();
+  console.log(`数据库路径: ${getDatabasePath()}`);
 
-  // 首次启动自动创建 admin 账号
-  const db = getDb();
-  const userCount = (db.prepare('SELECT COUNT(*) AS cnt FROM users').get() as any).cnt;
-  if (userCount === 0) {
-    const hash = await hashPassword('xyy123456');
-    db.prepare("INSERT INTO users (username, name, password_hash, role) VALUES (?,?,?,?)").run('admin', '管理员', hash, 'admin');
-    console.log('======================================================');
-    console.log('首次启动：已自动创建管理员账号');
-    console.log('用户名: admin  初始密码: xyy123456');
-    console.log('请登录后立即修改密码！');
-    console.log('======================================================');
-  }
+  // 只有迁移与完整性检查都成功后才允许初始化管理员和注册 HTTP 服务。
+  await initializeAdmin(getDb());
 
   const app = Fastify({
     logger: false,
+    // Forwarded headers are accepted only when the directly connected proxy is
+    // loopback. Public clients cannot forge their source address.
+    trustProxy: (address) => address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1',
+  });
+
+  // 对 API、H5、上传文件和错误响应统一生效。HSTS 只由 HTTPS Nginx
+  // server 块提供，避免在本地 HTTP 或未正确终止 TLS 的代理链中伪造 HTTPS。
+  app.addHook('onRequest', (_request, reply, done) => {
+    reply
+      .header('Content-Security-Policy', CONTENT_SECURITY_POLICY)
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('X-Frame-Options', 'DENY')
+      .header('Referrer-Policy', 'no-referrer')
+      .header('Permissions-Policy', PERMISSIONS_POLICY);
+    done();
+  });
+
+  // 必须在注册任何封装插件或路由前设置，确保所有子上下文继承统一错误包络。
+  app.setErrorHandler((error, _request, reply) => {
+    console.error('服务器错误:', error);
+    reply.code(500).send({ code: 1, msg: '服务器内部错误', data: null });
   });
 
   // 请求日志
@@ -85,7 +122,9 @@ async function bootstrap(): Promise<void> {
 
   const h5Path = path.join(__dirname, '..', '..', 'app', 'dist', 'build', 'h5');
   try {
-    await app.register(staticFiles, { root: h5Path, prefix: '/' });
+    // 静态文件显式注册为路由，让不存在的 H5 路径继续进入下方 SPA fallback。
+    // wildcard=true 会抢先匹配深链并直接返回静态 404，导致刷新详情页失败。
+    await app.register(staticFiles, { root: h5Path, prefix: '/', wildcard: false });
     // SPA fallback: 非API路由返回index.html
     app.setNotFoundHandler(async (request, reply) => {
       if (request.url.startsWith('/api/')) {
@@ -109,20 +148,25 @@ async function bootstrap(): Promise<void> {
   await app.register(tagRoutes);
   await app.register(memoRoutes);
   await app.register(notificationRoutes);
+  await app.register(notificationAdminRoutes);
+  await app.register(hermesBindingRoutes);
+  await app.register(aiAdminRoutes);
   await app.register(staticFiles, { root: UPLOADS_DIR, prefix: '/uploads/', decorateReply: false });
   await app.register(uploadRoutes);
 
-  // 全局错误处理
-  app.setErrorHandler((error, _request, reply) => {
-    console.error('服务器错误:', error);
-    reply.code(500).send({ code: 1, msg: '服务器内部错误', data: null });
-  });
+  return app;
+}
 
+export async function bootstrap(): Promise<void> {
+  const app = await buildApp();
   await app.listen({ port: PORT, host: HOST });
   console.log(`服务已启动: http://localhost:${PORT}`);
 }
 
-bootstrap().catch(err => {
-  console.error('启动失败:', err);
-  process.exit(1);
-});
+const entrypoint = process.argv[1] && path.resolve(process.argv[1]);
+if (entrypoint && fileURLToPath(import.meta.url) === entrypoint) {
+  bootstrap().catch(err => {
+    console.error('启动失败:', err);
+    process.exit(1);
+  });
+}

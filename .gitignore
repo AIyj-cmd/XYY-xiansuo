@@ -8,6 +8,7 @@ server/dist/
 # Runtime data and user uploads
 server/data/
 server/uploads/
+server/upload-staging/
 server/backups/
 
 # Environment variables and secrets
@@ -25,6 +26,7 @@ server/backups/
 *.swp
 .DS_Store
 Thumbs.db
+app/test-results/
 
 # Local editor and agent settings
 .vscode/

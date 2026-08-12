@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
-import { get, post } from '../../utils/request';
+import { get, post, request } from '../../utils/request';
 import { downloadFile } from '../../utils/file';
 import { useUserStore } from '../../store/user';
 import { THEMES, applyTheme, getThemeId } from '../../utils/theme';
@@ -11,6 +11,16 @@ const store = useUserStore();
 const activeTheme = ref(getThemeId());
 const showChangePwd = ref(false);
 const unreadNoticeCount = ref(0);
+const hermesBindingEnabled = ref(false);
+
+async function loadHermesBindingCapability() {
+  try {
+    const capability = await request<{ enabled?: boolean }>('/api/hermes-binding', { showError: false });
+    hermesBindingEnabled.value = capability.enabled === true;
+  } catch {
+    hermesBindingEnabled.value = false;
+  }
+}
 
 async function loadUnreadNoticeCount() {
   try {
@@ -40,6 +50,7 @@ onMounted(() => {
   if (!store.isLoggedIn()) {
     uni.reLaunch({ url: '/pages/login/index' });
   }
+  void loadHermesBindingCapability();
 });
 
 async function handleChangePwd() {
@@ -62,10 +73,9 @@ async function handleChangePwd() {
       new_password: newPwd.value,
     });
     uni.showToast({ title: '密码修改成功', icon: 'success' });
-    showChangePwd.value = false;
-    oldPwd.value = '';
-    newPwd.value = '';
-    newPwd2.value = '';
+    // 服务端已撤销当前 JWT，立即清除本地会话而不是等下一次 API 返回 401。
+    store.logout();
+    uni.reLaunch({ url: '/pages/login/index' });
   } finally {
     changing.value = false;
   }
@@ -152,6 +162,12 @@ function handleLogout() {
       <view class="menu-item" @click="uni.navigateTo({ url: '/pages/memo/index' })">
         <text class="menu-icon">📝</text>
         <text class="menu-text">备忘录</text>
+        <text class="menu-arrow">›</text>
+      </view>
+
+      <view v-if="hermesBindingEnabled" class="menu-item" @click="uni.navigateTo({ url: '/pages/hermes-binding/index' })">
+        <text class="menu-icon">💬</text>
+        <text class="menu-text">微信通知绑定</text>
         <text class="menu-arrow">›</text>
       </view>
 

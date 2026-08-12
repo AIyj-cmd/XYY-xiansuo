@@ -1,0 +1,44 @@
+const path = require('node:path');
+
+const requiredAbsoluteDirectory = (name) => {
+  const value = process.env[name];
+  if (!value || !path.isAbsolute(value)) throw new Error(`${name} must be an absolute repository-external directory`);
+  return value;
+};
+
+module.exports = {
+  apps: [{
+    name: 'xiansuo-notification-worker',
+    script: 'dist/notification-worker.js',
+    cwd: requiredAbsoluteDirectory('XIANSUO_SERVER_DIR'),
+    interpreter: 'node',
+    instances: 1,
+    exec_mode: 'fork',
+    autorestart: true,
+    stop_exit_codes: [0],
+    merge_logs: true,
+    env: {
+      NODE_ENV: process.env.NODE_ENV || 'production',
+      DB_PATH: process.env.DB_PATH,
+      LEAD_POOL_CLAIM_ENABLED: process.env.LEAD_POOL_CLAIM_ENABLED || 'false',
+      NOTIFICATION_WORKER_ENABLED: process.env.NOTIFICATION_WORKER_ENABLED || 'false',
+      NOTIFICATION_CAPTURE_ENABLED: process.env.NOTIFICATION_CAPTURE_ENABLED || 'false',
+      NOTIFICATION_MOCK_ENABLED: process.env.NOTIFICATION_MOCK_ENABLED || 'false',
+      NOTIFICATION_SCHEDULER_ENABLED: process.env.NOTIFICATION_SCHEDULER_ENABLED || 'false',
+      OPENCLAW_CHANNEL_ENABLED: process.env.OPENCLAW_CHANNEL_ENABLED || 'false',
+      OPENCLAW_PILOT_USER_ID: process.env.OPENCLAW_PILOT_USER_ID,
+      OPENCLAW_GATEWAY_URL: process.env.OPENCLAW_GATEWAY_URL || 'http://127.0.0.1:38115',
+      OPENCLAW_GATEWAY_SECRET_FILE: process.env.OPENCLAW_GATEWAY_SECRET_FILE,
+      OPENCLAW_GATEWAY_SEND_TIMEOUT_MS: process.env.OPENCLAW_GATEWAY_SEND_TIMEOUT_MS || '30000',
+      OPENCLAW_GATEWAY_TIMEOUT_MS: process.env.OPENCLAW_GATEWAY_TIMEOUT_MS || '40000',
+      OPENCLAW_MAX_ATTEMPTS: process.env.OPENCLAW_MAX_ATTEMPTS || '2',
+      HERMES_CHANNEL_ENABLED: process.env.HERMES_CHANNEL_ENABLED || 'false',
+      HERMES_BINDING_ENABLED: process.env.HERMES_BINDING_ENABLED || 'false',
+      HERMES_GATEWAY_URL: process.env.HERMES_GATEWAY_URL || 'http://127.0.0.1:38116',
+      HERMES_GATEWAY_SECRET_FILE: process.env.HERMES_GATEWAY_SECRET_FILE,
+      HERMES_INTERNAL_SECRET_FILE: process.env.HERMES_INTERNAL_SECRET_FILE,
+      HERMES_ACCOUNT_MANAGER_URL: process.env.HERMES_ACCOUNT_MANAGER_URL || 'http://127.0.0.1:38117',
+      HERMES_ACCOUNT_MANAGER_SECRET_FILE: process.env.HERMES_ACCOUNT_MANAGER_SECRET_FILE,
+    },
+  }],
+};

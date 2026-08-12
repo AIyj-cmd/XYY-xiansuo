@@ -1,0 +1,11 @@
+{
+  "id": "xiansuo-openclaw-no-reply",
+  "name": "XYY OpenClaw 微信入站静默",
+  "description": "只拦截 openclaw-weixin 入站 Agent 回合，禁止自动 AI 回复。",
+  "version": "0.1.0",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

@@ -7,7 +7,10 @@ import { fileURLToPath } from 'url';
 
 const scryptAsync = promisify(scrypt);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, '..', 'server', 'data', 'app.db');
+const DB_PATH = process.env.DB_PATH
+  ? path.resolve(process.cwd(), process.env.DB_PATH)
+  : path.join(__dirname, '..', 'server', 'data', 'app.db');
+const seedMemberPassword = process.env.SEED_MEMBER_PASSWORD;
 
 async function hashPwd(password: string): Promise<string> {
   const salt = randomBytes(16).toString('hex');
@@ -40,6 +43,9 @@ function daysLater(n: number): string {
 }
 
 async function main() {
+  if (!seedMemberPassword || seedMemberPassword.length < 12) {
+    throw new Error('SEED_MEMBER_PASSWORD 必须设置且至少 12 位；种子脚本不提供固定共享密码');
+  }
   const db = new DatabaseSync(DB_PATH);
 
   // 检查 admin 是否存在
@@ -50,8 +56,8 @@ async function main() {
   }
 
   // 创建业务员
-  const memberHash1 = await hashPwd('xyy123456');
-  const memberHash2 = await hashPwd('xyy123456');
+  const memberHash1 = await hashPwd(seedMemberPassword);
+  const memberHash2 = await hashPwd(seedMemberPassword);
 
   let user1 = db.prepare("SELECT id FROM users WHERE username = 'zhangsan'").get() as any;
   if (!user1) {
@@ -66,7 +72,7 @@ async function main() {
   }
 
   const owners = [admin.id, user1.id, user2.id];
-  console.log('业务员账号创建完成：zhangsan, lisi（密码均为 xyy123456）');
+  console.log('业务员账号创建完成：zhangsan, lisi（密码来自 SEED_MEMBER_PASSWORD）');
 
   // 生成 20 条线索（覆盖各状态/来源/逾期情形）
   const scenarios = [

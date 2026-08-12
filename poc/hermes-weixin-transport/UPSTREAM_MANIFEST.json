@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "upstream": {
+    "repository": "https://github.com/NousResearch/hermes-agent.git",
+    "tag": "v2026.8.3",
+    "commit": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
+    "tree": "b217767ccb994605dad522e693fa1b4cdbc2f352",
+    "package_name": "hermes-agent",
+    "version": "0.20.0",
+    "license": "MIT"
+  },
+  "files": {
+    "LICENSE": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
+    "pyproject.toml": "64d1085ee1c23caf0ae0d9e65c73e280f466362ed43fdda1531f18f3af1d9869",
+    "gateway/platforms/weixin.py": "e745f2bc7faaa6bbbdd8615fbfc79ca327ca6d0e7700620f37fc21fed14a178a"
+  }
+}

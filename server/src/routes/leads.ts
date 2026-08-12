@@ -2,9 +2,14 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { getDb } from '../db.js';
 import { authenticate } from '../middleware/auth.js';
-import { nowDatetime, todayDate } from '../utils/datetime.js';
+import { nowDatetime } from '../utils/datetime.js';
+import { resolveNotificationConfig, resolvePoolIdleDays } from '../config.js';
+import { randomUUID } from 'node:crypto';
+import { assertActiveOwner, OwnerTransferError, transferLeadOwner } from '../services/lead-owner.js';
+import { recomputeFollowUpDerived } from '../services/follow-up-derived.js';
+import { getLeadDetail, listLeads } from '../services/lead-query-service.js';
 
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
 function addLog(db: DatabaseSync, leadId: number, userId: number, action: string, field?: string, oldVal?: string, newVal?: string) {
   db.prepare(`INSERT INTO audit_logs (lead_id, user_id, action, field, old_val, new_val) VALUES (?,?,?,?,?,?)`)
@@ -14,6 +19,7 @@ function addLog(db: DatabaseSync, leadId: number, userId: number, action: string
 const STATUS_VALUES = ['新线索', '跟进中', '已报价', '已成交', '已流失', '暂搁置', '停止跟进'] as const;
 const INTENT_VALUES = ['高', '中', '低', '未知'] as const;
 const FOLLOW_TYPE_VALUES = ['电话', '微信', '拜访', '其他'] as const;
+const POOL_IDLE_DAYS = resolvePoolIdleDays();
 
 // 手机号选填：小红书私信这类线索初期往往只有微信号，没有手机号。
 // 空字符串会被当成"未填写"归一化为 undefined，避免多条空手机号撞唯一索引。
@@ -64,7 +70,11 @@ const leadsListQuerySchema = z.object({
 });
 
 const poolQuerySchema = z.object({
-  days: z.coerce.number({ error: 'days 必须是数字' }).int('days 必须是整数').min(1, 'days 最小为1').max(365, 'days 最大为365').default(7),
+  days: z.coerce.number({ error: 'days 必须是数字' })
+    .int('days 必须是整数')
+    .min(POOL_IDLE_DAYS, `公海阈值不能少于 ${POOL_IDLE_DAYS} 天`)
+    .max(365, 'days 最大为365')
+    .default(POOL_IDLE_DAYS),
 });
 
 const followUpSchema = z.object({
@@ -90,7 +100,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
 
     const db = getDb();
     let sql = 'SELECT l.id, l.company_name, l.contact_name, l.phone, u.name AS owner_name FROM leads l LEFT JOIN users u ON l.owner_id = u.id WHERE l.phone = ?';
-    const params: unknown[] = [phone];
+    const params: SQLInputValue[] = [phone];
     if (exclude_id) { sql += ' AND l.id != ?'; params.push(exclude_id); }
 
     const lead = db.prepare(sql).get(...params) as any;
@@ -103,75 +113,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) {
       return reply.code(400).send({ code: 1, msg: parsed.error.issues[0].message, data: null });
     }
-    const q = parsed.data;
-    const page = q.page;
-    const pageSize = q.pageSize;
-    const offset = (page - 1) * pageSize;
-
-    const conditions: string[] = ['l.is_deleted = 0'];
-    const params: unknown[] = [];
-
-    if (q.keyword) {
-      conditions.push('(l.company_name LIKE ? OR l.contact_name LIKE ? OR l.phone LIKE ?)');
-      const kw = `%${q.keyword}%`;
-      params.push(kw, kw, kw);
-    }
-    if (q.status) {
-      const statuses = q.status.split(',').map(s => s.trim()).filter(Boolean);
-      if (statuses.length) {
-        conditions.push(`l.status IN (${statuses.map(() => '?').join(',')})`);
-        params.push(...statuses);
-      }
-    }
-    if (q.source) { conditions.push('l.source = ?'); params.push(q.source); }
-    if (q.owner_id) { conditions.push('l.owner_id = ?'); params.push(Number(q.owner_id)); }
-    if (q.industry) { conditions.push('l.industry = ?'); params.push(q.industry); }
-    if (q.intent) { conditions.push('l.intent_level = ?'); params.push(q.intent); }
-    if (q.tag_id) {
-      conditions.push('EXISTS (SELECT 1 FROM lead_tags lt WHERE lt.lead_id=l.id AND lt.tag_id=?)');
-      params.push(Number(q.tag_id));
-    }
-    if (q.date) { conditions.push('l.lead_date = ?'); params.push(q.date); }
-    // "今日新增"：按创建时间筛今天、最新的排前面，跟其它排序方式不是一回事，单独处理
-    if (q.sort === 'created_new') {
-      conditions.push('DATE(l.created_at) = ?');
-      params.push(todayDate());
-    }
-    if (q.favorite_only === '1') {
-      conditions.push('EXISTS (SELECT 1 FROM favorites f WHERE f.lead_id = l.id AND f.user_id = ?)');
-      params.push(request.user.id);
-    }
-
-    const sortMap: Record<string, string> = {
-      last_follow: 'l.last_follow_at',
-      lead_date: 'l.lead_date',
-      next_follow: 'l.next_follow_at',
-      created_new: 'l.created_at',
-    };
-    const sortCol = sortMap[q.sort || ''] || 'l.last_follow_at';
-    const order = q.order === 'asc' ? 'ASC' : 'DESC';
-
-    const where = conditions.join(' AND ');
-    const db = getDb();
-
-    const totalRow = db.prepare(
-      `SELECT COUNT(*) AS cnt FROM leads l WHERE ${where}`
-    ).get(...params) as any;
-    const total = totalRow.cnt;
-
-    const leads = db.prepare(`
-      SELECT l.*,
-        u.name AS owner_name,
-        (SELECT content FROM follow_ups WHERE lead_id = l.id ORDER BY created_at DESC LIMIT 1) AS last_follow_content,
-        EXISTS(SELECT 1 FROM favorites f WHERE f.lead_id = l.id AND f.user_id = ?) AS is_favorited
-      FROM leads l
-      LEFT JOIN users u ON l.owner_id = u.id
-      WHERE ${where}
-      ORDER BY ${sortCol} ${order} NULLS LAST
-      LIMIT ? OFFSET ?
-    `).all(request.user.id, ...params, pageSize, offset);
-
-    return reply.send({ code: 0, msg: 'ok', data: { total, page, pageSize, list: leads } });
+    return reply.send({ code: 0, msg: 'ok', data: listLeads(getDb(), parsed.data, request.user.id) });
   });
 
   // 新增线索
@@ -194,17 +136,28 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const ownerId = data.owner_id ?? request.user.id;
+    if (request.user.role !== 'admin' && ownerId !== request.user.id) {
+      return reply.code(403).send({ code: 1, msg: '普通用户只能创建自己负责的线索', data: null });
+    }
+    try {
+      assertActiveOwner(db, ownerId);
+    } catch (error) {
+      if (error instanceof OwnerTransferError) {
+        return reply.code(400).send({ code: 1, msg: error.message, data: null });
+      }
+      throw error;
+    }
     let insertId: number;
     try {
       const res = db.prepare(`
-        INSERT INTO leads (company_name, contact_name, phone, wechat, industry, source, source_note, demand_note, intent_level, status, owner_id, lead_date, next_follow_at, created_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO leads (company_name, contact_name, phone, wechat, industry, source, source_note, demand_note, intent_level, status, owner_id, lead_date, next_follow_at, next_follow_at_source, created_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
         data.company_name || null, data.contact_name, data.phone || null,
         data.wechat || null, data.industry || null, data.source,
         data.source_note || null, data.demand_note || null,
         data.intent_level, data.status, ownerId, data.lead_date,
-        data.next_follow_at || null, request.user.id
+        data.next_follow_at || null, data.next_follow_at ? 'manual' : null, request.user.id
       );
       insertId = Number(res.lastInsertRowid);
     } catch (err) {
@@ -222,15 +175,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
   // 线索详情
   app.get('/api/leads/:id', { preHandler: authenticate }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const db = getDb();
-    const lead = db.prepare(`
-      SELECT l.*, u.name AS owner_name, c.name AS creator_name,
-        EXISTS(SELECT 1 FROM favorites f WHERE f.lead_id = l.id AND f.user_id = ?) AS is_favorited
-      FROM leads l
-      LEFT JOIN users u ON l.owner_id = u.id
-      LEFT JOIN users c ON l.created_by = c.id
-      WHERE l.id = ? AND l.is_deleted = 0
-    `).get(request.user.id, Number(id)) as any;
+    const lead = getLeadDetail(getDb(), Number(id), request.user.id) as any;
 
     if (!lead) return reply.code(404).send({ code: 1, msg: '线索不存在', data: null });
     return reply.send({ code: 0, msg: 'ok', data: lead });
@@ -277,12 +222,12 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const fields: string[] = [];
-    const values: unknown[] = [];
+    const values: SQLInputValue[] = [];
     const fieldMap: Record<string, string> = {
       company_name: 'company_name', contact_name: 'contact_name', phone: 'phone',
       wechat: 'wechat', industry: 'industry', source: 'source', source_note: 'source_note',
       demand_note: 'demand_note', intent_level: 'intent_level', status: 'status',
-      owner_id: 'owner_id', lead_date: 'lead_date', next_follow_at: 'next_follow_at',
+      lead_date: 'lead_date', next_follow_at: 'next_follow_at',
     };
 
     for (const [k, col] of Object.entries(fieldMap)) {
@@ -291,31 +236,57 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
         values.push((data as any)[k] ?? null);
       }
     }
+    if ('next_follow_at' in data) {
+      fields.push('next_follow_at_source = ?');
+      values.push(data.next_follow_at ? 'manual' : null);
+    }
 
-    if (fields.length === 0) return reply.send({ code: 1, msg: '没有要更新的字段', data: null });
+    const transferringOwner = 'owner_id' in data;
+    if (fields.length === 0 && !transferringOwner) return reply.send({ code: 1, msg: '没有要更新的字段', data: null });
+
+    if (transferringOwner && data.owner_id === undefined) {
+      return reply.code(400).send({ code: 1, msg: '负责人不能为空', data: null });
+    }
 
     // 读取更新前的值用于日志
     const before = db.prepare('SELECT * FROM leads WHERE id = ?').get(Number(id)) as any;
 
-    fields.push('updated_at = ?');
-    values.push(nowDatetime());
-    values.push(Number(id));
+    const now = nowDatetime();
     try {
-      db.prepare(`UPDATE leads SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+      db.exec('BEGIN IMMEDIATE;');
+      if (fields.length > 0) {
+        const updateValues = [...values, now, Number(id)];
+        db.prepare(`UPDATE leads SET ${fields.join(', ')}, updated_at = ? WHERE id = ?`).run(...updateValues);
+      }
+      if (transferringOwner) {
+        transferLeadOwner(db, {
+          leadId: Number(id),
+          newOwnerId: data.owner_id!,
+          actorUserId: request.user.id,
+          source: 'single_edit',
+          operationId: randomUUID(),
+          updatedAt: now,
+        });
+      }
+
+      // 负责人变更只由统一服务记录，避免同一次请求重复写 transfer 审计。
+      for (const k of Object.keys(fieldMap)) {
+        if (k in data && String((data as any)[k] ?? '') !== String(before[k] ?? '')) {
+          addLog(db, Number(id), request.user.id, 'update', k, String(before[k] ?? ''), String((data as any)[k] ?? ''));
+        }
+      }
+      db.exec('COMMIT;');
     } catch (err) {
+      try { db.exec('ROLLBACK;'); } catch { /* no open transaction */ }
       // 并发编辑撞上同一手机号：前面的查重来不及拦截，靠唯一索引兜底
       if (err instanceof Error && /UNIQUE constraint failed.*leads\.phone/.test(err.message)) {
         return reply.send({ code: 1, msg: '该手机号已被其他线索使用，请刷新后重试', data: null });
       }
-      throw err;
-    }
-
-    // 记录有变化的字段
-    for (const k of Object.keys(fieldMap)) {
-      if (k in data && String((data as any)[k] ?? '') !== String(before[k] ?? '')) {
-        const action = k === 'owner_id' ? 'transfer' : 'update';
-        addLog(db, Number(id), request.user.id, action, k, String(before[k] ?? ''), String((data as any)[k] ?? ''));
+      if (err instanceof OwnerTransferError) {
+        return reply.code(err.kind === 'lead_not_found' ? 404 : err.kind === 'concurrent_change' ? 409 : 400)
+          .send({ code: 1, msg: err.message, data: null });
       }
+      throw err;
     }
 
     return reply.send({ code: 0, msg: '更新成功', data: null });
@@ -366,7 +337,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
       FROM follow_ups f
       LEFT JOIN users u ON f.user_id = u.id
       WHERE f.lead_id = ?
-      ORDER BY f.created_at DESC
+      ORDER BY f.created_at DESC, f.id DESC
     `).all(Number(id));
     return reply.send({ code: 0, msg: 'ok', data: follows });
   });
@@ -389,30 +360,27 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
 
     const now = nowDatetime();
 
-    // 写跟进记录
     const imagesJson = data.images?.length ? JSON.stringify(data.images) : null;
-    const res = db.prepare(`
-      INSERT INTO follow_ups (lead_id, user_id, type, content, result, next_follow_at, images, amount)
-      VALUES (?,?,?,?,?,?,?,?)
-    `).run(Number(id), request.user.id, data.type, data.content, data.result || null, data.next_follow_at || null, imagesJson, data.amount ?? null);
-
-    // 状态自动化
-    db.prepare(`
-      UPDATE leads SET
-        last_follow_at = ?,
-        next_follow_at = ?,
-        status = ?,
-        updated_at = ?
-      WHERE id = ?
-    `).run(now, data.next_follow_at || null, data.status, now, Number(id));
-
-    // 跟进内容本身和约定下次跟进日期已经完整展示在「跟进记录」时间线里了，
-    // 操作日志不重复记一遍，只记跟进记录里没体现出来的「状态变化」
-    if (data.status !== lead.status) {
-      addLog(db, Number(id), request.user.id, 'update', 'status', lead.status, data.status);
+    let followUpId: number;
+    try {
+      db.exec('BEGIN IMMEDIATE;');
+      const res = db.prepare(`
+        INSERT INTO follow_ups (lead_id, user_id, type, content, result, next_follow_at, images, amount)
+        VALUES (?,?,?,?,?,?,?,?)
+      `).run(Number(id), request.user.id, data.type, data.content, data.result || null, data.next_follow_at || null, imagesJson, data.amount ?? null);
+      followUpId = Number(res.lastInsertRowid);
+      recomputeFollowUpDerived(db, Number(id), now);
+      db.prepare('UPDATE leads SET status = ?, updated_at = ? WHERE id = ?').run(data.status, now, Number(id));
+      if (data.status !== lead.status) {
+        addLog(db, Number(id), request.user.id, 'update', 'status', lead.status, data.status);
+      }
+      db.exec('COMMIT;');
+    } catch (error) {
+      try { db.exec('ROLLBACK;'); } catch { /* no open transaction */ }
+      throw error;
     }
 
-    return reply.send({ code: 0, msg: '跟进记录已保存', data: { id: res.lastInsertRowid } });
+    return reply.send({ code: 0, msg: '跟进记录已保存', data: { id: followUpId! } });
   });
 
   // 编辑跟进记录
@@ -435,7 +403,7 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     }
     const data = result.data;
     const fields: string[] = [];
-    const values: unknown[] = [];
+    const values: SQLInputValue[] = [];
     if (data.type !== undefined) { fields.push('type = ?'); values.push(data.type); }
     if (data.content !== undefined) { fields.push('content = ?'); values.push(data.content); }
     if (data.result !== undefined) { fields.push('result = ?'); values.push(data.result || null); }
@@ -443,9 +411,17 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     if ('amount' in data) { fields.push('amount = ?'); values.push(data.amount ?? null); }
     if (fields.length === 0) return reply.send({ code: 1, msg: '没有要更新的字段', data: null });
     values.push(Number(fid));
-    db.prepare(`UPDATE follow_ups SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-    // 改后的内容已经原地显示在跟进记录里了，操作日志只记"编辑过"这个动作，不重复存内容
-    addLog(db, fu.lead_id, request.user.id, 'update', 'follow_up', '', '');
+    try {
+      db.exec('BEGIN IMMEDIATE;');
+      db.prepare(`UPDATE follow_ups SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+      recomputeFollowUpDerived(db, fu.lead_id);
+      // 改后的内容已经原地显示在跟进记录里了，操作日志只记"编辑过"这个动作，不重复存内容
+      addLog(db, fu.lead_id, request.user.id, 'update', 'follow_up', '', '');
+      db.exec('COMMIT;');
+    } catch (error) {
+      try { db.exec('ROLLBACK;'); } catch { /* no open transaction */ }
+      throw error;
+    }
     return reply.send({ code: 0, msg: '跟进记录已更新', data: null });
   });
 
@@ -458,8 +434,17 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     if (request.user.role !== 'admin' && fu.user_id !== request.user.id) {
       return reply.code(403).send({ code: 1, msg: '无权限删除他人跟进记录', data: null });
     }
-    db.prepare('DELETE FROM follow_ups WHERE id = ?').run(Number(fid));
-    addLog(db, fu.lead_id, request.user.id, 'delete', 'follow_up', '', '');
+    try {
+      db.exec('BEGIN IMMEDIATE;');
+      db.prepare('DELETE FROM follow_ups WHERE id = ?').run(Number(fid));
+      // 方案 B：删除最后一条跟进时清空两项派生时间，不恢复旧人工日期。
+      recomputeFollowUpDerived(db, fu.lead_id);
+      addLog(db, fu.lead_id, request.user.id, 'delete', 'follow_up', '', '');
+      db.exec('COMMIT;');
+    } catch (error) {
+      try { db.exec('ROLLBACK;'); } catch { /* no open transaction */ }
+      throw error;
+    }
     return reply.send({ code: 0, msg: '跟进记录已删除', data: null });
   });
 
@@ -475,28 +460,56 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
     if (!result.success) return reply.code(400).send({ code: 1, msg: result.error.issues[0].message, data: null });
     const { ids, action, status, owner_id } = result.data;
     const db = getDb();
-
-    // 非管理员只能操作自己的线索
-    if (request.user.role !== 'admin') {
-      const placeholders = ids.map(() => '?').join(',');
-      const others = db.prepare(
-        `SELECT id FROM leads WHERE id IN (${placeholders}) AND is_deleted=0 AND owner_id != ?`
-      ).all(...ids, request.user.id);
-      if (others.length > 0) {
+    const uniqueIds = [...new Set(ids)];
+    const placeholders = uniqueIds.map(() => '?').join(',');
+    const now = nowDatetime();
+    if (action === 'status' && !status) {
+      return reply.code(400).send({ code: 1, msg: '缺少状态值', data: null });
+    }
+    if (action === 'transfer' && owner_id === undefined) {
+      return reply.code(400).send({ code: 1, msg: '缺少负责人', data: null });
+    }
+    try {
+      db.exec('BEGIN IMMEDIATE;');
+      const leads = db.prepare(`
+        SELECT id, owner_id FROM leads
+        WHERE id IN (${placeholders}) AND is_deleted = 0
+      `).all(...uniqueIds) as Array<{ id: number; owner_id: number | null }>;
+      if (leads.length !== uniqueIds.length) {
+        throw new OwnerTransferError('lead_not_found', '批量操作中包含不存在或已删除的线索');
+      }
+      if (request.user.role !== 'admin' && leads.some((lead) => lead.owner_id !== request.user.id)) {
+        db.exec('ROLLBACK;');
         return reply.code(403).send({ code: 1, msg: '批量操作中包含他人线索，无权限', data: null });
       }
-    }
 
-    const placeholders = ids.map(() => '?').join(',');
-    const now = nowDatetime();
-    if (action === 'status') {
-      if (!status) return reply.code(400).send({ code: 1, msg: '缺少状态值', data: null });
-      db.prepare(`UPDATE leads SET status=?, updated_at=? WHERE id IN (${placeholders}) AND is_deleted=0`).run(status, now, ...ids);
-    } else {
-      if (!owner_id) return reply.code(400).send({ code: 1, msg: '缺少负责人', data: null });
-      db.prepare(`UPDATE leads SET owner_id=?, updated_at=? WHERE id IN (${placeholders}) AND is_deleted=0`).run(owner_id, now, ...ids);
+      if (action === 'status') {
+        db.prepare(`UPDATE leads SET status=?, updated_at=? WHERE id IN (${placeholders}) AND is_deleted=0`)
+          .run(status!, now, ...uniqueIds);
+      } else {
+        assertActiveOwner(db, owner_id!);
+        const operationId = randomUUID();
+        for (const lead of leads) {
+          transferLeadOwner(db, {
+            leadId: lead.id,
+            newOwnerId: owner_id!,
+            actorUserId: request.user.id,
+            source: 'batch_transfer',
+            operationId,
+            updatedAt: now,
+          });
+        }
+      }
+      db.exec('COMMIT;');
+    } catch (error) {
+      try { db.exec('ROLLBACK;'); } catch { /* no open transaction */ }
+      if (error instanceof OwnerTransferError) {
+        return reply.code(error.kind === 'lead_not_found' ? 404 : error.kind === 'concurrent_change' ? 409 : 400)
+          .send({ code: 1, msg: error.message, data: null });
+      }
+      throw error;
     }
-    return reply.send({ code: 0, msg: `已批量更新 ${ids.length} 条`, data: null });
+    return reply.send({ code: 0, msg: `已批量更新 ${uniqueIds.length} 条`, data: null });
   });
 
   // 回收站（admin）
@@ -522,6 +535,9 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
 
   // 线索公海：超过 N 天没有跟进记录的线索（排除已成交/已流失）
   app.get('/api/pool', { preHandler: authenticate }, async (request, reply) => {
+    if (!resolveNotificationConfig().leadPoolClaimEnabled) {
+      return reply.code(403).send({ code: 1, msg: '公海待认领功能已关闭，线索池“全部线索”仍可正常使用', data: { error_code: 'LEAD_POOL_CLAIM_DISABLED' } });
+    }
     const parsed = poolQuerySchema.safeParse(request.query);
     if (!parsed.success) {
       return reply.code(400).send({ code: 1, msg: parsed.error.issues[0].message, data: null });
@@ -539,19 +555,62 @@ export async function leadRoutes(app: FastifyInstance): Promise<void> {
       ORDER BY idle_days DESC
       LIMIT 100
     `).all(threshold);
-    return reply.send({ code: 0, msg: 'ok', data: list });
+    return reply.send({
+      code: 0,
+      msg: 'ok',
+      data: {
+        minimum_days: POOL_IDLE_DAYS,
+        threshold_days: threshold,
+        total: list.length,
+        list,
+      },
+    });
   });
 
   // 认领公海线索（转移给自己）
   app.post('/api/pool/:id/claim', { preHandler: authenticate }, async (request, reply) => {
+    if (!resolveNotificationConfig().leadPoolClaimEnabled) {
+      return reply.code(403).send({ code: 1, msg: '公海待认领功能已关闭，暂不支持认领线索', data: { error_code: 'LEAD_POOL_CLAIM_DISABLED' } });
+    }
     const { id } = request.params as { id: string };
     const db = getDb();
-    const lead = db.prepare('SELECT id, owner_id FROM leads WHERE id=? AND is_deleted=0').get(Number(id)) as any;
-    if (!lead) return reply.code(404).send({ code: 1, msg: '线索不存在', data: null });
-    const now = nowDatetime();
-    const oldOwner = String(lead.owner_id ?? '');
-    db.prepare('UPDATE leads SET owner_id=?, updated_at=? WHERE id=?').run(request.user.id, now, Number(id));
-    addLog(db, Number(id), request.user.id, 'transfer', 'owner_id', oldOwner, String(request.user.id));
+    try {
+      db.exec('BEGIN IMMEDIATE;');
+      const lead = db.prepare(`
+        SELECT id, owner_id
+        FROM leads
+        WHERE id = ? AND is_deleted = 0
+          AND status NOT IN ('已成交','已流失','停止跟进')
+          AND CAST((julianday('now','localtime') - julianday(COALESCE(last_follow_at, created_at))) AS INTEGER) >= ?
+      `).get(Number(id), POOL_IDLE_DAYS) as { id: number; owner_id: number | null } | undefined;
+      if (!lead) {
+        db.exec('ROLLBACK;');
+        return reply.code(409).send({
+          code: 1,
+          msg: `该线索当前不满足进入公海的条件（至少 ${POOL_IDLE_DAYS} 天未跟进）`,
+          data: null,
+        });
+      }
+      if (lead.owner_id === request.user.id) {
+        db.exec('ROLLBACK;');
+        return reply.code(400).send({ code: 1, msg: '该线索已经由你负责', data: null });
+      }
+      transferLeadOwner(db, {
+        leadId: lead.id,
+        newOwnerId: request.user.id,
+        actorUserId: request.user.id,
+        source: 'pool_claim',
+        operationId: randomUUID(),
+        updatedAt: nowDatetime(),
+      });
+      db.exec('COMMIT;');
+    } catch (error) {
+      try { db.exec('ROLLBACK;'); } catch { /* no open transaction */ }
+      if (error instanceof OwnerTransferError) {
+        return reply.code(error.kind === 'concurrent_change' ? 409 : 400).send({ code: 1, msg: error.message, data: null });
+      }
+      throw error;
+    }
     return reply.send({ code: 0, msg: '已认领', data: null });
   });
 
