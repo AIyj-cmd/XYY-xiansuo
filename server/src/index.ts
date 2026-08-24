@@ -19,6 +19,7 @@ import { notificationRoutes } from './routes/notifications.js';
 import { notificationAdminRoutes } from './routes/notification-admin.js';
 import { aiAdminRoutes } from './routes/ai-admin.js';
 import { hermesBindingRoutes } from './routes/hermes-bindings.js';
+import { websiteLeadIntegrationRoutes } from './routes/website-leads.js';
 import { resolveNotificationConfig } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -140,6 +141,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   }
 
   await app.register(healthRoutes);
+  await app.register(websiteLeadIntegrationRoutes);
   await app.register(authRoutes);
   await app.register(userRoutes);
   await app.register(leadRoutes);

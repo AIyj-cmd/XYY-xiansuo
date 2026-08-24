@@ -20,6 +20,8 @@ module.exports = {
         HOST: '127.0.0.1',
         DB_PATH: process.env.DB_PATH,
         JWT_SECRET: process.env.JWT_SECRET,
+        WEBSITE_LEAD_INGEST_TOKEN: process.env.WEBSITE_LEAD_INGEST_TOKEN,
+        WEBSITE_LEAD_OWNER_ID: process.env.WEBSITE_LEAD_OWNER_ID,
         ADMIN_INITIAL_USERNAME: process.env.ADMIN_INITIAL_USERNAME || 'admin',
         ADMIN_INITIAL_NAME: process.env.ADMIN_INITIAL_NAME || '管理员',
         ADMIN_INITIAL_PASSWORD: process.env.ADMIN_INITIAL_PASSWORD,
