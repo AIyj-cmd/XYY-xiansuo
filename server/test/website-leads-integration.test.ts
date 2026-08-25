@@ -111,6 +111,52 @@ test('网站集成完整映射、服务器负责人控制与审计来源', async
   assert.deepEqual({ ...audit }, { user_id: ownerId, action: 'create', source: 'website_integration' });
 });
 
+test('网站服务稳定码映射为中文，已有中文服务保持不变', async () => {
+  const serviceLabels = {
+    'cloud-warehouse': '鞋服云仓',
+    'quality-inspection': '后整质检修复',
+    'logistics-cloud': '物流云',
+    all: '全链路解决方案',
+    other: '其他',
+  };
+
+  for (const [index, [service, label]] of Object.entries(serviceLabels).entries()) {
+    const response = await app.inject({
+      method: 'POST', url: '/api/integrations/website-leads', headers: integrationHeaders(),
+      payload: validLead({ phone: `13500138${String(index).padStart(3, '0')}`, email: null, service }),
+    });
+    assert.equal(response.statusCode, 200);
+    const lead = db.prepare('SELECT source_note FROM leads WHERE id = ?').get(response.json().data.id) as { source_note: string };
+    assert.equal(lead.source_note, `咨询服务：${label}`);
+  }
+
+  const customService = await app.inject({
+    method: 'POST', url: '/api/integrations/website-leads', headers: integrationHeaders(),
+    payload: validLead({ phone: '13500138999', email: null, service: '定制服务' }),
+  });
+  assert.equal(customService.statusCode, 200);
+  const lead = db.prepare('SELECT source_note FROM leads WHERE id = ?').get(customService.json().data.id) as { source_note: string };
+  assert.equal(lead.source_note, '咨询服务：定制服务');
+
+  const unknownService = await app.inject({
+    method: 'POST', url: '/api/integrations/website-leads', headers: integrationHeaders(),
+    payload: validLead({ phone: '13500138998', email: null, service: 'future-service-code' }),
+  });
+  assert.equal(unknownService.statusCode, 200);
+  const unknownLead = db.prepare('SELECT source_note FROM leads WHERE id = ?').get(unknownService.json().data.id) as { source_note: string };
+  assert.equal(unknownLead.source_note, '咨询服务：future-service-code');
+
+  for (const [index, service] of ['toString', 'constructor', '__proto__'].entries()) {
+    const prototypeKey = await app.inject({
+      method: 'POST', url: '/api/integrations/website-leads', headers: integrationHeaders(),
+      payload: validLead({ phone: `1350013899${index}`, email: null, service }),
+    });
+    assert.equal(prototypeKey.statusCode, 200);
+    const prototypeLead = db.prepare('SELECT source_note FROM leads WHERE id = ?').get(prototypeKey.json().data.id) as { source_note: string };
+    assert.equal(prototypeLead.source_note, `咨询服务：${service}`);
+  }
+});
+
 test('网站合法手机号和座机被接受且规范化，空可选字段不生成占位文本', async () => {
   const mobile = await app.inject({
     method: 'POST', url: '/api/integrations/website-leads', headers: integrationHeaders(),
@@ -127,6 +173,16 @@ test('网站合法手机号和座机被接受且规范化，空可选字段不�
   assert.equal(
     (db.prepare('SELECT phone FROM leads WHERE id = ?').get(landline.json().data.id) as { phone: string }).phone,
     '02012345678',
+  );
+
+  const emailOnly = await app.inject({
+    method: 'POST', url: '/api/integrations/website-leads', headers: integrationHeaders(),
+    payload: validLead({ phone: '13600136999', email: 'email-only@example.test', service: null }),
+  });
+  assert.equal(emailOnly.statusCode, 200);
+  assert.equal(
+    (db.prepare('SELECT source_note FROM leads WHERE id = ?').get(emailOnly.json().data.id) as { source_note: string }).source_note,
+    '邮箱：email-only@example.test',
   );
 });
 

@@ -9,6 +9,14 @@ import { todayDate } from '../utils/datetime.js';
 
 const INTEGRATION_SOURCE = 'website_integration';
 
+const WEBSITE_SERVICE_LABELS = new Map<string, string>([
+  ['cloud-warehouse', '鞋服云仓'],
+  ['quality-inspection', '后整质检修复'],
+  ['logistics-cloud', '物流云'],
+  ['all', '全链路解决方案'],
+  ['other', '其他'],
+]);
+
 const trimmedRequired = (max: number, message: string) =>
   z.string().max(max, `长度不能超过 ${max} 个字符`).transform((value) => value.trim()).pipe(z.string().min(1, message));
 
@@ -67,7 +75,7 @@ function configuredOwnerId(): number | null {
 
 function sourceNote(lead: WebsiteLead): string | null {
   const lines = [
-    lead.service ? `咨询服务：${lead.service}` : null,
+    lead.service ? `咨询服务：${WEBSITE_SERVICE_LABELS.get(lead.service) ?? lead.service}` : null,
     lead.email ? `邮箱：${lead.email}` : null,
   ].filter((line): line is string => line !== null);
   return lines.length ? lines.join('\n') : null;
