@@ -12,31 +12,72 @@ onLaunch(() => {
 </template>
 
 <style>
-/* 主题色默认值（经典蓝），只挂在 :root 上，不能设在 page 上
-   ——uni-app H5 会将 page 编译为页面包裹层，CSS 变量从那里继承，
-   会覆盖 html 的值导致 JS setProperty 修改 html 无效 */
 :root {
-  --p: #2b6cb0;
-  --pd: #1e3a5f;
-  --ps: rgba(43,108,176,0.4);
-  --pl: #ebf4ff;
-  /* CustomTabBar 高度(56px) + 中间凸起添加按钮上探量(20px)，
-     贴底按钮/可滚动内容都要预留这块高度，否则会被 tab bar 或圆形加号按钮挡住 */
+  --p: #2563eb;
+  --pd: #1d4ed8;
+  --ps: rgba(37, 99, 235, 0.18);
+  --pl: #eff6ff;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --text: #172033;
+  --muted: #64748b;
+  --line: #e5eaf2;
+  --canvas: #f4f7fb;
+  --card: #ffffff;
   --tabbar-safe-bottom: 76px;
 }
 
-page {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  font-size: 14px;
-  color: #1a202c;
-  background-color: #f5f7fa;
+html,
+body,
+#app {
+  min-height: 100%;
+  margin: 0;
+  background: var(--canvas);
 }
 
-/* 全局工具类 */
+page {
+  min-height: 100%;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background-color: var(--canvas);
+}
+
+view,
+text,
+input,
+textarea,
+button,
+scroll-view {
+  box-sizing: border-box;
+}
+
+button::after {
+  border: 0;
+}
+
+input,
+textarea {
+  color: var(--text);
+}
+
 .text-center { text-align: center; }
-.text-primary { color: #2b6cb0; }
-.text-danger { color: #e53e3e; }
-.text-gray { color: #718096; }
+.text-primary { color: var(--p); }
+.text-danger { color: var(--danger); }
+.text-gray { color: var(--muted); }
 .mt-8 { margin-top: 8px; }
 .mt-16 { margin-top: 16px; }
+
+/* H5 桌面后台滚动条，克制一点，别让它像 2007 年的财务软件。 */
+@media (min-width: 900px) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+  *::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+}
 </style>
