@@ -1,211 +1,60 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { post } from '../../utils/request';
+import { onMounted, ref } from 'vue';
 import { useUserStore } from '../../store/user';
-import { prefetchTabPages } from '../../utils/prefetch';
 
 const store = useUserStore();
 const username = ref('');
 const password = ref('');
-const loading = ref(false);
-const error = ref('');
+const submitting = ref(false);
 
 onMounted(() => {
   store.init();
-  if (store.isLoggedIn()) {
-    prefetchTabPages();
-    uni.reLaunch({ url: '/pages/leads/list' });
-  }
+  if (store.isLoggedIn()) uni.reLaunch({ url: '/pages/desktop/index' });
 });
 
-async function handleLogin() {
-  if (!username.value.trim()) { error.value = '请输入用户名'; return; }
-  if (!password.value.trim()) { error.value = '请输入密码'; return; }
-  error.value = '';
-  loading.value = true;
+async function submit() {
+  if (!username.value.trim() || !password.value) {
+    uni.showToast({ title: '请输入用户名和密码', icon: 'none' });
+    return;
+  }
+  submitting.value = true;
   try {
-    const data = await post<{ token: string; user: any }>('/api/auth/login', {
-      username: username.value.trim(),
-      password: password.value,
-    });
-    store.login(data.token, data.user);
-    prefetchTabPages();
-    uni.reLaunch({ url: '/pages/leads/list' });
-  } catch (e: any) {
-    error.value = e.message || '登录失败';
+    await store.login(username.value.trim(), password.value);
+    uni.reLaunch({ url: '/pages/desktop/index' });
   } finally {
-    loading.value = false;
+    submitting.value = false;
   }
 }
 </script>
 
 <template>
   <view class="login-page">
-    <!-- 品牌头部 -->
-    <view class="brand-header">
-      <image class="login-logo-img" src="/static/logo.png" mode="aspectFit" />
-      <text class="login-sub">高效管理每一条销售线索</text>
+    <view class="background-grid" />
+    <view class="brand-side">
+      <view class="brand-logo"><text>线</text></view>
+      <text class="brand-title">线索与品牌管理系统</text>
+      <text class="brand-subtitle">LEAD & BRAND MANAGEMENT</text>
+      <view class="feature-list">
+        <view class="feature"><text class="feature-icon">◎</text><view><text class="feature-name">完整线索跟进</text><text class="feature-copy">状态、负责人、跟进时间线、报价、标签和公海能力全部保留</text></view></view>
+        <view class="feature"><text class="feature-icon">◇</text><view><text class="feature-name">品牌数据管理</text><text class="feature-copy">品牌、工商主体、分类、网址资源与线索建立多对多关系</text></view></view>
+        <view class="feature"><text class="feature-icon">▤</text><view><text class="feature-name">持久化与审计</text><text class="feature-copy">SQLite WAL、外键检查、版本模式和操作记录共同兜底</text></view></view>
+      </view>
+      <text class="brand-foot">面向内部业务团队的桌面管理后台</text>
     </view>
 
-    <!-- 表单区域 -->
-    <view class="form-area">
+    <view class="form-side">
       <view class="login-card">
-        <text class="card-title">账号登录</text>
-
-        <view class="form-item">
-          <text class="form-label">用户名</text>
-          <input
-            class="form-input"
-            v-model="username"
-            placeholder="请输入用户名"
-            :disabled="loading"
-            @confirm="handleLogin"
-          />
-        </view>
-
-        <view class="form-item">
-          <text class="form-label">密码</text>
-          <input
-            class="form-input"
-            v-model="password"
-            placeholder="请输入密码"
-            password
-            :disabled="loading"
-            @confirm="handleLogin"
-          />
-        </view>
-
-        <view v-if="error" class="error-tip">{{ error }}</view>
-
-        <button
-          class="login-btn"
-          :disabled="loading"
-          :loading="loading"
-          @click="handleLogin"
-        >
-          {{ loading ? '登录中...' : '登 录' }}
-        </button>
+        <text class="welcome">欢迎回来</text>
+        <text class="welcome-copy">登录后进入桌面管理后台</text>
+        <label class="form-item"><text class="label">用户名</text><view class="input-wrap"><text class="input-icon">♙</text><input v-model="username" class="input" placeholder="请输入用户名" confirm-type="next" /></view></label>
+        <label class="form-item"><text class="label">密码</text><view class="input-wrap"><text class="input-icon">⌁</text><input v-model="password" class="input" password placeholder="请输入密码" confirm-type="done" @confirm="submit" /></view></label>
+        <button class="login-btn" :disabled="submitting" :loading="submitting" @click="submit">{{ submitting ? '登录中...' : '登录系统' }}</button>
+        <view class="security-note"><text class="shield">✓</text><text>登录凭据通过 HTTPS 与 Authorization Header 传输</text></view>
       </view>
     </view>
   </view>
 </template>
 
 <style scoped>
-.login-page {
-  min-height: 100vh;
-  background: #f0f4fa;
-  display: flex;
-  flex-direction: column;
-}
-
-/* 品牌头部：蓝色短条 */
-.brand-header {
-  background: linear-gradient(135deg, var(--pd) 0%, var(--p) 100%);
-  padding: 56px 24px 72px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.login-logo-img {
-  width: 260px;
-  height: 96px;
-  margin-bottom: 14px;
-}
-
-.login-sub {
-  font-size: 15px;
-  color: rgba(255,255,255,0.75);
-  letter-spacing: 1px;
-}
-
-/* 表单区：圆角顶部上拉，盖住蓝条底部 */
-.form-area {
-  flex: 1;
-  background: #f0f4fa;
-  border-radius: 20px 20px 0 0;
-  margin-top: -20px;
-  padding: 20px 20px 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.login-card {
-  background: #ffffff;
-  border-radius: 12px;
-  padding: 20px 20px 16px;
-  width: 100%;
-  max-width: 440px;
-  box-shadow: 0 2px 12px rgba(15,23,42,0.08);
-  box-sizing: border-box;
-}
-
-.card-title {
-  display: block;
-  font-size: 16px;
-  font-weight: 700;
-  color: #0d1421;
-  margin-bottom: 20px;
-}
-
-.form-item {
-  margin-bottom: 14px;
-}
-
-.form-label {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  color: #64748b;
-  margin-bottom: 6px;
-}
-
-.form-input {
-  width: 100%;
-  height: 44px;
-  border: 1.5px solid #dde1e7;
-  border-radius: 8px;
-  padding: 0 12px;
-  font-size: 14px;
-  color: #0d1421;
-  background: #f8fafd;
-  box-sizing: border-box;
-}
-
-.form-input:focus {
-  border-color: var(--p);
-  background: #ffffff;
-}
-
-.error-tip {
-  color: #d93025;
-  font-size: 12px;
-  margin-bottom: 12px;
-  padding: 8px 12px;
-  background: #fce8e6;
-  border-radius: 6px;
-  border-left: 3px solid #d93025;
-}
-
-.login-btn {
-  width: 100%;
-  height: 46px;
-  background: var(--p);
-  color: #ffffff;
-  border-radius: 8px;
-  font-size: 15px;
-  font-weight: 600;
-  border: none;
-  margin-top: 10px;
-  letter-spacing: 2px;
-}
-
-.login-btn:active {
-  background: var(--pd);
-}
-
-.login-btn[disabled] {
-  opacity: 0.6;
-}
+.login-page{position:relative;width:100vw;height:100vh;height:100dvh;display:grid;grid-template-columns:minmax(480px,1.05fr) minmax(500px,.95fr);overflow:hidden;background:#f5f8fc}.background-grid{position:absolute;inset:0;opacity:.28;background-image:linear-gradient(rgba(148,163,184,.1) 1px,transparent 1px),linear-gradient(90deg,rgba(148,163,184,.1) 1px,transparent 1px);background-size:34px 34px;pointer-events:none}.brand-side{position:relative;padding:8vh 8vw;display:flex;flex-direction:column;justify-content:center;color:#fff;background:radial-gradient(circle at 20% 15%,rgba(96,165,250,.65),transparent 32%),linear-gradient(145deg,#0f2f73,#1d4ed8 60%,#2563eb);overflow:hidden}.brand-side::after{content:'';position:absolute;width:420px;height:420px;right:-140px;bottom:-170px;border:70px solid rgba(255,255,255,.06);border-radius:50%}.brand-logo{width:54px;height:54px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.35);border-radius:17px;background:rgba(255,255,255,.16);backdrop-filter:blur(8px);font-size:22px;font-weight:800;box-shadow:0 14px 30px rgba(15,23,42,.18)}.brand-title{display:block;margin-top:25px;font-size:31px;font-weight:800;letter-spacing:.5px}.brand-subtitle{display:block;margin-top:7px;color:rgba(255,255,255,.66);font-size:10px;letter-spacing:3px}.feature-list{margin-top:58px;max-width:580px;display:flex;flex-direction:column;gap:28px}.feature{display:flex;gap:15px}.feature-icon{width:34px;height:34px;flex:0 0 34px;display:flex;align-items:center;justify-content:center;border-radius:11px;color:#dbeafe;background:rgba(255,255,255,.12);font-size:17px}.feature-name,.feature-copy{display:block}.feature-name{font-size:13px;font-weight:700}.feature-copy{margin-top:6px;color:rgba(255,255,255,.62);font-size:10px;line-height:1.65}.brand-foot{position:absolute;left:8vw;bottom:5vh;color:rgba(255,255,255,.48);font-size:9px}.form-side{position:relative;display:flex;align-items:center;justify-content:center;padding:40px}.login-card{width:420px;padding:42px 44px;background:rgba(255,255,255,.97);border:1px solid rgba(226,232,240,.9);border-radius:18px;box-shadow:0 24px 70px rgba(15,23,42,.12)}.welcome,.welcome-copy{display:block}.welcome{font-size:27px;font-weight:800;color:#172033}.welcome-copy{margin-top:8px;margin-bottom:31px;color:#8a96a8;font-size:11px}.form-item{display:block;margin-bottom:19px}.label{display:block;margin-bottom:8px;color:#526078;font-size:11px;font-weight:700}.input-wrap{height:46px;display:flex;align-items:center;border:1px solid #dce4ef;border-radius:9px;background:#fafcff;transition:.15s ease}.input-wrap:focus-within{border-color:#8cb0f8;background:#fff;box-shadow:0 0 0 4px rgba(37,99,235,.1)}.input-icon{width:42px;text-align:center;color:#94a3b8;font-size:16px}.input{flex:1;height:44px;padding-right:12px;font-size:12px}.login-btn{width:100%;height:47px;margin:10px 0 0;border-radius:9px;color:#fff;background:linear-gradient(90deg,#2563eb,#1d4ed8);font-size:13px;font-weight:700;line-height:47px;box-shadow:0 12px 25px rgba(37,99,235,.22)}.login-btn:active{transform:translateY(1px)}.security-note{margin-top:20px;display:flex;align-items:center;justify-content:center;gap:6px;color:#94a3b8;font-size:8px}.shield{width:15px;height:15px;display:flex;align-items:center;justify-content:center;border-radius:50%;color:#16a34a;background:#eaf8ef;font-size:8px}@media(max-width:1000px){.login-page{grid-template-columns:1fr}.brand-side{display:none}.form-side{background:linear-gradient(145deg,#edf4ff,#f8fafc)}}
 </style>
