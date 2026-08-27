@@ -17,6 +17,7 @@ export function downloadFile(path: string, filename: string): Promise<void> {
         const a = document.createElement('a');
         a.href = res.tempFilePath;
         a.download = filename;
+        a.rel = 'noopener';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -30,30 +31,42 @@ export function downloadFile(path: string, filename: string): Promise<void> {
   });
 }
 
-interface ImportResult {
+export interface UploadResult<T = unknown> {
   code: number;
   msg: string;
-  data: {
-    success: number;
-    skipped: number;
-    skipped_details: Array<{ row: number; reason: string }>;
-    warnings?: number;
-    warning_details?: Array<{ row: number; reason: string }>;
-  } | null;
+  data: T | null;
 }
 
-// 上传导入文件：H5 下浏览器 File 对象要传 file 字段（不是 filePath，filePath 是字符串路径）
-export function uploadImportFile(file: File): Promise<ImportResult> {
+export interface LeadImportData {
+  success: number;
+  skipped: number;
+  skipped_details: Array<{ row: number; reason: string }>;
+  warnings?: number;
+  warning_details?: Array<{ row: number; reason: string }>;
+}
+
+export interface BrandImportData {
+  success: number;
+  failed: number;
+  errors: Array<{ row: number; reason: string }>;
+}
+
+function uploadFile<T>(path: string, file: File): Promise<UploadResult<T>> {
   const token = uni.getStorageSync('token');
   return new Promise((resolve, reject) => {
     uni.uploadFile({
-      url: BASE_URL + '/api/import',
+      url: BASE_URL + path,
       file,
       name: 'file',
       header: token ? { Authorization: `Bearer ${token}` } : {},
       success(res) {
         try {
-          resolve(JSON.parse(res.data as string));
+          const body = JSON.parse(res.data as string) as UploadResult<T>;
+          if (res.statusCode >= 400 || body.code !== 0) {
+            reject(new Error(body.msg || '导入失败'));
+            return;
+          }
+          resolve(body);
         } catch {
           reject(new Error('导入失败，服务器返回格式异常'));
         }
@@ -63,4 +76,13 @@ export function uploadImportFile(file: File): Promise<ImportResult> {
       },
     });
   });
+}
+
+// H5 下浏览器 File 对象要传 file 字段（不是 filePath，filePath 是字符串路径）。
+export function uploadImportFile(file: File): Promise<UploadResult<LeadImportData>> {
+  return uploadFile<LeadImportData>('/api/import', file);
+}
+
+export function uploadBrandImportFile(file: File): Promise<UploadResult<BrandImportData>> {
+  return uploadFile<BrandImportData>('/api/brand-domain/import', file);
 }
