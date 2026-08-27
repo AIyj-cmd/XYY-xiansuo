@@ -5,6 +5,7 @@ import staticFiles from '@fastify/static';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initDb, getDb, getDatabasePath } from './db.js';
+import { ensureBrandSchema } from './brand-schema.js';
 import { initializeAdmin } from './bootstrap.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
@@ -20,6 +21,7 @@ import { notificationAdminRoutes } from './routes/notification-admin.js';
 import { aiAdminRoutes } from './routes/ai-admin.js';
 import { hermesBindingRoutes } from './routes/hermes-bindings.js';
 import { websiteLeadIntegrationRoutes } from './routes/website-leads.js';
+import { brandDomainRoutes } from './routes/brand-domain.js';
 import { resolveNotificationConfig } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,8 +29,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3000');
 const HOST = process.env.HOST || '0.0.0.0';
 
-// 仅允许当前同源 H5 所需的能力：H5 构建产物不再依赖内联脚本，图片上传和
-// uni-app 的运行时样式仍需要 data:/blob: 图片及内联样式。
+// 当前 H5 只需要同源 API、静态资源和上传文件能力。
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "base-uri 'self'",
@@ -49,8 +50,14 @@ const PERMISSIONS_POLICY = 'accelerometer=(), camera=(), geolocation=(), gyrosco
 export async function buildApp(): Promise<FastifyInstance> {
   // 在任何数据库或 HTTP 副作用之前验证全部阶段三开关。
   resolveNotificationConfig();
-  // 初始化数据库
+
+  // 主库迁移先执行，品牌域依赖 users/leads 外键，随后以独立版本表幂等初始化。
   initDb();
+  ensureBrandSchema(getDb());
+  const brandForeignKeyViolations = getDb().prepare('PRAGMA foreign_key_check').all();
+  if (brandForeignKeyViolations.length > 0) {
+    throw new Error(`品牌域初始化后发现 ${brandForeignKeyViolations.length} 条外键异常，拒绝启动`);
+  }
   console.log(`数据库路径: ${getDatabasePath()}`);
 
   // 只有迁移与完整性检查都成功后才允许初始化管理员和注册 HTTP 服务。
@@ -63,8 +70,6 @@ export async function buildApp(): Promise<FastifyInstance> {
     trustProxy: (address) => address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1',
   });
 
-  // 对 API、H5、上传文件和错误响应统一生效。HSTS 只由 HTTPS Nginx
-  // server 块提供，避免在本地 HTTP 或未正确终止 TLS 的代理链中伪造 HTTPS。
   app.addHook('onRequest', (_request, reply, done) => {
     reply
       .header('Content-Security-Policy', CONTENT_SECURITY_POLICY)
@@ -81,37 +86,28 @@ export async function buildApp(): Promise<FastifyInstance> {
     reply.code(500).send({ code: 1, msg: '服务器内部错误', data: null });
   });
 
-  // 请求日志
   app.addHook('onResponse', (request, reply, done) => {
     const userId = (request as any).user?.id || '-';
     console.log(`[${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}] ${request.method} ${request.url} ${reply.statusCode} ${reply.elapsedTime.toFixed(0)}ms uid:${userId}`);
     done();
   });
 
-  // 生产环境前端由同一进程通过 @fastify/static 同源托管，本不需要跨域；
-  // 这里的白名单主要是为了本地开发时 Vite dev server（不同端口）能访问后端接口。
   const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
     .split(',').map(s => s.trim()).filter(Boolean);
   await app.register(cors, { origin: corsOrigins });
-  await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } }); // 10MB
+  await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } });
 
-  // 允许空 body 的 JSON 请求（DELETE 等无 body 请求不报 400）
+  // 允许空 body 的 JSON 请求（DELETE 等无 body 请求不报 400）。
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
     if (!body) { done(null, null); return; }
     try { done(null, JSON.parse(body as string)); }
     catch (e) { done(e as Error, undefined); }
   });
 
-  // H5 静态产物托管
-  // /assets/* 是 Vite 按内容 hash 命名的产物，内容变了文件名一定变，可以放心长期缓存；
-  // index.html 每次都要拿最新的（里面引用的资源 hash 会变），不能缓存；
-  // /static/* 是没有 hash 的固定文件名（tabbar 图标等），给一个适中的缓存时间。
-  // 注意：@fastify/static 自己会在 setHeaders 之后再覆盖一次 Cache-Control（默认 maxAge=0），
-  // 所以这里用 onSend 钩子在响应真正发出前再设一遍，保证最终生效的是这里的值。
+  // H5 静态产物托管。
   app.addHook('onSend', (request, reply, payload, done) => {
     const url = request.url.split('?')[0];
     if (url.startsWith('/assets/') || url.startsWith('/uploads/')) {
-      // 都是内容变了文件名就变的场景（Vite hash / 上传文件时间戳+随机串命名）
       reply.header('Cache-Control', 'public, max-age=31536000, immutable');
     } else if (url.startsWith('/static/')) {
       reply.header('Cache-Control', 'public, max-age=86400');
@@ -123,10 +119,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   const h5Path = path.join(__dirname, '..', '..', 'app', 'dist', 'build', 'h5');
   try {
-    // 静态文件显式注册为路由，让不存在的 H5 路径继续进入下方 SPA fallback。
-    // wildcard=true 会抢先匹配深链并直接返回静态 404，导致刷新详情页失败。
     await app.register(staticFiles, { root: h5Path, prefix: '/', wildcard: false });
-    // SPA fallback: 非API路由返回index.html
     app.setNotFoundHandler(async (request, reply) => {
       if (request.url.startsWith('/api/')) {
         return reply.code(404).send({ code: 1, msg: '接口不存在', data: null });
@@ -134,8 +127,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       return reply.sendFile('index.html');
     });
   } catch {
-    // H5未构建时静默跳过
-    app.setNotFoundHandler(async (request, reply) => {
+    app.setNotFoundHandler(async (_request, reply) => {
       return reply.code(404).send({ code: 1, msg: '接口不存在', data: null });
     });
   }
@@ -147,6 +139,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(leadRoutes);
   await app.register(dashboardRoutes);
   await app.register(importExportRoutes);
+  await app.register(brandDomainRoutes);
   await app.register(tagRoutes);
   await app.register(memoRoutes);
   await app.register(notificationRoutes);
